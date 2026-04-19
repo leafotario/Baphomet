@@ -51,6 +51,7 @@ bot = MyBot()
 
 @bot.event
 async def on_ready():
+    await bot.load_extension("cogs.welcome")
     print(f'---')
     print(f'Bot logado como {bot.user}')
     print(f'ID: {bot.user.id}')
