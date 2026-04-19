@@ -104,7 +104,7 @@ class WelcomeCog(commands.Cog):
 
         embed = discord.Embed(title=title, description=desc, color=color)
         embed.set_thumbnail(url=member.display_avatar.url)
-        embed.set_footer(text=f"Membro nº {guild.member_count}", icon_url=guild.icon.url if guild.icon else None)
+        embed.set_footer(text=f"Agora somos {guild.member_count} membros.", icon_url=guild.icon.url if guild.icon else None)
         return embed
 
     # --- COMANDO SLASH PARA CONFIGURAR ---
