@@ -142,7 +142,7 @@ class UltimateWelcomeCog(commands.Cog):
 
         try:
             embed = self.build_embed(member, member.guild, data, user_color)
-            await channel.send(embed=embed)
+            await channel.send(content=member.mention, embed=embed)
         except discord.Forbidden:
             print(f"Erro: Sem permissão para enviar na sala de boas vindas.")
 
