@@ -312,7 +312,16 @@ class ChannelSelectView(discord.ui.View):
         interaction: discord.Interaction,
         select: discord.ui.ChannelSelect,
     ) -> None:
-        channel: discord.TextChannel = select.values[0]
+        # ChannelSelect retorna AppCommandChannel (objeto parcial).
+        # Resolvemos para o objeto real via guild para ter acesso a permissions_for().
+        channel: discord.TextChannel = interaction.guild.get_channel(select.values[0].id)
+
+        if channel is None:
+            await interaction.response.send_message(
+                "❌ Canal não encontrado. Tente novamente.",
+                ephemeral=True,
+            )
+            return
 
         # Verifica se o bot tem permissões necessárias no canal
         me = interaction.guild.me
