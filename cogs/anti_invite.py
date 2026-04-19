@@ -1,0 +1,86 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+import json
+import os
+import re
+
+class AntiInviteCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.config_file = "anti_invite_config.json"
+        self.whitelisted_guild_id = 1335048033200635926
+        # Regex potente para capturar discord.gg, discord.com/invite, etc.
+        self.invite_regex = re.compile(
+            r"(?:https?://)?(?:www\.)?(?:discord\.(?:gg|io|me|li)|discordapp\.com/invite)/([\w\d-]+)", 
+            re.IGNORECASE
+        )
+        self.config = self.load_config()
+
+    def load_config(self):
+        if os.path.exists(self.config_file):
+            with open(self.config_file, "r") as f:
+                return json.load(f)
+        return {}
+
+    def save_config(self):
+        with open(self.config_file, "w") as f:
+            json.dump(self.config, f, indent=4)
+
+    # --- COMANDO DE TOGGLE (ADMIN ONLY) ---
+    @app_commands.command(name="anti_invite", description="Ativa ou desativa o bloqueio automático de convites.")
+    @app_commands.describe(estado="Ligar (True) ou Desligar (False) o bloqueio")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def anti_invite_toggle(self, it: discord.Interaction, estado: bool):
+        guild_id = str(it.guild.id)
+        self.config[guild_id] = estado
+        self.save_config()
+
+        status_texto = "🔴 **ATIVADO**" if estado else "⚪ **DESATIVADO**"
+        await it.response.send_message(f"O sistema de Anti-Invite agora está: {status_texto}", ephemeral=True)
+
+    # --- LISTENER DE MENSAGENS ---
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        # Ignora bots e mensagens fora de servidores
+        if message.author.bot or not message.guild:
+            return
+
+        # Verifica se o sistema está ligado para este servidor
+        guild_id = str(message.guild.id)
+        if not self.config.get(guild_id, False):
+            return
+
+        # Ignora administradores para eles poderem postar convites se necessário
+        if message.author.guild_permissions.administrator:
+            return
+
+        # Procura por convites na mensagem
+        invites = self.invite_regex.findall(message.content)
+        
+        for code in invites:
+            try:
+                # O bot tenta "olhar" o convite para saber de qual servidor ele é
+                invite = await self.bot.fetch_invite(code)
+                
+                # Se o ID do servidor do convite for o whitelisted, ignoramos
+                if invite.guild and invite.guild.id == self.whitelisted_guild_id:
+                    continue
+                
+                # Se chegou aqui, é um convite de outro servidor. Apaga!
+                await message.delete()
+                await message.channel.send(
+                    f"🚫 {message.author.mention}, não é permitido enviar convites de outros servidores aqui!",
+                    delete_after=5
+                )
+                break # Já apagou a mensagem, não precisa checar outros códigos na mesma mensagem
+
+            except discord.NotFound:
+                # O convite é inválido ou expirou, mas por segurança, muitos preferem apagar mesmo assim
+                await message.delete()
+            except Exception as e:
+                print(f"Erro ao processar convite: {e}")
+
+async def setup(bot):
+    await bot.add_cog(AntiInviteCog(bot))

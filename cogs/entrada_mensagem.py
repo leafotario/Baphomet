@@ -49,7 +49,7 @@ class WelcomeModal(discord.ui.Modal, title='Personalize as Boas-Vindas'):
         preview_embed = self.cog.build_embed(interaction.user, interaction.guild, data, cor_teste)
         
         await interaction.response.send_message(
-            f"✅ **Sistema Configurado!** A cor do embed será adaptada à foto de cada membro.\nDestino: {self.channel.mention}\n\n**Pré-visualização (Usando sua foto):**",
+            f"✅ **Sistema Configurado!**\nDestino: {self.channel.mention}\n\n**Pré-visualização (Usando sua foto):**",
             embed=preview_embed,
             ephemeral=True
         )

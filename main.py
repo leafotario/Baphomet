@@ -33,6 +33,7 @@ class MyBot(commands.Bot):
             if filename.endswith('.py'):
                 try:
                     await self.load_extension(f'cogs.{filename[:-3]}')
+                    await bot.load_extension("anti_invite")
                     print(f'✅ Cog {filename} carregado.')
                 except Exception as e:
                     print(f'❌ Falha ao carregar cog {filename}: {e}')
