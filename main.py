@@ -6,6 +6,25 @@ from dotenv import load_dotenv
 from flask import Flask
 from threading import Thread
 app = Flask('')
+from aiohttp import web
+import asyncio
+
+# Esta função cria um servidor web simples que responde "Estou vivo!"
+async def handle(request):
+    return web.Response(text="Talitinha está online!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8080)
+    await site.start()
+    print("Servidor web iniciado na porta 8080")
+
+# No seu main.py, quando o bot iniciar:
+# asyncio.create_task(start_web_server())
+
 
 @app.route('/')
 def home():
