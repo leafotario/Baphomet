@@ -214,8 +214,6 @@ async def generate_rank_card(
     name_txt = member.display_name[:22]
     draw.text((tx + rank_w + 12, 40), name_txt, font=f_name, fill=(230, 230, 245))
 
-    draw.text((tx, 90), "no servidor", font=f_sub, fill=(110, 110, 145))
-
     draw.text((tx, 128), "NÍVEL", font=f_nivel_l, fill=(120, 60, 240))
     draw.text((tx + 72, 120), str(level), font=f_nivel_n, fill=(230, 230, 245))
 
@@ -245,6 +243,65 @@ async def generate_rank_card(
     buf.seek(0)
     return discord.File(buf, filename="rank.png")
 
+async def generate_top5_card(guild: discord.Guild, top_entries: list) -> discord.File:
+    """Gera uma imagem de alta qualidade com o Top 5 do servidor."""
+    # Calcula a altura dinamicamente (máximo 5 membros)
+    limit = min(len(top_entries), 5)
+    W, H = 900, 120 + (100 * limit)
+    
+    img = Image.new("RGBA", (W, H), (15, 15, 25, 255))
+    draw = ImageDraw.Draw(img)
+
+    # Detalhe visual na lateral esquerda (Theme color)
+    _rr(draw, (0, 0, 10, H), 5, (120, 60, 240, 255))
+
+    # Título da Imagem
+    f_title = _font(FONT_BOLD, 40)
+    draw.text((40, 30), f"🏆 LEADERBOARD - {guild.name.upper()}", font=f_title, fill=(230, 230, 245))
+
+    y_offset = 100
+    for i, (member, total_xp, level, cur, needed) in enumerate(top_entries[:limit]):
+        rank = i + 1
+        # Background do bloco de cada usuário
+        _rr(draw, (30, y_offset, W - 30, y_offset + 85), 15, (30, 30, 45, 255))
+
+        # Cores customizadas baseadas na colocação
+        color = (255, 215, 0) if rank == 1 else (192, 192, 192) if rank == 2 else (205, 127, 50) if rank == 3 else (120, 60, 240)
+
+        f_rank = _font(FONT_BOLD, 36)
+        draw.text((50, y_offset + 22), f"#{rank}", font=f_rank, fill=color)
+
+        # Avatar
+        av_url = str(member.display_avatar.replace(size=128, format="png").url)
+        av_img = await _fetch_avatar(av_url)
+        if av_img:
+            av_circle = _circle_avatar(av_img, 64)
+            img.paste(av_circle, (130, y_offset + 10), av_circle)
+
+        # Nome
+        f_name = _font(FONT_BOLD, 26)
+        draw.text((210, y_offset + 15), member.display_name[:20], font=f_name, fill=(255, 255, 255))
+
+        # Estatísticas (Nível e XP total)
+        f_stats = _font(FONT_REG, 18)
+        draw.text((210, y_offset + 50), f"Nível {level}  •  {total_xp:,} XP", font=f_stats, fill=(180, 180, 200))
+
+        # Barra de Progresso simplificada
+        bar_x, bar_y = 550, y_offset + 32
+        bar_w, bar_h = 280, 20
+        _rr(draw, (bar_x, bar_y, bar_x + bar_w, bar_y + bar_h), 10, (50, 50, 70))
+
+        ratio = min(cur / needed, 1.0) if needed > 0 else 0
+        fill_px = int(bar_w * ratio)
+        if fill_px > 10:
+            _rr(draw, (bar_x, bar_y, bar_x + fill_px, bar_y + bar_h), 10, color)
+
+        y_offset += 95
+
+    buf = io.BytesIO()
+    img.convert("RGB").save(buf, format="PNG")
+    buf.seek(0)
+    return discord.File(buf, filename="top5.png")
 
 # ─────────────────────────────────────────────
 #  VIEW — LEADERBOARD PAGINADO
@@ -260,6 +317,41 @@ def _mini_bar(cur: int, needed: int, width: int = 10) -> str:
     filled = max(0, min(width, int((cur / needed) * width)))
     return "▓" * filled + "░" * (width - filled)
 
+class Top5View(discord.ui.View):
+    """View que acompanha a imagem do Top 5, com botão para abrir o ranking em texto."""
+    def __init__(self, cog, guild, diff_label):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.guild = guild
+        self.diff_label = diff_label
+
+    @discord.ui.button(label="Lista Completa", emoji="📋", style=discord.ButtonStyle.secondary)
+    async def btn_full(self, interaction: discord.Interaction, button: discord.ui.Button):
+        lb = self.cog._leaderboard(self.guild)
+        view = LeaderboardView(lb, self.guild.name, interaction.user.id, self.diff_label)
+        # Responde com uma nova mensagem contendo o Embed em texto paginado
+        await interaction.response.send_message(embed=view.build_embed(), view=view)
+
+
+class RankView(discord.ui.View):
+    """View que acompanha o card de Rank do usuário, com botão para o Leaderboard."""
+    def __init__(self, cog, guild, diff_label):
+        super().__init__(timeout=180)
+        self.cog = cog
+        self.guild = guild
+        self.diff_label = diff_label
+
+    @discord.ui.button(label="Leaderboard", emoji="🏆", style=discord.ButtonStyle.primary)
+    async def btn_lb(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        lb = self.cog._leaderboard(self.guild)
+        if not lb:
+            await interaction.followup.send("Ninguém tem XP ainda!", ephemeral=True)
+            return
+            
+        card = await generate_top5_card(self.guild, lb)
+        view = Top5View(self.cog, self.guild, self.diff_label)
+        await interaction.followup.send(file=card, view=view)
 
 class LeaderboardView(discord.ui.View):
     """
@@ -489,7 +581,7 @@ class XP(commands.Cog):
     #  COMANDOS PÚBLICOS
     # ══════════════════════════════════════════
 
-    # ── /rank ─────────────────────────────────
+# ── /rank ─────────────────────────────────
 
     @app_commands.command(
         name="rank",
@@ -509,13 +601,18 @@ class XP(commands.Cog):
         rank             = self._rank_of(interaction.guild, target.id)
 
         card = await generate_rank_card(target, total, rank, lvl, cur, needed)
-        await interaction.followup.send(file=card)
+        
+        # Puxa o diff_label e instancia a View interativa
+        diff_label = self._diff_label(interaction.guild.id)
+        view = RankView(self, interaction.guild, diff_label)
+        
+        await interaction.followup.send(file=card, view=view)
 
     # ── /leaderboard ──────────────────────────
 
     @app_commands.command(
         name="leaderboard",
-        description="Exibe o ranking completo de XP do servidor, paginado (10 por página).",
+        description="Exibe uma imagem com o Top 5 do servidor.",
     )
     async def leaderboard(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -525,13 +622,14 @@ class XP(commands.Cog):
             await interaction.followup.send("Ninguém tem XP ainda!", ephemeral=True)
             return
 
-        view = LeaderboardView(
-            entries    = lb,
-            guild_name = interaction.guild.name,
-            author_id  = interaction.user.id,
-            diff_label = self._diff_label(interaction.guild.id),
-        )
-        await interaction.followup.send(embed=view.build_embed(), view=view)
+        # Gera o novo card em imagem com o top 5
+        card = await generate_top5_card(interaction.guild, lb)
+        
+        # Chama a view com o botão de Lista Completa
+        diff_label = self._diff_label(interaction.guild.id)
+        view = Top5View(self, interaction.guild, diff_label)
+
+        await interaction.followup.send(file=card, view=view)
 
     # ══════════════════════════════════════════
     #  GRUPO /xp_admin  —  ações destrutivas
