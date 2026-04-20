@@ -11,19 +11,11 @@ from datetime import timedelta
 import discord
 
 from .xp_config import build_progress_snapshot, normalize_message_content, utc_now
-from .xp_models import (
-    GuildXpConfig,
-    LeaderboardEntry,
-    PageResult,
-    RankSnapshot,
-    XpChangeResult,
-)
+from .xp_models import GuildXpConfig, LeaderboardEntry, PageResult, RankSnapshot, XpChangeResult
 from .xp_repository import XpRepository
 
 
 class XpService:
-    """regra de negócio do sistema de xp."""
-
     def __init__(self, repository: XpRepository, *, rng: random.Random | None = None, logger: logging.Logger | None = None) -> None:
         self.repository = repository
         self.rng = rng or random.Random()
@@ -61,12 +53,19 @@ class XpService:
         await self.repository.set_ignored_target("xp_ignored_roles", "role_id", guild_id, role_id, enabled)
         return await self.refresh_guild_config(guild_id)
 
+    async def set_level_role(self, guild_id: int, level: int, role_id: int) -> GuildXpConfig:
+        await self.repository.set_level_role(guild_id, level, role_id)
+        return await self.refresh_guild_config(guild_id)
+
+    async def remove_level_role(self, guild_id: int, level: int) -> tuple[GuildXpConfig, bool]:
+        removed = await self.repository.remove_level_role(guild_id, level)
+        return await self.refresh_guild_config(guild_id), removed
+
     def _resolve_category_id(self, message: discord.Message) -> int | None:
-        channel = message.channel
-        category_id = getattr(channel, "category_id", None)
+        category_id = getattr(message.channel, "category_id", None)
         if category_id is not None:
             return int(category_id)
-        parent = getattr(channel, "parent", None)
+        parent = getattr(message.channel, "parent", None)
         parent_category_id = getattr(parent, "category_id", None)
         if parent_category_id is not None:
             return int(parent_category_id)
@@ -83,22 +82,18 @@ class XpService:
             return False, "webhook", None
         if message.channel.id in config.ignored_channel_ids:
             return False, "canal_ignorado", None
-
         category_id = self._resolve_category_id(message)
         if category_id is not None and category_id in config.ignored_category_ids:
             return False, "categoria_ignorada", None
-
         if any(role.id in config.ignored_role_ids for role in message.author.roles):
             return False, "cargo_ignorado", None
 
         normalized = normalize_message_content(message.content)
         if len(normalized) < config.min_message_length:
             return False, "mensagem_curta", None
-
         unique_words = {token for token in normalized.split(" ") if token}
         if len(unique_words) < config.min_unique_words:
             return False, "poucas_palavras_unicas", None
-
         return True, None, normalized
 
     def _passes_local_repeat_check(
@@ -109,19 +104,16 @@ class XpService:
         config: GuildXpConfig,
         now_ts: float,
     ) -> tuple[bool, str | None]:
-        key = (guild_id, user_id)
-        recent = self._recent_fingerprints[key]
+        recent = self._recent_fingerprints[(guild_id, user_id)]
         cutoff = now_ts - float(config.anti_repeat_window_seconds)
         while recent and recent[0][1] < cutoff:
             recent.popleft()
-
         for previous, _ in recent:
             if previous == normalized:
                 return False, "mensagem_repetida"
             similarity = difflib.SequenceMatcher(a=previous, b=normalized).ratio()
             if similarity >= config.anti_repeat_similarity:
                 return False, "mensagem_muito_parecida"
-
         return True, None
 
     def _remember_fingerprint(self, guild_id: int, user_id: int, normalized: str, now_ts: float) -> None:
@@ -130,7 +122,6 @@ class XpService:
     async def process_message(self, message: discord.Message) -> XpChangeResult | None:
         if message.guild is None or not isinstance(message.author, discord.Member):
             return None
-
         config = await self.get_guild_config(message.guild.id)
         allowed, _, normalized = self._basic_message_checks(message, config)
         if not allowed or normalized is None:
@@ -154,7 +145,6 @@ class XpService:
             )
             if not passes_repeat:
                 return None
-
             awarded, _, old_total, new_total = await self.repository.try_add_message_xp(
                 guild_id=message.guild.id,
                 user_id=message.author.id,
@@ -181,6 +171,21 @@ class XpService:
             levels_gained=max(0, new_progress.level - old_progress.level),
             delta_xp=delta_xp,
         )
+
+    async def grant_level_rewards(self, member: discord.Member, new_level: int) -> list[discord.Role]:
+        config = await self.get_guild_config(member.guild.id)
+        granted: list[discord.Role] = []
+        for level, role_id in sorted(config.level_roles.items()):
+            if new_level < level:
+                continue
+            role = member.guild.get_role(role_id)
+            if role and role not in member.roles:
+                try:
+                    await member.add_roles(role, reason=f"XP: nível {level} atingido")
+                    granted.append(role)
+                except (discord.Forbidden, discord.HTTPException):
+                    continue
+        return granted
 
     async def get_rank_snapshot(self, guild: discord.Guild, user: discord.Member | discord.User) -> RankSnapshot:
         config = await self.get_guild_config(guild.id)
@@ -227,7 +232,6 @@ class XpService:
         total_entries = await self.repository.count_ranked_profiles(guild.id)
         config = await self.get_guild_config(guild.id)
         profiles = await self.repository.get_profiles_page(guild.id, offset, page_size)
-
         entries: list[LeaderboardEntry] = []
         for index, profile in enumerate(profiles, start=offset + 1):
             progress = build_progress_snapshot(profile.total_xp, config.difficulty)
@@ -256,16 +260,7 @@ class XpService:
         )
         old_progress = build_progress_snapshot(old_total, config.difficulty)
         new_progress = build_progress_snapshot(new_total, config.difficulty)
-        return XpChangeResult(
-            awarded=True,
-            reason=None,
-            old_total_xp=old_total,
-            new_total_xp=new_total,
-            old_level=old_progress.level,
-            new_level=new_progress.level,
-            levels_gained=max(0, new_progress.level - old_progress.level),
-            delta_xp=abs(amount),
-        )
+        return XpChangeResult(True, None, old_total, new_total, old_progress.level, new_progress.level, max(0, new_progress.level - old_progress.level), abs(amount))
 
     async def remove_xp(self, guild: discord.Guild, member: discord.Member, amount: int, actor_user_id: int | None, reason: str | None) -> XpChangeResult:
         config = await self.get_guild_config(guild.id)
@@ -279,29 +274,11 @@ class XpService:
         )
         old_progress = build_progress_snapshot(old_total, config.difficulty)
         new_progress = build_progress_snapshot(new_total, config.difficulty)
-        return XpChangeResult(
-            awarded=True,
-            reason=None,
-            old_total_xp=old_total,
-            new_total_xp=new_total,
-            old_level=old_progress.level,
-            new_level=new_progress.level,
-            levels_gained=max(0, new_progress.level - old_progress.level),
-            delta_xp=-abs(amount),
-        )
+        return XpChangeResult(True, None, old_total, new_total, old_progress.level, new_progress.level, max(0, new_progress.level - old_progress.level), -abs(amount))
 
     async def reset_xp(self, guild: discord.Guild, member: discord.Member, actor_user_id: int | None, reason: str | None) -> XpChangeResult:
         config = await self.get_guild_config(guild.id)
         old_total, new_total = await self.repository.reset_profile(guild.id, member.id, actor_user_id, reason)
         old_progress = build_progress_snapshot(old_total, config.difficulty)
         new_progress = build_progress_snapshot(new_total, config.difficulty)
-        return XpChangeResult(
-            awarded=True,
-            reason=None,
-            old_total_xp=old_total,
-            new_total_xp=new_total,
-            old_level=old_progress.level,
-            new_level=new_progress.level,
-            levels_gained=new_progress.level - old_progress.level,
-            delta_xp=-old_total,
-        )
+        return XpChangeResult(True, None, old_total, new_total, old_progress.level, new_progress.level, new_progress.level - old_progress.level, -old_total)

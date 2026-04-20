@@ -5,14 +5,12 @@ from typing import Any
 
 import aiosqlite
 
-from .xp_config import build_default_guild_config, parse_iso, utc_now_iso
+from .xp_config import build_default_guild_config, normalize_difficulty, parse_iso, utc_now_iso
 from .xp_migrations import run_migrations
 from .xp_models import GuildXpConfig, UserXpProfile, XpDifficulty
 
 
 class XpRepository:
-    """camada única de persistência do sistema de xp."""
-
     CONFIG_FIELDS = {
         "difficulty",
         "cooldown_seconds",
@@ -24,6 +22,7 @@ class XpRepository:
         "anti_repeat_similarity",
         "ignore_bots",
         "ignore_webhooks",
+        "levelup_channel_id",
     }
 
     def __init__(self, db_path: str) -> None:
@@ -40,7 +39,6 @@ class XpRepository:
     async def connect(self) -> None:
         if self._conn is not None:
             return
-
         self._conn = await aiosqlite.connect(self.db_path)
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA foreign_keys = ON")
@@ -50,10 +48,9 @@ class XpRepository:
         await run_migrations(self._conn)
 
     async def close(self) -> None:
-        if self._conn is None:
-            return
-        await self._conn.close()
-        self._conn = None
+        if self._conn is not None:
+            await self._conn.close()
+            self._conn = None
 
     async def ensure_guild_config(self, guild_id: int) -> None:
         config = build_default_guild_config(guild_id)
@@ -71,13 +68,14 @@ class XpRepository:
                 anti_repeat_similarity,
                 ignore_bots,
                 ignore_webhooks,
+                levelup_channel_id,
                 created_at,
                 updated_at
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 guild_id,
-                int(config.difficulty),
+                config.difficulty.value,
                 config.cooldown_seconds,
                 config.min_xp_per_message,
                 config.max_xp_per_message,
@@ -87,6 +85,7 @@ class XpRepository:
                 config.anti_repeat_similarity,
                 int(config.ignore_bots),
                 int(config.ignore_webhooks),
+                config.levelup_channel_id,
                 utc_now_iso(),
                 utc_now_iso(),
             ),
@@ -95,11 +94,7 @@ class XpRepository:
 
     async def get_guild_config(self, guild_id: int) -> GuildXpConfig:
         await self.ensure_guild_config(guild_id)
-        row = await self.connection.execute_fetchall(
-            "SELECT * FROM xp_guild_config WHERE guild_id = ?",
-            (guild_id,),
-        )
-        config_row = row[0]
+        row = (await self.connection.execute_fetchall("SELECT * FROM xp_guild_config WHERE guild_id = ?", (guild_id,)))[0]
         ignored_channels = await self.connection.execute_fetchall(
             "SELECT channel_id FROM xp_ignored_channels WHERE guild_id = ?",
             (guild_id,),
@@ -112,22 +107,27 @@ class XpRepository:
             "SELECT role_id FROM xp_ignored_roles WHERE guild_id = ?",
             (guild_id,),
         )
-
+        level_roles = await self.connection.execute_fetchall(
+            "SELECT level, role_id FROM xp_level_roles WHERE guild_id = ? ORDER BY level ASC",
+            (guild_id,),
+        )
         return GuildXpConfig(
             guild_id=guild_id,
-            difficulty=XpDifficulty(int(config_row["difficulty"])),
-            cooldown_seconds=int(config_row["cooldown_seconds"]),
-            min_xp_per_message=int(config_row["min_xp_per_message"]),
-            max_xp_per_message=int(config_row["max_xp_per_message"]),
-            min_message_length=int(config_row["min_message_length"]),
-            min_unique_words=int(config_row["min_unique_words"]),
-            anti_repeat_window_seconds=int(config_row["anti_repeat_window_seconds"]),
-            anti_repeat_similarity=float(config_row["anti_repeat_similarity"]),
-            ignore_bots=bool(config_row["ignore_bots"]),
-            ignore_webhooks=bool(config_row["ignore_webhooks"]),
-            ignored_channel_ids={int(row[0]) for row in ignored_channels},
-            ignored_category_ids={int(row[0]) for row in ignored_categories},
-            ignored_role_ids={int(row[0]) for row in ignored_roles},
+            difficulty=normalize_difficulty(row["difficulty"]),
+            cooldown_seconds=int(row["cooldown_seconds"]),
+            min_xp_per_message=int(row["min_xp_per_message"]),
+            max_xp_per_message=int(row["max_xp_per_message"]),
+            min_message_length=int(row["min_message_length"]),
+            min_unique_words=int(row["min_unique_words"]),
+            anti_repeat_window_seconds=int(row["anti_repeat_window_seconds"]),
+            anti_repeat_similarity=float(row["anti_repeat_similarity"]),
+            ignore_bots=bool(row["ignore_bots"]),
+            ignore_webhooks=bool(row["ignore_webhooks"]),
+            levelup_channel_id=int(row["levelup_channel_id"]) if row["levelup_channel_id"] is not None else None,
+            ignored_channel_ids={int(item[0]) for item in ignored_channels},
+            ignored_category_ids={int(item[0]) for item in ignored_categories},
+            ignored_role_ids={int(item[0]) for item in ignored_roles},
+            level_roles={int(item[0]): int(item[1]) for item in level_roles},
         )
 
     async def update_guild_config(self, guild_id: int, **fields: Any) -> None:
@@ -136,15 +136,13 @@ class XpRepository:
             raise ValueError(f"campos de config inválidos: {sorted(invalid)}")
         if not fields:
             return
-
         await self.ensure_guild_config(guild_id)
         payload = dict(fields)
-        if "difficulty" in payload and isinstance(payload["difficulty"], XpDifficulty):
-            payload["difficulty"] = int(payload["difficulty"])
+        if "difficulty" in payload:
+            payload["difficulty"] = normalize_difficulty(payload["difficulty"]).value
         for boolean_field in ("ignore_bots", "ignore_webhooks"):
             if boolean_field in payload:
                 payload[boolean_field] = int(bool(payload[boolean_field]))
-
         assignments = ", ".join(f"{key} = ?" for key in payload)
         values = list(payload.values()) + [utc_now_iso(), guild_id]
         await self.connection.execute(
@@ -154,11 +152,13 @@ class XpRepository:
         await self.connection.commit()
 
     async def set_ignored_target(self, table: str, column: str, guild_id: int, target_id: int, enabled: bool) -> None:
-        if table not in {"xp_ignored_channels", "xp_ignored_categories", "xp_ignored_roles"}:
+        valid = {
+            "xp_ignored_channels": "channel_id",
+            "xp_ignored_categories": "category_id",
+            "xp_ignored_roles": "role_id",
+        }
+        if valid.get(table) != column:
             raise ValueError("tabela de ignore inválida")
-        if column not in {"channel_id", "category_id", "role_id"}:
-            raise ValueError("coluna de ignore inválida")
-
         if enabled:
             await self.connection.execute(
                 f"INSERT OR IGNORE INTO {table}(guild_id, {column}) VALUES(?, ?)",
@@ -170,6 +170,21 @@ class XpRepository:
                 (guild_id, target_id),
             )
         await self.connection.commit()
+
+    async def set_level_role(self, guild_id: int, level: int, role_id: int) -> None:
+        await self.connection.execute(
+            "INSERT OR REPLACE INTO xp_level_roles(guild_id, level, role_id) VALUES(?, ?, ?)",
+            (guild_id, level, role_id),
+        )
+        await self.connection.commit()
+
+    async def remove_level_role(self, guild_id: int, level: int) -> bool:
+        cur = await self.connection.execute(
+            "DELETE FROM xp_level_roles WHERE guild_id = ? AND level = ?",
+            (guild_id, level),
+        )
+        await self.connection.commit()
+        return cur.rowcount > 0
 
     async def get_profile(self, guild_id: int, user_id: int) -> UserXpProfile:
         rows = await self.connection.execute_fetchall(
@@ -210,18 +225,20 @@ class XpRepository:
             try:
                 profile = await self.get_profile(guild_id, user_id)
                 old_total = profile.total_xp
-
                 last_awarded_at = parse_iso(profile.last_awarded_at)
-                if last_awarded_at and last_awarded_at > parse_iso(cooldown_cutoff_iso):
+                cooldown_cutoff = parse_iso(cooldown_cutoff_iso)
+                if last_awarded_at and cooldown_cutoff and last_awarded_at > cooldown_cutoff:
                     await conn.rollback()
                     return False, "cooldown", old_total, old_total
 
                 last_message_at = parse_iso(profile.last_message_at)
+                repeat_cutoff = parse_iso(repeat_cutoff_iso)
                 if (
                     profile.last_message_hash
                     and profile.last_message_hash == message_hash
                     and last_message_at
-                    and last_message_at > parse_iso(repeat_cutoff_iso)
+                    and repeat_cutoff
+                    and last_message_at > repeat_cutoff
                 ):
                     await conn.rollback()
                     return False, "repeat_db", old_total, old_total
@@ -262,7 +279,6 @@ class XpRepository:
                         awarded_at_iso,
                     ),
                 )
-
                 updated = await self.get_profile(guild_id, user_id)
                 await conn.commit()
                 return True, None, old_total, updated.total_xp
@@ -281,7 +297,6 @@ class XpRepository:
         reason: str | None,
     ) -> tuple[int, int]:
         now = utc_now_iso()
-
         async with self._tx_lock:
             conn = self.connection
             await conn.execute("BEGIN IMMEDIATE")
@@ -403,21 +418,7 @@ class XpRepository:
             """,
             (guild_id, limit),
         )
-        return [
-            UserXpProfile(
-                guild_id=int(row["guild_id"]),
-                user_id=int(row["user_id"]),
-                total_xp=int(row["total_xp"]),
-                message_count=int(row["message_count"]),
-                last_awarded_at=row["last_awarded_at"],
-                last_message_hash=row["last_message_hash"],
-                last_message_at=row["last_message_at"],
-                last_known_name=row["last_known_name"],
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
-            )
-            for row in rows
-        ]
+        return [self._row_to_profile(row) for row in rows]
 
     async def get_profiles_page(self, guild_id: int, offset: int, limit: int) -> list[UserXpProfile]:
         rows = await self.connection.execute_fetchall(
@@ -430,18 +431,18 @@ class XpRepository:
             """,
             (guild_id, limit, offset),
         )
-        return [
-            UserXpProfile(
-                guild_id=int(row["guild_id"]),
-                user_id=int(row["user_id"]),
-                total_xp=int(row["total_xp"]),
-                message_count=int(row["message_count"]),
-                last_awarded_at=row["last_awarded_at"],
-                last_message_hash=row["last_message_hash"],
-                last_message_at=row["last_message_at"],
-                last_known_name=row["last_known_name"],
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
-            )
-            for row in rows
-        ]
+        return [self._row_to_profile(row) for row in rows]
+
+    def _row_to_profile(self, row: aiosqlite.Row) -> UserXpProfile:
+        return UserXpProfile(
+            guild_id=int(row["guild_id"]),
+            user_id=int(row["user_id"]),
+            total_xp=int(row["total_xp"]),
+            message_count=int(row["message_count"]),
+            last_awarded_at=row["last_awarded_at"],
+            last_message_hash=row["last_message_hash"],
+            last_message_at=row["last_message_at"],
+            last_known_name=row["last_known_name"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )

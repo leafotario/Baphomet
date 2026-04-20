@@ -17,11 +17,9 @@ def build_leaderboard_embed(guild: discord.Guild, entries: list[LeaderboardEntry
         lines = []
         for entry in entries:
             lines.append(
-                f"**{entry.position}.** {discord.utils.escape_markdown(entry.display_name)} — "
-                f"nível **{entry.level}** — **{entry.total_xp:,} xp** — faltam **{entry.remaining_to_next:,} xp**".replace(",", ".")
+                f"**{entry.position}.** {discord.utils.escape_markdown(entry.display_name)} — nível **{entry.level}** — **{entry.total_xp:,} xp** — faltam **{entry.remaining_to_next:,} xp**".replace(",", ".")
             )
         embed.description = "\n".join(lines)
-
     total_pages = max(1, math.ceil(total_entries / page_size))
     embed.set_footer(text=f"página {page + 1}/{total_pages} • {total_entries} usuário(s) ranqueado(s)")
     return embed
@@ -58,8 +56,10 @@ class FullLeaderboardPaginator(discord.ui.View):
         if not current.entries and self.page > 0:
             self.page -= 1
             current = await self.service.get_leaderboard_page(self.guild, self.page, self.page_size)
-        embed = build_leaderboard_embed(self.guild, current.entries, current.page, current.total_entries, current.page_size)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.response.edit_message(
+            embed=build_leaderboard_embed(self.guild, current.entries, current.page, current.total_entries, current.page_size),
+            view=self,
+        )
 
 
 class RankCardView(discord.ui.View):
@@ -83,7 +83,6 @@ class RankCardView(discord.ui.View):
         if interaction.guild is None:
             await interaction.response.send_message("esse botão só funciona dentro de servidor.", ephemeral=True)
             return
-
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             entries = await self.service.get_leaderboard_entries(interaction.guild, 5)
@@ -96,7 +95,6 @@ class RankCardView(discord.ui.View):
                     except discord.HTTPException:
                         member = None
                 resolved.append((entry, member))
-
             image = await self.cards.render_leaderboard_card(guild=interaction.guild, entries=resolved)
             await interaction.followup.send(file=discord.File(image, filename="leaderboard.png"), ephemeral=True)
         except Exception:
@@ -125,7 +123,6 @@ class LeaderboardView(discord.ui.View):
         if interaction.guild is None:
             await interaction.response.send_message("esse botão só funciona dentro de servidor.", ephemeral=True)
             return
-
         paginator = FullLeaderboardPaginator(self.service, interaction.guild, interaction.user.id)
         embed = await paginator._embed()
         await interaction.response.send_message(embed=embed, view=paginator, ephemeral=True)

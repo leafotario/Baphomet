@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import IntEnum
+from enum import Enum
 from typing import Optional
 
 
-class XpDifficulty(IntEnum):
-    VERY_EASY = 1
-    EASY = 2
-    NORMAL = 3
-    HARD = 4
-    INSANE = 5
+class XpDifficulty(str, Enum):
+    VERY_EASY = "very_easy"
+    EASY = "easy"
+    NORMAL = "normal"
+    HARD = "hard"
+    INSANE = "insane"
 
     @property
     def label(self) -> str:
@@ -43,9 +43,11 @@ class GuildXpConfig:
     anti_repeat_similarity: float = 0.92
     ignore_bots: bool = True
     ignore_webhooks: bool = True
+    levelup_channel_id: Optional[int] = None
     ignored_channel_ids: set[int] = field(default_factory=set)
     ignored_category_ids: set[int] = field(default_factory=set)
     ignored_role_ids: set[int] = field(default_factory=set)
+    level_roles: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

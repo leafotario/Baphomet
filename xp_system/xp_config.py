@@ -5,13 +5,24 @@ from datetime import datetime, timezone
 
 from .xp_models import CurveTuning, GuildXpConfig, ProgressSnapshot, XpDifficulty
 
-
 CURVE_BY_DIFFICULTY: dict[XpDifficulty, CurveTuning] = {
     XpDifficulty.VERY_EASY: CurveTuning(quadratic=70, linear=50, multiplier=0.65),
     XpDifficulty.EASY: CurveTuning(quadratic=70, linear=50, multiplier=0.85),
     XpDifficulty.NORMAL: CurveTuning(quadratic=70, linear=50, multiplier=1.00),
     XpDifficulty.HARD: CurveTuning(quadratic=70, linear=50, multiplier=1.25),
     XpDifficulty.INSANE: CurveTuning(quadratic=70, linear=50, multiplier=1.60),
+}
+
+LEGACY_DIFFICULTY_MAP: dict[str, XpDifficulty] = {
+    "muito_facil": XpDifficulty.VERY_EASY,
+    "facil": XpDifficulty.EASY,
+    "easy": XpDifficulty.EASY,
+    "normal": XpDifficulty.NORMAL,
+    "dificil": XpDifficulty.HARD,
+    "hard": XpDifficulty.HARD,
+    "expert": XpDifficulty.INSANE,
+    "insano": XpDifficulty.INSANE,
+    "insane": XpDifficulty.INSANE,
 }
 
 URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
@@ -30,7 +41,10 @@ def utc_now_iso() -> str:
 def parse_iso(value: str | None) -> datetime | None:
     if not value:
         return None
-    return datetime.fromisoformat(value)
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def build_default_guild_config(guild_id: int) -> GuildXpConfig:
@@ -39,6 +53,14 @@ def build_default_guild_config(guild_id: int) -> GuildXpConfig:
 
 def curve_for(difficulty: XpDifficulty) -> CurveTuning:
     return CURVE_BY_DIFFICULTY[difficulty]
+
+
+def normalize_difficulty(raw: str | XpDifficulty | None) -> XpDifficulty:
+    if isinstance(raw, XpDifficulty):
+        return raw
+    if raw is None:
+        return XpDifficulty.NORMAL
+    return LEGACY_DIFFICULTY_MAP.get(str(raw).lower(), XpDifficulty.NORMAL)
 
 
 def xp_to_reach_level(level: int, difficulty: XpDifficulty) -> int:
