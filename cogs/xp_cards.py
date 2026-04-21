@@ -76,7 +76,7 @@ class XpCardRenderer:
         rank_text = f"#{snapshot.position}" if snapshot.position is not None else "Sem Posição"
         progress_text = f"Progresso {snapshot.xp_into_level}/{snapshot.xp_for_next_level} XP"
 
-        draw.text((285, 55), "Não Sei O Que", font=self._font(28, bold=True), fill=(220, 208, 255, 255
+        draw.text((285, 55), "Não Sei O Que", font=self._font(28, bold=True), fill=(220, 208, 255, 255))
         draw.text((285, 138), user_name, font=self._font(34, bold=True), fill=(245, 242, 255, 255))
         draw.text((285, 190), f"Nível {snapshot.level}", font=self._font(24, bold=True), fill=(189, 255, 220, 255))
         draw.text((435, 190), f"XP Total {snapshot.total_xp:,}".replace(",", "."), font=self._font(24), fill=(234, 228, 255, 255))
