@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Configurações E Curva De Progressão Do Sistema De XP."""
+
 import re
 from datetime import datetime, timezone
 

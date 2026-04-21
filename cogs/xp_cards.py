@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Cards Visuais Do Sistema De XP Do Baphomet."""
+
 import io
 from typing import Iterable
 
@@ -40,9 +42,9 @@ class XpCardRenderer:
                 avatar = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
                 avatar = ImageOps.fit(avatar, (size, size), method=Image.Resampling.LANCZOS)
             except Exception:
-                avatar = Image.new("RGBA", (size, size), (80, 70, 110, 255))
+                avatar = Image.new("RGBA", (size, size), (86, 64, 134, 255))
         else:
-            avatar = Image.new("RGBA", (size, size), (80, 70, 110, 255))
+            avatar = Image.new("RGBA", (size, size), (86, 64, 134, 255))
         mask = Image.new("L", (size, size), 0)
         ImageDraw.Draw(mask).ellipse((0, 0, size, size), fill=255)
         output = Image.new("RGBA", (size, size), (0, 0, 0, 0))
@@ -54,35 +56,35 @@ class XpCardRenderer:
 
     def _progress_bar(self, draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], ratio: float) -> None:
         x0, y0, x1, y1 = box
-        draw.rounded_rectangle(box, radius=14, fill=(44, 39, 63, 255))
+        draw.rounded_rectangle(box, radius=14, fill=(52, 43, 74, 255))
         filled = x0 + int((x1 - x0) * ratio)
         if filled > x0:
-            draw.rounded_rectangle((x0, y0, filled, y1), radius=14, fill=(143, 97, 255, 255))
+            draw.rounded_rectangle((x0, y0, filled, y1), radius=14, fill=(163, 112, 255, 255))
 
     async def render_rank_card(self, *, guild: discord.Guild, member: discord.Member | discord.User, snapshot: RankSnapshot) -> io.BytesIO:
         width, height = 1040, 320
-        canvas = Image.new("RGBA", (width, height), (18, 15, 29, 255))
+        canvas = Image.new("RGBA", (width, height), (16, 13, 25, 255))
         draw = ImageDraw.Draw(canvas)
-        draw.rounded_rectangle((24, 24, width - 24, height - 24), radius=28, fill=(27, 23, 41, 255), outline=(74, 63, 110, 255), width=2)
-        draw.rounded_rectangle((40, 40, 250, height - 40), radius=24, fill=(34, 29, 54, 255))
+        draw.rounded_rectangle((24, 24, width - 24, height - 24), radius=28, fill=(27, 23, 41, 255), outline=(110, 86, 171, 255), width=2)
+        draw.rounded_rectangle((40, 40, 250, height - 40), radius=24, fill=(39, 31, 63, 255))
 
         avatar = self._circle_avatar(await self._read_asset(member.display_avatar), 150)
         canvas.paste(avatar, (70, 85), avatar)
 
         guild_name = self._truncate(guild.name, 28)
         user_name = self._truncate(snapshot.display_name, 26)
-        rank_text = f"#{snapshot.position}" if snapshot.position is not None else "sem posição"
-        progress_text = f"{snapshot.xp_into_level}/{snapshot.xp_for_next_level} xp"
+        rank_text = f"#{snapshot.position}" if snapshot.position is not None else "Sem Posição"
+        progress_text = f"Progresso {snapshot.xp_into_level}/{snapshot.xp_for_next_level} XP"
 
-        draw.text((285, 55), "baphomet rank", font=self._font(28, bold=True), fill=(205, 191, 255, 255))
-        draw.text((285, 95), guild_name, font=self._font(18), fill=(150, 143, 180, 255))
+        draw.text((285, 55), "Baphomet Ascensão", font=self._font(28, bold=True), fill=(220, 208, 255, 255))
+        draw.text((285, 95), guild_name, font=self._font(18), fill=(170, 160, 198, 255))
         draw.text((285, 138), user_name, font=self._font(34, bold=True), fill=(245, 242, 255, 255))
-        draw.text((285, 190), f"nível {snapshot.level}", font=self._font(24, bold=True), fill=(180, 255, 216, 255))
-        draw.text((435, 190), f"xp total {snapshot.total_xp:,}".replace(",", "."), font=self._font(24), fill=(234, 228, 255, 255))
-        draw.text((760, 190), rank_text, font=self._font(30, bold=True), fill=(255, 215, 120, 255))
+        draw.text((285, 190), f"Nível {snapshot.level}", font=self._font(24, bold=True), fill=(189, 255, 220, 255))
+        draw.text((435, 190), f"XP Total {snapshot.total_xp:,}".replace(",", "."), font=self._font(24), fill=(234, 228, 255, 255))
+        draw.text((760, 190), rank_text, font=self._font(30, bold=True), fill=(255, 220, 145, 255))
         self._progress_bar(draw, (285, 235, 930, 260), snapshot.progress_ratio)
-        draw.text((285, 268), progress_text, font=self._font(18), fill=(188, 181, 214, 255))
-        draw.text((760, 268), f"faltam {snapshot.remaining_to_next:,} xp".replace(",", "."), font=self._font(18), fill=(188, 181, 214, 255))
+        draw.text((285, 268), progress_text, font=self._font(18), fill=(201, 193, 228, 255))
+        draw.text((735, 268), f"Faltam {snapshot.remaining_to_next:,} XP".replace(",", "."), font=self._font(18), fill=(201, 193, 228, 255))
 
         output = io.BytesIO()
         canvas.save(output, format="PNG")
@@ -102,17 +104,17 @@ class XpCardRenderer:
         height = max(300, top_padding + (row_height * max(1, len(rows))) + 40)
         canvas = Image.new("RGBA", (width, height), (16, 13, 25, 255))
         draw = ImageDraw.Draw(canvas)
-        draw.rounded_rectangle((22, 22, width - 22, height - 22), radius=30, fill=(26, 21, 40, 255), outline=(78, 66, 120, 255), width=2)
-        draw.text((55, 48), "leaderboard", font=self._font(34, bold=True), fill=(245, 240, 255, 255))
-        draw.text((55, 92), self._truncate(guild.name, 34), font=self._font(20), fill=(172, 164, 198, 255))
+        draw.rounded_rectangle((22, 22, width - 22, height - 22), radius=30, fill=(26, 21, 40, 255), outline=(110, 86, 171, 255), width=2)
+        draw.text((55, 48), "Hall Da Glória", font=self._font(34, bold=True), fill=(245, 240, 255, 255))
+        draw.text((55, 92), self._truncate(guild.name, 34), font=self._font(20), fill=(182, 173, 212, 255))
 
-        medal_colors = {1: (255, 215, 120, 255), 2: (192, 201, 216, 255), 3: (218, 161, 120, 255)}
+        medal_colors = {1: (255, 215, 120, 255), 2: (198, 207, 225, 255), 3: (222, 166, 120, 255)}
         if not rows:
-            draw.text((55, 180), "ninguém ganhou xp ainda neste servidor.", font=self._font(24), fill=(210, 200, 240, 255))
+            draw.text((55, 180), "Ainda Não Há Almas Ranqueadas Neste Servidor.", font=self._font(24), fill=(220, 210, 246, 255))
         else:
             for index, (entry, member) in enumerate(rows, start=1):
                 y = top_padding + ((index - 1) * row_height)
-                bg_color = (36, 30, 56, 255) if index <= 3 else (31, 26, 49, 255)
+                bg_color = (42, 33, 65, 255) if index <= 3 else (33, 28, 52, 255)
                 draw.rounded_rectangle((45, y, width - 45, y + 102), radius=24, fill=bg_color)
                 badge_color = medal_colors.get(index, (115, 106, 146, 255))
                 draw.rounded_rectangle((65, y + 18, 140, y + 84), radius=18, fill=badge_color)
@@ -122,9 +124,9 @@ class XpCardRenderer:
                 canvas.paste(avatar, (160, y + 15), avatar)
                 display_name = self._truncate(entry.display_name, 24)
                 draw.text((255, y + 24), display_name, font=self._font(24, bold=True), fill=(246, 242, 255, 255))
-                draw.text((255, y + 58), f"nível {entry.level} • {entry.total_xp:,} xp".replace(",", "."), font=self._font(18), fill=(197, 191, 221, 255))
+                draw.text((255, y + 58), f"Nível {entry.level} • {entry.total_xp:,} XP".replace(",", "."), font=self._font(18), fill=(206, 199, 229, 255))
                 self._progress_bar(draw, (700, y + 34, 1055, y + 58), entry.progress_ratio)
-                draw.text((700, y + 66), f"faltam {entry.remaining_to_next:,} xp".replace(",", "."), font=self._font(16), fill=(190, 183, 216, 255))
+                draw.text((700, y + 66), f"Faltam {entry.remaining_to_next:,} XP".replace(",", "."), font=self._font(16), fill=(198, 190, 223, 255))
 
         output = io.BytesIO()
         canvas.save(output, format="PNG")

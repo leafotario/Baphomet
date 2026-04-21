@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Persistência Assíncrona Do Sistema De XP."""
+
 import asyncio
 from typing import Any
 
@@ -33,7 +35,7 @@ class XpRepository:
     @property
     def connection(self) -> aiosqlite.Connection:
         if self._conn is None:
-            raise RuntimeError("xp repository ainda não foi conectado")
+            raise RuntimeError("XP Repository Ainda Não Foi Conectado")
         return self._conn
 
     async def connect(self) -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Comandos Públicos E Administrativos Do Sistema De XP Do Baphomet."""
+
 import logging
 import pathlib
 
@@ -19,11 +21,11 @@ DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "baphomet_xp.sqlite3"
 
 DIFFICULTY_CHOICES = [
-    app_commands.Choice(name="muito fácil", value=XpDifficulty.VERY_EASY.value),
-    app_commands.Choice(name="fácil", value=XpDifficulty.EASY.value),
-    app_commands.Choice(name="normal", value=XpDifficulty.NORMAL.value),
-    app_commands.Choice(name="difícil", value=XpDifficulty.HARD.value),
-    app_commands.Choice(name="insano", value=XpDifficulty.INSANE.value),
+    app_commands.Choice(name="🌸 Muito Fácil", value=XpDifficulty.VERY_EASY.value),
+    app_commands.Choice(name="✨ Fácil", value=XpDifficulty.EASY.value),
+    app_commands.Choice(name="🔥 Normal", value=XpDifficulty.NORMAL.value),
+    app_commands.Choice(name="⚔️ Difícil", value=XpDifficulty.HARD.value),
+    app_commands.Choice(name="👑 Insano", value=XpDifficulty.INSANE.value),
 ]
 
 GuildChannelParam = discord.TextChannel | discord.VoiceChannel | discord.StageChannel | discord.ForumChannel
@@ -66,7 +68,7 @@ class XpPublicCommands(commands.Cog):
             if channel is None:
                 return
             embed = discord.Embed(
-                description=f"🎉 {message.author.mention} subiu para o **nível {result.new_level}**!",
+                description=f"🔥 Magnífico! {message.author.mention} Acaba De Romper As Correntes E Alcançar O **Nível {result.new_level}**!",
                 color=discord.Color.from_rgb(120, 60, 240),
             )
             try:
@@ -76,16 +78,16 @@ class XpPublicCommands(commands.Cog):
         except Exception:
             self.logger.exception("falha ao processar ganho de xp", exc_info=True)
 
-    @app_commands.command(name="rank", description="mostra o rank individual de um usuário")
+    @app_commands.command(name="rank", description="Exibe O Rank De Uma Alma ✨")
     @app_commands.guild_only()
-    @app_commands.describe(member="membro que você quer consultar")
+    @app_commands.describe(member="Membro Que Você Quer Invocar No Rank")
     async def rank(self, interaction: discord.Interaction, member: discord.Member | None = None) -> None:
         if interaction.guild is None:
-            await interaction.response.send_message("esse comando só funciona dentro de servidor.", ephemeral=True)
+            await interaction.response.send_message("🕯️ Este Comando Só Pode Ser Usado Dentro De Um Servidor.", ephemeral=True)
             return
         target = member or interaction.user
         if getattr(target, "bot", False):
-            await interaction.response.send_message("bots não entram no sistema de xp.", ephemeral=True)
+            await interaction.response.send_message("🤖 Bots Não Participam Do Ritual De XP.", ephemeral=True)
             return
         await interaction.response.defer(thinking=True)
         snapshot = await self.service.get_rank_snapshot(interaction.guild, target)
@@ -94,22 +96,22 @@ class XpPublicCommands(commands.Cog):
             image = await self.cards.render_rank_card(guild=interaction.guild, member=target, snapshot=snapshot)
             await interaction.edit_original_response(attachments=[discord.File(image, filename="rank.png")], view=view)
         except Exception:
-            embed = discord.Embed(title="rank", color=discord.Color.dark_purple())
+            embed = discord.Embed(title="🔮 Rank De Prestígio", color=discord.Color.dark_purple())
             embed.description = (
                 f"**{snapshot.display_name}**\n"
-                f"nível **{snapshot.level}**\n"
-                f"xp total **{snapshot.total_xp:,}**\n"
-                f"progresso **{snapshot.xp_into_level}/{snapshot.xp_for_next_level}**\n"
-                f"posição **{snapshot.position or 'sem posição'}**"
+                f"Nível **{snapshot.level}**\n"
+                f"XP Total **{snapshot.total_xp:,}**\n"
+                f"Progresso **{snapshot.xp_into_level}/{snapshot.xp_for_next_level}**\n"
+                f"Posição **{snapshot.position or 'Sem Posição'}**"
             ).replace(",", ".")
             await interaction.edit_original_response(embed=embed, view=view)
         view.message = await interaction.original_response()
 
-    @app_commands.command(name="leaderboard", description="mostra o top 5 do servidor em imagem")
+    @app_commands.command(name="leaderboard", description="Exibe O Top 5 Da Glória 🏆")
     @app_commands.guild_only()
     async def leaderboard(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
-            await interaction.response.send_message("esse comando só funciona dentro de servidor.", ephemeral=True)
+            await interaction.response.send_message("🕯️ Este Comando Só Pode Ser Usado Dentro De Um Servidor.", ephemeral=True)
             return
         await interaction.response.defer(thinking=True)
         view = LeaderboardView(self.service)
@@ -133,7 +135,7 @@ class XpPublicCommands(commands.Cog):
         view.message = await interaction.original_response()
 
 
-class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="configurações e administração do sistema de xp"):
+class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Comandos De XP, Glória E Configuração ✨"):
     def __init__(self, bot: commands.Bot) -> None:
         super().__init__()
         self.bot = bot
@@ -141,140 +143,140 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="con
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.guild is None:
-            await interaction.response.send_message("esse comando só funciona dentro de servidor.", ephemeral=True)
+            await interaction.response.send_message("🕯️ Este Comando Só Pode Ser Usado Dentro De Um Servidor.", ephemeral=True)
             return False
         return True
 
-    @app_commands.command(name="difficulty", description="altera a dificuldade da curva de progressão")
+    @app_commands.command(name="difficulty", description="Define A Dificuldade Da Ascensão ⚙️")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.choices(difficulty=DIFFICULTY_CHOICES)
     async def difficulty(self, interaction: discord.Interaction, difficulty: app_commands.Choice[str]) -> None:
         config = await self.service.update_guild_config(interaction.guild.id, difficulty=XpDifficulty(difficulty.value))
-        await interaction.response.send_message(f"dificuldade atualizada para **{config.difficulty.label}**.", ephemeral=True)
+        await interaction.response.send_message(f"⚙️ Ritual Atualizado! A Dificuldade Agora Está Em **{config.difficulty.label}**.", ephemeral=True)
 
-    @app_commands.command(name="cooldown", description="altera o cooldown de ganho de xp por usuário")
+    @app_commands.command(name="cooldown", description="Define O Cooldown De XP ⏳")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def cooldown(self, interaction: discord.Interaction, seconds: app_commands.Range[int, 0, 3600]) -> None:
         config = await self.service.update_guild_config(interaction.guild.id, cooldown_seconds=seconds)
-        await interaction.response.send_message(f"cooldown atualizado para **{config.cooldown_seconds}s**.", ephemeral=True)
+        await interaction.response.send_message(f"⏳ Ritmo Ajustado! O Cooldown Agora É De **{config.cooldown_seconds}S**.", ephemeral=True)
 
-    @app_commands.command(name="xp-range", description="altera a faixa de xp recebida por mensagem")
+    @app_commands.command(name="xp-range", description="Define A Faixa De XP Por Mensagem ✨")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def xp_range(self, interaction: discord.Interaction, min_xp: app_commands.Range[int, 1, 1000], max_xp: app_commands.Range[int, 1, 1000]) -> None:
         if min_xp > max_xp:
-            await interaction.response.send_message("o mínimo não pode ser maior que o máximo.", ephemeral=True)
+            await interaction.response.send_message("⚠️ O Valor Mínimo Não Pode Ser Maior Que O Máximo.", ephemeral=True)
             return
         config = await self.service.update_guild_config(interaction.guild.id, min_xp_per_message=min_xp, max_xp_per_message=max_xp)
-        await interaction.response.send_message(f"faixa de xp atualizada para **{config.min_xp_per_message}-{config.max_xp_per_message}**.", ephemeral=True)
+        await interaction.response.send_message(f"✨ Faixa Ritualística Ajustada Para **{config.min_xp_per_message}-{config.max_xp_per_message} XP**.", ephemeral=True)
 
-    @app_commands.command(name="ignore-channel", description="ativa ou desativa ignore de um canal")
+    @app_commands.command(name="ignore-channel", description="Ignora Ou Libera Um Canal 🚪")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def ignore_channel(self, interaction: discord.Interaction, channel: GuildChannelParam, enabled: bool) -> None:
         await self.service.set_ignored_channel(interaction.guild.id, channel.id, enabled)
-        status = "ignorado" if enabled else "removido da lista de ignore"
-        await interaction.response.send_message(f"canal **{channel.name}**: **{status}**.", ephemeral=True)
+        status = "Ignorado Pelo Ritual" if enabled else "Liberado Para Ganhar XP"
+        await interaction.response.send_message(f"📍 Canal **{channel.name}**: **{status}**.", ephemeral=True)
 
-    @app_commands.command(name="ignore-category", description="ativa ou desativa ignore de uma categoria")
+    @app_commands.command(name="ignore-category", description="Ignora Ou Libera Uma Categoria 🗂️")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def ignore_category(self, interaction: discord.Interaction, category: discord.CategoryChannel, enabled: bool) -> None:
         await self.service.set_ignored_category(interaction.guild.id, category.id, enabled)
-        status = "ignorada" if enabled else "removida da lista de ignore"
-        await interaction.response.send_message(f"categoria **{category.name}**: **{status}**.", ephemeral=True)
+        status = "Ignorada Pelo Ritual" if enabled else "Liberada Para Ganhar XP"
+        await interaction.response.send_message(f"🗂️ Categoria **{category.name}**: **{status}**.", ephemeral=True)
 
-    @app_commands.command(name="ignore-role", description="ativa ou desativa ignore de um cargo")
+    @app_commands.command(name="ignore-role", description="Ignora Ou Libera Um Cargo 🎭")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def ignore_role(self, interaction: discord.Interaction, role: discord.Role, enabled: bool) -> None:
         await self.service.set_ignored_role(interaction.guild.id, role.id, enabled)
-        status = "ignorado" if enabled else "removido da lista de ignore"
-        await interaction.response.send_message(f"cargo {role.mention}: **{status}**.", ephemeral=True)
+        status = "Ignorado Pelo Ritual" if enabled else "Liberado Para Ganhar XP"
+        await interaction.response.send_message(f"🎭 Cargo {role.mention}: **{status}**.", ephemeral=True)
 
-    @app_commands.command(name="give", description="adiciona xp manualmente para um membro")
+    @app_commands.command(name="give", description="Concede XP Manualmente ✨")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def give(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 1_000_000], reason: str | None = None) -> None:
         result = await self.service.give_xp(interaction.guild, member, amount, interaction.user.id, reason)
         await self.service.grant_level_rewards(member, result.new_level)
         await interaction.response.send_message(
-            f"{amount:,} xp adicionados para **{member.display_name}**. nível: **{result.old_level} → {result.new_level}**.".replace(",", "."),
+            f"✨ Energia Concedida! **{member.display_name}** Recebeu **{amount:,} XP** E Foi De **Nível {result.old_level}** Para **Nível {result.new_level}**.".replace(",", "."),
             ephemeral=True,
         )
 
-    @app_commands.command(name="remove", description="remove xp manualmente de um membro")
+    @app_commands.command(name="remove", description="Remove XP Manualmente 🩸")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def remove(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 1_000_000], reason: str | None = None) -> None:
         result = await self.service.remove_xp(interaction.guild, member, amount, interaction.user.id, reason)
         await interaction.response.send_message(
-            f"{amount:,} xp removidos de **{member.display_name}**. nível: **{result.old_level} → {result.new_level}**.".replace(",", "."),
+            f"🩸 Energia Drenada! **{amount:,} XP** Foram Removidos De **{member.display_name}**. Agora A Alma Foi De **Nível {result.old_level}** Para **Nível {result.new_level}**.".replace(",", "."),
             ephemeral=True,
         )
 
-    @app_commands.command(name="reset", description="zera o xp de um membro")
+    @app_commands.command(name="reset", description="Zera O XP De Um Membro ☠️")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def reset(self, interaction: discord.Interaction, member: discord.Member, reason: str | None = None) -> None:
         result = await self.service.reset_xp(interaction.guild, member, interaction.user.id, reason)
         await interaction.response.send_message(
-            f"xp de **{member.display_name}** resetado. total removido: **{abs(result.delta_xp):,} xp**.".replace(",", "."),
+            f"☠️ O Ritual Foi Reiniciado! **{member.display_name}** Teve O XP Zerado E Perdeu **{abs(result.delta_xp):,} XP** No Processo.".replace(",", "."),
             ephemeral=True,
         )
 
-    @app_commands.command(name="config", description="mostra a configuração atual do sistema de xp")
+    @app_commands.command(name="config", description="Mostra A Configuração Atual ⚙️")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def config(self, interaction: discord.Interaction) -> None:
         config = await self.service.get_guild_config(interaction.guild.id)
-        levelup = f"<#{config.levelup_channel_id}>" if config.levelup_channel_id else "mesmo canal da mensagem"
-        level_roles = "\n".join(f"nível {level} → <@&{role_id}>" for level, role_id in sorted(config.level_roles.items())) or "nenhum"
-        embed = discord.Embed(title="configuração de xp", color=discord.Color.dark_purple())
+        levelup = f"<#{config.levelup_channel_id}>" if config.levelup_channel_id else "Mesmo Canal Da Mensagem"
+        level_roles = "\n".join(f"Nível {level} → <@&{role_id}>" for level, role_id in sorted(config.level_roles.items())) or "Nenhum"
+        embed = discord.Embed(title="⚙️ Ritual De XP", color=discord.Color.dark_purple())
         embed.description = (
-            f"**dificuldade:** {config.difficulty.label}\n"
-            f"**cooldown:** {config.cooldown_seconds}s\n"
-            f"**faixa de xp:** {config.min_xp_per_message}-{config.max_xp_per_message}\n"
-            f"**mín. de caracteres:** {config.min_message_length}\n"
-            f"**mín. de palavras únicas:** {config.min_unique_words}\n"
-            f"**janela anti-repeat:** {config.anti_repeat_window_seconds}s\n"
-            f"**similaridade anti-repeat:** {config.anti_repeat_similarity:.2f}\n"
-            f"**canal de level up:** {levelup}\n"
-            f"**canais ignorados:** {len(config.ignored_channel_ids)}\n"
-            f"**categorias ignoradas:** {len(config.ignored_category_ids)}\n"
-            f"**cargos ignorados:** {len(config.ignored_role_ids)}\n"
-            f"**cargos por nível:**\n{level_roles}"
+            f"**Dificuldade:** {config.difficulty.label}\n"
+            f"**Cooldown:** {config.cooldown_seconds}S\n"
+            f"**Faixa De XP:** {config.min_xp_per_message}-{config.max_xp_per_message}\n"
+            f"**Mín. De Caracteres:** {config.min_message_length}\n"
+            f"**Mín. De Palavras Únicas:** {config.min_unique_words}\n"
+            f"**Janela Anti-Repeat:** {config.anti_repeat_window_seconds}S\n"
+            f"**Similaridade Anti-Repeat:** {config.anti_repeat_similarity:.2f}\n"
+            f"**Canal De Level Up:** {levelup}\n"
+            f"**Canais Ignorados:** {len(config.ignored_channel_ids)}\n"
+            f"**Categorias Ignoradas:** {len(config.ignored_category_ids)}\n"
+            f"**Cargos Ignorados:** {len(config.ignored_role_ids)}\n"
+            f"**Cargos Por Nível:**\n{level_roles}"
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="levelup-channel", description="define o canal dos anúncios de level up")
+    @app_commands.command(name="levelup-channel", description="Define O Canal Dos Avisos De Level Up 📣")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def levelup_channel(self, interaction: discord.Interaction, channel: discord.TextChannel | None = None) -> None:
         config = await self.service.update_guild_config(interaction.guild.id, levelup_channel_id=channel.id if channel else None)
         if config.levelup_channel_id:
-            await interaction.response.send_message(f"canal de level up definido para <#{config.levelup_channel_id}>.", ephemeral=True)
+            await interaction.response.send_message(f"📣 Os Avisos De Ascensão Agora Ecoam Em <#{config.levelup_channel_id}>.", ephemeral=True)
         else:
-            await interaction.response.send_message("anúncios de level up voltarão para o mesmo canal da mensagem.", ephemeral=True)
+            await interaction.response.send_message("📣 Os Avisos De Ascensão Voltarão Para O Mesmo Canal Da Mensagem.", ephemeral=True)
 
-    @app_commands.command(name="level-role-add", description="configura um cargo automático para um nível")
+    @app_commands.command(name="level-role-add", description="Liga Um Cargo A Um Nível 👑")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def level_role_add(self, interaction: discord.Interaction, level: app_commands.Range[int, 1, 1000], role: discord.Role) -> None:
         await self.service.set_level_role(interaction.guild.id, level, role.id)
-        await interaction.response.send_message(f"cargo {role.mention} configurado para o nível **{level}**.", ephemeral=True)
+        await interaction.response.send_message(f"👑 O Cargo {role.mention} Agora Será Concedido No **Nível {level}**.", ephemeral=True)
 
-    @app_commands.command(name="level-role-remove", description="remove o cargo automático de um nível")
+    @app_commands.command(name="level-role-remove", description="Desliga O Cargo Automático De Um Nível 🚫")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def level_role_remove(self, interaction: discord.Interaction, level: app_commands.Range[int, 1, 1000]) -> None:
         _config, removed = await self.service.remove_level_role(interaction.guild.id, level)
         if not removed:
-            await interaction.response.send_message(f"não havia cargo configurado para o nível **{level}**.", ephemeral=True)
+            await interaction.response.send_message(f"⚠️ Nenhum Cargo Automático Estava Ligado Ao **Nível {level}**.", ephemeral=True)
             return
-        await interaction.response.send_message(f"cargo automático do nível **{level}** removido.", ephemeral=True)
+        await interaction.response.send_message(f"🚫 O Cargo Automático Do **Nível {level}** Foi Desfeito.", ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:

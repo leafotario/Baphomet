@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Modelos Do Sistema De XP Do Baphomet."""
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -15,11 +17,11 @@ class XpDifficulty(str, Enum):
     @property
     def label(self) -> str:
         return {
-            XpDifficulty.VERY_EASY: "muito fácil",
-            XpDifficulty.EASY: "fácil",
-            XpDifficulty.NORMAL: "normal",
-            XpDifficulty.HARD: "difícil",
-            XpDifficulty.INSANE: "insano",
+            XpDifficulty.VERY_EASY: "Muito Fácil",
+            XpDifficulty.EASY: "Fácil",
+            XpDifficulty.NORMAL: "Normal",
+            XpDifficulty.HARD: "Difícil",
+            XpDifficulty.INSANE: "Insano",
         }[self]
 
 

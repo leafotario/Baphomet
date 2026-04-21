@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Regra De Negócio Do Sistema De XP Do Baphomet."""
+
 import asyncio
 import difflib
 import hashlib
@@ -181,7 +183,7 @@ class XpService:
             role = member.guild.get_role(role_id)
             if role and role not in member.roles:
                 try:
-                    await member.add_roles(role, reason=f"XP: nível {level} atingido")
+                    await member.add_roles(role, reason=f"XP: Nível {level} Alcançado")
                     granted.append(role)
                 except (discord.Forbidden, discord.HTTPException):
                     continue
@@ -212,7 +214,7 @@ class XpService:
         for index, profile in enumerate(profiles, start=1):
             progress = build_progress_snapshot(profile.total_xp, config.difficulty)
             member = guild.get_member(profile.user_id)
-            display_name = profile.last_known_name or (member.display_name if member else f"usuário {profile.user_id}")
+            display_name = profile.last_known_name or (member.display_name if member else f"Alma {profile.user_id}")
             entries.append(
                 LeaderboardEntry(
                     position=index,
@@ -239,7 +241,7 @@ class XpService:
                 LeaderboardEntry(
                     position=index,
                     user_id=profile.user_id,
-                    display_name=profile.last_known_name or f"usuário {profile.user_id}",
+                    display_name=profile.last_known_name or f"Alma {profile.user_id}",
                     total_xp=profile.total_xp,
                     level=progress.level,
                     remaining_to_next=progress.remaining_to_next,

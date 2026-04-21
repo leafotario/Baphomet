@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Migrações E Importação De Dados Legados Do Sistema De XP."""
+
 import json
 import pathlib
 
