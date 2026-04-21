@@ -196,27 +196,6 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
         status = "Ignorado Pelo Ritual" if enabled else "Liberado Para Ganhar XP"
         await interaction.response.send_message(f"🎭 Cargo {role.mention}: **{status}**.", ephemeral=True)
 
-    @app_commands.command(name="give", description="Concede XP Manualmente ✨")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def give(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 1_000_000], reason: str | None = None) -> None:
-        result = await self.service.give_xp(interaction.guild, member, amount, interaction.user.id, reason)
-        await self.service.grant_level_rewards(member, result.new_level)
-        await interaction.response.send_message(
-            f"✨ Energia Concedida! **{member.display_name}** Recebeu **{amount:,} XP** E Foi De **Nível {result.old_level}** Para **Nível {result.new_level}**.".replace(",", "."),
-            ephemeral=True,
-        )
-
-    @app_commands.command(name="remove", description="Remove XP Manualmente 🩸")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def remove(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 1_000_000], reason: str | None = None) -> None:
-        result = await self.service.remove_xp(interaction.guild, member, amount, interaction.user.id, reason)
-        await interaction.response.send_message(
-            f"🩸 Energia Drenada! **{amount:,} XP** Foram Removidos De **{member.display_name}**. Agora A Alma Foi De **Nível {result.old_level}** Para **Nível {result.new_level}**.".replace(",", "."),
-            ephemeral=True,
-        )
-
     @app_commands.command(name="reset", description="Zera O XP De Um Membro ☠️")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
