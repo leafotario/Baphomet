@@ -1,561 +1,133 @@
 from __future__ import annotations
 
-import asyncio
-import io
-import json
-from functools import lru_cache
-from pathlib import Path
-from typing import Optional
+"""Cards Visuais Do Sistema De XP Do Baphomet."""
 
-import aiohttp
+import io
+from typing import Iterable
+
 import discord
-from discord import app_commands
-from discord.ext import commands
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
+from .xp_models import LeaderboardEntry, RankSnapshot
 
-# ============================================================
-# caminhos / arquivos
-# ============================================================
-
-BASE_DIR = Path(__file__).resolve().parent
-ASSETS_DIR = BASE_DIR / "assets"
-FONTS_DIR = ASSETS_DIR / "fonts"
-DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-# coloque seus .ttf aqui:
-# assets/fonts/Montserrat-Bold.ttf
-# assets/fonts/Montserrat-Regular.ttf
-BOLD_FONT_PATH = FONTS_DIR / "Montserrat-Bold.ttf"
-REGULAR_FONT_PATH = FONTS_DIR / "Montserrat-Regular.ttf"
-
-COLOR_STORE_FILE = DATA_DIR / "rank_colors.json"
+FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
 
-# ============================================================
-# layout do card
-# ============================================================
+class XpCardRenderer:
+    def __init__(self, *, font_regular_path: str | None = FONT_REG, font_bold_path: str | None = FONT_BOLD) -> None:
+        self.font_regular_path = font_regular_path
+        self.font_bold_path = font_bold_path or font_regular_path
 
-CARD_WIDTH = 750
-CARD_HEIGHT = 250
-
-# fundo externo do mockup (o verde) -> será customizável por servidor
-DEFAULT_BACKGROUND_HEX = "#74CC00"
-
-# painel interno roxo escuro
-PANEL_LEFT = 17
-PANEL_TOP = 12
-PANEL_RIGHT = 734
-PANEL_BOTTOM = 235
-PANEL_RADIUS = 34
-
-# avatar
-AVATAR_RING_X = 50
-AVATAR_RING_Y = 39
-AVATAR_RING_SIZE = 172
-AVATAR_PADDING = 14
-AVATAR_SIZE = AVATAR_RING_SIZE - (AVATAR_PADDING * 2)
-
-# área de conteúdo à direita
-CONTENT_X = 250
-USERNAME_Y = 42
-LEVEL_Y = 50
-
-# no mockup, a barra fica entre o nome e o texto do xp
-BAR_X = 249
-BAR_Y = 106
-BAR_WIDTH = 403
-BAR_HEIGHT = 39
-BAR_RADIUS = BAR_HEIGHT // 2
-
-XP_Y = 176
-
-# cores fixas do estilo do card
-PANEL_COLOR = (43, 9, 52, 255)
-TEXT_PRIMARY = (255, 255, 255, 255)
-TEXT_SECONDARY = (235, 235, 235, 255)
-AVATAR_RING_COLOR = (226, 226, 226, 255)
-BAR_BG_COLOR = (226, 226, 226, 255)
-BAR_FILL_COLOR = (203, 108, 230, 255)
-
-PLACEHOLDER_AVATAR_BG = (24, 24, 24, 255)
-PLACEHOLDER_AVATAR_FG = (235, 235, 235, 255)
-
-
-# ============================================================
-# choices do /setcolor
-# ============================================================
-
-COLOR_CHOICES = [
-    app_commands.Choice(name="verde neon", value="#74CC00"),
-    app_commands.Choice(name="blurple", value="#5865F2"),
-    app_commands.Choice(name="vermelho carmesim", value="#DC143C"),
-    app_commands.Choice(name="esmeralda", value="#2ECC71"),
-    app_commands.Choice(name="ouro", value="#F1C40F"),
-    app_commands.Choice(name="azul meia-noite", value="#191970"),
-    app_commands.Choice(name="coral", value="#FF7F50"),
-    app_commands.Choice(name="rosa neon", value="#FF4FD8"),
-    app_commands.Choice(name="turquesa", value="#1ABC9C"),
-    app_commands.Choice(name="laranja queimado", value="#E67E22"),
-    app_commands.Choice(name="cinza grafite", value="#2F3136"),
-    app_commands.Choice(name="roxo arcano", value="#8E44AD"),
-]
-
-
-# ============================================================
-# helpers de fonte / máscara
-# ============================================================
-
-@lru_cache(maxsize=64)
-def load_ttf_font(font_path: str, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    """
-    carrega fonte ttf com cache.
-    se o arquivo não existir, cai para a fonte padrão do pillow.
-    """
-    try:
-        return ImageFont.truetype(font_path, size=size)
-    except OSError:
+    def _font(self, size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+        path = self.font_bold_path if bold else self.font_regular_path
+        if path:
+            try:
+                return ImageFont.truetype(path, size=size)
+            except OSError:
+                pass
         return ImageFont.load_default()
 
-
-@lru_cache(maxsize=8)
-def make_circle_mask(size: int) -> Image.Image:
-    """
-    cria uma máscara circular em tons de cinza (L).
-    branco = visível, preto = transparente.
-    """
-    mask = Image.new("L", (size, size), 0)
-    draw = ImageDraw.Draw(mask)
-    draw.ellipse((0, 0, size - 1, size - 1), fill=255)
-    return mask
-
-
-# ============================================================
-# helpers de persistência / cor
-# ============================================================
-
-def save_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as fp:
-        json.dump(data, fp, ensure_ascii=False, indent=2)
-
-
-def load_json(path: Path) -> dict:
-    if not path.exists():
-        return {}
-
-    try:
-        with path.open("r", encoding="utf-8") as fp:
-            data = json.load(fp)
-            return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
-    """
-    converte '#RRGGBB' ou 'RRGGBB' para (R, G, B).
-    também aceita formato curto '#RGB'.
-    """
-    value = hex_color.strip().lstrip("#")
-
-    if len(value) == 3:
-        value = "".join(char * 2 for char in value)
-
-    if len(value) != 6:
-        raise ValueError(f"hex inválido: {hex_color!r}")
-
-    try:
-        return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
-    except ValueError as exc:
-        raise ValueError(f"hex inválido: {hex_color!r}") from exc
-
-
-class GuildColorStore:
-    """
-    storage simples em json:
-    { "guild_id": "#RRGGBB" }
-    """
-
-    def __init__(self, path: Path):
-        self.path = path
-        self._data: dict[str, str] = load_json(path)
-        self._lock = asyncio.Lock()
-
-    def get_hex(self, guild_id: int) -> str:
-        return self._data.get(str(guild_id), DEFAULT_BACKGROUND_HEX)
-
-    async def set_hex(self, guild_id: int, hex_color: str) -> None:
-        async with self._lock:
-            self._data[str(guild_id)] = hex_color.upper()
-            await asyncio.to_thread(save_json, self.path, self._data.copy())
-
-
-# ============================================================
-# helpers de imagem
-# ============================================================
-
-async def download_avatar_bytes(session: aiohttp.ClientSession, url: str) -> Optional[bytes]:
-    """
-    baixa o avatar em memória.
-    retorna None se falhar, para o renderer usar placeholder.
-    """
-    try:
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                return None
-            return await resp.read()
-    except aiohttp.ClientError:
-        return None
-    except asyncio.TimeoutError:
-        return None
-
-
-def truncate_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_width: int) -> str:
-    """
-    corta o texto com reticências se exceder a largura disponível.
-    """
-    if draw.textlength(text, font=font) <= max_width:
-        return text
-
-    ellipsis = "..."
-    while text and draw.textlength(text + ellipsis, font=font) > max_width:
-        text = text[:-1]
-
-    return (text + ellipsis) if text else ellipsis
-
-
-def make_placeholder_avatar(username: str) -> Image.Image:
-    """
-    gera um avatar placeholder circular com a inicial do usuário.
-    """
-    img = Image.new("RGBA", (AVATAR_SIZE, AVATAR_SIZE), PLACEHOLDER_AVATAR_BG)
-    draw = ImageDraw.Draw(img)
-
-    initial = (username.strip()[:1] or "?").upper()
-    font = load_ttf_font(str(BOLD_FONT_PATH), 64)
-
-    # centraliza a letra no avatar placeholder
-    draw.text(
-        (AVATAR_SIZE // 2, AVATAR_SIZE // 2),
-        initial,
-        font=font,
-        fill=PLACEHOLDER_AVATAR_FG,
-        anchor="mm",
-    )
-
-    mask = make_circle_mask(AVATAR_SIZE).copy()
-    img.putalpha(mask)
-    return img
-
-
-def prepare_avatar_image(avatar_bytes: Optional[bytes], username: str) -> Image.Image:
-    """
-    abre o avatar, redimensiona, recorta em círculo e devolve RGBA pronto.
-    """
-    if avatar_bytes is None:
-        return make_placeholder_avatar(username)
-
-    try:
-        avatar = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
-        avatar = ImageOps.fit(
-            avatar,
-            (AVATAR_SIZE, AVATAR_SIZE),
-            method=Image.Resampling.LANCZOS,
-        )
-    except Exception:
-        return make_placeholder_avatar(username)
-
-    mask = make_circle_mask(AVATAR_SIZE).copy()
-    avatar.putalpha(mask)
-    return avatar
-
-
-def render_rank_card_sync(
-    avatar_bytes: Optional[bytes],
-    username: str,
-    discriminator: Optional[str],
-    current_xp: int,
-    max_xp: int,
-    level: int,
-    background_color: tuple[int, int, int],
-) -> bytes:
-    """
-    renderiza o card de rank de forma síncrona.
-    essa função roda dentro de asyncio.to_thread.
-    """
-    bg_rgba = (*background_color, 255)
-    canvas = Image.new("RGBA", (CARD_WIDTH, CARD_HEIGHT), bg_rgba)
-    draw = ImageDraw.Draw(canvas)
-
-    # painel roxo interno com cantos arredondados
-    draw.rounded_rectangle(
-        (PANEL_LEFT, PANEL_TOP, PANEL_RIGHT, PANEL_BOTTOM),
-        radius=PANEL_RADIUS,
-        fill=PANEL_COLOR,
-    )
-
-    # borda circular do avatar
-    avatar_ring_box = (
-        AVATAR_RING_X,
-        AVATAR_RING_Y,
-        AVATAR_RING_X + AVATAR_RING_SIZE,
-        AVATAR_RING_Y + AVATAR_RING_SIZE,
-    )
-    draw.ellipse(avatar_ring_box, fill=AVATAR_RING_COLOR)
-
-    # avatar circular por cima da borda
-    avatar_img = prepare_avatar_image(avatar_bytes, username)
-    canvas.alpha_composite(
-        avatar_img,
-        (AVATAR_RING_X + AVATAR_PADDING, AVATAR_RING_Y + AVATAR_PADDING),
-    )
-
-    # fontes
-    username_font = load_ttf_font(str(BOLD_FONT_PATH), 31)
-    level_font = load_ttf_font(str(BOLD_FONT_PATH), 22)
-    xp_font = load_ttf_font(str(REGULAR_FONT_PATH), 26)
-
-    # texto do level, alinhado à direita
-    level_text = f"LEVEL {level}"
-    level_bbox = draw.textbbox((0, 0), level_text, font=level_font)
-    level_width = level_bbox[2] - level_bbox[0]
-    level_x = PANEL_RIGHT - 28 - level_width
-
-    draw.text(
-        (level_x, LEVEL_Y),
-        level_text,
-        font=level_font,
-        fill=TEXT_PRIMARY,
-    )
-
-    # username + discriminator opcional
-    display_name = username.strip() or "usuário"
-    if discriminator and discriminator != "0":
-        display_name = f"{display_name}#{discriminator}"
-
-    # evita o nome invadir a área do "LEVEL"
-    max_name_width = max(80, level_x - CONTENT_X - 18)
-    display_name = truncate_text(draw, display_name, username_font, max_name_width)
-
-    draw.text(
-        (CONTENT_X, USERNAME_Y),
-        display_name,
-        font=username_font,
-        fill=TEXT_PRIMARY,
-    )
-
-    # barra de progresso
-    # ratio é limitado entre 0.0 e 1.0 para evitar overflow visual
-    safe_current_xp = max(0, current_xp)
-    safe_max_xp = max(0, max_xp)
-    ratio = 0.0 if safe_max_xp <= 0 else min(max(safe_current_xp / safe_max_xp, 0.0), 1.0)
-
-    # fundo da barra
-    draw.rounded_rectangle(
-        (BAR_X, BAR_Y, BAR_X + BAR_WIDTH, BAR_Y + BAR_HEIGHT),
-        radius=BAR_RADIUS,
-        fill=BAR_BG_COLOR,
-    )
-
-    # preenchimento da barra
-    # para manter o canto esquerdo arredondado de forma bonita, a gente:
-    # 1) desenha uma barra cheia arredondada
-    # 2) recorta apenas a largura correspondente ao ratio
-    fill_width = int(round(BAR_WIDTH * ratio))
-    if fill_width > 0:
-        full_fill = Image.new("RGBA", (BAR_WIDTH, BAR_HEIGHT), (0, 0, 0, 0))
-        fill_draw = ImageDraw.Draw(full_fill)
-        fill_draw.rounded_rectangle(
-            (0, 0, BAR_WIDTH - 1, BAR_HEIGHT - 1),
-            radius=BAR_RADIUS,
-            fill=BAR_FILL_COLOR,
-        )
-
-        cropped_fill = full_fill.crop((0, 0, fill_width, BAR_HEIGHT))
-        canvas.alpha_composite(cropped_fill, (BAR_X, BAR_Y))
-
-    # contador de xp
-    # se quiser no formato "120 / 500 XP", é só trocar a string abaixo.
-    xp_text = f"{safe_current_xp}/{safe_max_xp}XP"
-    draw.text(
-        (CONTENT_X, XP_Y),
-        xp_text,
-        font=xp_font,
-        fill=TEXT_PRIMARY,
-    )
-
-    # exporta para bytes em memória, sem salvar no disco
-    output = io.BytesIO()
-    canvas.save(output, format="PNG", optimize=True)
-    output.seek(0)
-    return output.getvalue()
-
-
-async def build_rank_file(
-    session: aiohttp.ClientSession,
-    avatar_url: str,
-    username: str,
-    discriminator: Optional[str],
-    current_xp: int,
-    max_xp: int,
-    level: int,
-    background_color: tuple[int, int, int],
-) -> discord.File:
-    """
-    função auxiliar assíncrona pedida no enunciado.
-    baixa o avatar e despacha o render do pillow para uma thread.
-    """
-    avatar_bytes = await download_avatar_bytes(session, avatar_url)
-
-    png_bytes = await asyncio.to_thread(
-        render_rank_card_sync,
-        avatar_bytes,
-        username,
-        discriminator,
-        current_xp,
-        max_xp,
-        level,
-        background_color,
-    )
-
-    buffer = io.BytesIO(png_bytes)
-    buffer.seek(0)
-    return discord.File(buffer, filename="rank_card.png")
-
-
-# ============================================================
-# cog
-# ============================================================
-
-class RankCardCog(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-        self.color_store = GuildColorStore(COLOR_STORE_FILE)
-        self.http_session: Optional[aiohttp.ClientSession] = None
-
-    async def get_session(self) -> aiohttp.ClientSession:
-        if self.http_session is None or self.http_session.closed:
-            timeout = aiohttp.ClientTimeout(total=10)
-            self.http_session = aiohttp.ClientSession(timeout=timeout)
-        return self.http_session
-
-    def cog_unload(self) -> None:
-        if self.http_session and not self.http_session.closed:
-            asyncio.create_task(self.http_session.close())
-
-    @app_commands.command(name="setcolor", description="define a cor de fundo do card de rank deste servidor")
-    @app_commands.guild_only()
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.describe(nova_cor="escolha uma cor pré-definida para o fundo do card")
-    @app_commands.choices(nova_cor=COLOR_CHOICES)
-    async def setcolor(
-        self,
-        interaction: discord.Interaction,
-        nova_cor: app_commands.Choice[str],
-    ) -> None:
-        """
-        salva a cor escolhida para o guild_id atual.
-        """
-        if interaction.guild_id is None:
-            await interaction.response.send_message(
-                "esse comando só pode ser usado dentro de um servidor.",
-                ephemeral=True,
-            )
-            return
-
-        await self.color_store.set_hex(interaction.guild_id, nova_cor.value)
-
-        await interaction.response.send_message(
-            f"cor do card atualizada para **{nova_cor.name}** (`{nova_cor.value}`).",
-            ephemeral=True,
-        )
-
-    @app_commands.command(name="rank", description="gera o card de rank")
-    @app_commands.guild_only()
-    @app_commands.describe(
-        usuario="usuário alvo do card",
-        current_xp="xp atual",
-        max_xp="xp máximo do nível",
-        level="nível atual",
-    )
-    async def rank(
-        self,
-        interaction: discord.Interaction,
-        current_xp: int,
-        max_xp: int,
-        level: int,
-        usuario: Optional[discord.Member] = None,
-    ) -> None:
-        """
-        comando de exemplo para testar o renderer.
-        no seu projeto real, você pode substituir current_xp/max_xp/level
-        pelos valores vindos do seu banco/sistema de xp.
-        """
-        if interaction.guild_id is None:
-            await interaction.response.send_message(
-                "esse comando só pode ser usado dentro de um servidor.",
-                ephemeral=True,
-            )
-            return
-
-        await interaction.response.defer()
-
-        target = usuario or interaction.user
-        session = await self.get_session()
-
-        background_hex = self.color_store.get_hex(interaction.guild_id)
-        background_rgb = hex_to_rgb(background_hex)
-
-        avatar_url = target.display_avatar.replace(static_format="png", size=256).url
-
-        rank_file = await build_rank_file(
-            session=session,
-            avatar_url=avatar_url,
-            username=target.display_name,
-            discriminator=getattr(target, "discriminator", None),
-            current_xp=current_xp,
-            max_xp=max_xp,
-            level=level,
-            background_color=background_rgb,
-        )
-
-        await interaction.followup.send(file=rank_file)
-
-    async def cog_app_command_error(
-        self,
-        interaction: discord.Interaction,
-        error: app_commands.AppCommandError,
-    ) -> None:
-        if isinstance(error, app_commands.MissingPermissions):
-            if interaction.response.is_done():
-                await interaction.followup.send(
-                    "você precisa ser administrador pra usar esse comando.",
-                    ephemeral=True,
-                )
-            else:
-                await interaction.response.send_message(
-                    "você precisa ser administrador pra usar esse comando.",
-                    ephemeral=True,
-                )
-            return
-
-        if interaction.response.is_done():
-            await interaction.followup.send(
-                f"deu uma bugadinha aqui: `{error}`",
-                ephemeral=True,
-            )
+    async def _read_asset(self, asset: discord.Asset | None) -> bytes | None:
+        if asset is None:
+            return None
+        try:
+            return await asset.read()
+        except Exception:
+            return None
+
+    def _circle_avatar(self, avatar_bytes: bytes | None, size: int) -> Image.Image:
+        if avatar_bytes:
+            try:
+                avatar = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
+                avatar = ImageOps.fit(avatar, (size, size), method=Image.Resampling.LANCZOS)
+            except Exception:
+                avatar = Image.new("RGBA", (size, size), (86, 64, 134, 255))
         else:
-            await interaction.response.send_message(
-                f"deu uma bugadinha aqui: `{error}`",
-                ephemeral=True,
-            )
+            avatar = Image.new("RGBA", (size, size), (86, 64, 134, 255))
+        mask = Image.new("L", (size, size), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, size, size), fill=255)
+        output = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        output.paste(avatar, (0, 0), mask)
+        return output
 
+    def _truncate(self, value: str, max_chars: int) -> str:
+        return value if len(value) <= max_chars else value[: max_chars - 1].rstrip() + "…"
 
-# ============================================================
-# setup
-# ============================================================
+    def _progress_bar(self, draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], ratio: float) -> None:
+        x0, y0, x1, y1 = box
+        draw.rounded_rectangle(box, radius=14, fill=(52, 43, 74, 255))
+        filled = x0 + int((x1 - x0) * ratio)
+        if filled > x0:
+            draw.rounded_rectangle((x0, y0, filled, y1), radius=14, fill=(163, 112, 255, 255))
 
-async def setup(bot: commands.Bot) -> None:
-    await bot.add_cog(RankCardCog(bot))
+    async def render_rank_card(self, *, guild: discord.Guild, member: discord.Member | discord.User, snapshot: RankSnapshot) -> io.BytesIO:
+        width, height = 1040, 320
+        canvas = Image.new("RGBA", (width, height), (16, 13, 25, 255))
+        draw = ImageDraw.Draw(canvas)
+        draw.rounded_rectangle((24, 24, width - 24, height - 24), radius=28, fill=(27, 23, 41, 255), outline=(110, 86, 171, 255), width=2)
+        draw.rounded_rectangle((40, 40, 250, height - 40), radius=24, fill=(39, 31, 63, 255))
+
+        avatar = self._circle_avatar(await self._read_asset(member.display_avatar), 150)
+        canvas.paste(avatar, (70, 85), avatar)
+
+        guild_name = self._truncate(guild.name, 28)
+        user_name = self._truncate(snapshot.display_name, 26)
+        rank_text = f"#{snapshot.position}" if snapshot.position is not None else "Sem Posição"
+        progress_text = f"Progresso {snapshot.xp_into_level}/{snapshot.xp_for_next_level} XP"
+
+        draw.text((285, 55), "Não Sei O Que", font=self._font(28, bold=True), fill=(220, 208, 255, 255))
+        draw.text((285, 138), user_name, font=self._font(34, bold=True), fill=(245, 242, 255, 255))
+        draw.text((285, 190), f"Nível {snapshot.level}", font=self._font(24, bold=True), fill=(189, 255, 220, 255))
+        draw.text((435, 190), f"XP Total {snapshot.total_xp:,}".replace(",", "."), font=self._font(24), fill=(234, 228, 255, 255))
+        draw.text((760, 190), rank_text, font=self._font(30, bold=True), fill=(255, 220, 145, 255))
+        self._progress_bar(draw, (285, 235, 930, 260), snapshot.progress_ratio)
+        draw.text((285, 268), progress_text, font=self._font(18), fill=(201, 193, 228, 255))
+        draw.text((735, 268), f"Faltam {snapshot.remaining_to_next:,} XP".replace(",", "."), font=self._font(18), fill=(201, 193, 228, 255))
+
+        output = io.BytesIO()
+        canvas.save(output, format="PNG")
+        output.seek(0)
+        return output
+
+    async def render_leaderboard_card(
+        self,
+        *,
+        guild: discord.Guild,
+        entries: Iterable[tuple[LeaderboardEntry, discord.Member | discord.User | None]],
+    ) -> io.BytesIO:
+        rows = list(entries)[:5]
+        width = 1180
+        row_height = 128
+        top_padding = 150
+        height = max(300, top_padding + (row_height * max(1, len(rows))) + 40)
+        canvas = Image.new("RGBA", (width, height), (16, 13, 25, 255))
+        draw = ImageDraw.Draw(canvas)
+        draw.rounded_rectangle((22, 22, width - 22, height - 22), radius=30, fill=(26, 21, 40, 255), outline=(110, 86, 171, 255), width=2)
+        draw.text((55, 48), "Hall Da Glória", font=self._font(34, bold=True), fill=(245, 240, 255, 255))
+        draw.text((55, 92), self._truncate(guild.name, 34), font=self._font(20), fill=(182, 173, 212, 255))
+
+        medal_colors = {1: (255, 215, 120, 255), 2: (198, 207, 225, 255), 3: (222, 166, 120, 255)}
+        if not rows:
+            draw.text((55, 180), "Ainda Não Há Almas Ranqueadas Neste Servidor.", font=self._font(24), fill=(220, 210, 246, 255))
+        else:
+            for index, (entry, member) in enumerate(rows, start=1):
+                y = top_padding + ((index - 1) * row_height)
+                bg_color = (42, 33, 65, 255) if index <= 3 else (33, 28, 52, 255)
+                draw.rounded_rectangle((45, y, width - 45, y + 102), radius=24, fill=bg_color)
+                badge_color = medal_colors.get(index, (115, 106, 146, 255))
+                draw.rounded_rectangle((65, y + 18, 140, y + 84), radius=18, fill=badge_color)
+                draw.text((88, y + 35), str(index), font=self._font(26, bold=True), fill=(20, 16, 30, 255))
+                avatar_bytes = await self._read_asset(member.display_avatar) if member else None
+                avatar = self._circle_avatar(avatar_bytes, 72)
+                canvas.paste(avatar, (160, y + 15), avatar)
+                display_name = self._truncate(entry.display_name, 24)
+                draw.text((255, y + 24), display_name, font=self._font(24, bold=True), fill=(246, 242, 255, 255))
+                draw.text((255, y + 58), f"Nível {entry.level} • {entry.total_xp:,} XP".replace(",", "."), font=self._font(18), fill=(206, 199, 229, 255))
+                self._progress_bar(draw, (700, y + 34, 1055, y + 58), entry.progress_ratio)
+                draw.text((700, y + 66), f"Faltam {entry.remaining_to_next:,} XP".replace(",", "."), font=self._font(16), fill=(198, 190, 223, 255))
+
+        output = io.BytesIO()
+        canvas.save(output, format="PNG")
+        output.seek(0)
+        return output
