@@ -135,7 +135,7 @@ class AlbumDoDia(commands.Cog):
 
     # --- Slash Commands ---
     
-    @app_commands.command(name="sugerir", description="Sugere um álbum para a fila do dia")
+    @app_commands.command(name="aotd_sugerir", description="Sugere um álbum para a fila do dia")
     @app_commands.describe(nome_album="Nome do álbum ou artista")
     async def sugerir(self, interaction: discord.Interaction, nome_album: str):
         # A busca pode demorar, então avisamos o Discord que estamos processando
@@ -187,7 +187,7 @@ class AlbumDoDia(commands.Cog):
         embed.set_thumbnail(url=info_album['imagem'])
         await interaction.followup.send(embed=embed)
 
-    @app_commands.command(name="fila", description="Ver status e duração da fila")
+    @app_commands.command(name="aotd_fila", description="Ver status e duração da fila")
     async def ver_fila(self, interaction: discord.Interaction):
         fila = self.carregar_fila()
         qtd = len(fila)
@@ -203,7 +203,7 @@ class AlbumDoDia(commands.Cog):
             f"Temos **{qtd}** álbum(ns) na fila! Garantidos até **{data_final.strftime('%d/%m/%Y')}**."
         )
 
-    @app_commands.command(name="lista", description="Lista todos os álbuns agendados (Admin)")
+    @app_commands.command(name="aotd_lista", description="Lista todos os álbuns agendados (Admin)")
     @app_commands.checks.has_permissions(administrator=True)
     async def listar_fila(self, interaction: discord.Interaction):
         fila = self.carregar_fila()
@@ -219,7 +219,7 @@ class AlbumDoDia(commands.Cog):
         else:
             await interaction.response.send_message(msg)
 
-    @app_commands.command(name="remover", description="Remove um álbum pelo índice (Admin)")
+    @app_commands.command(name="aotd_remover", description="Remove um álbum pelo índice (Admin)")
     @app_commands.describe(indice="Número do álbum na !lista")
     @app_commands.checks.has_permissions(administrator=True)
     async def remover(self, interaction: discord.Interaction, indice: int):
@@ -233,7 +233,7 @@ class AlbumDoDia(commands.Cog):
         self.salvar_fila(fila)
         await interaction.response.send_message(f"🗑️ **{removido['nome']}** removido.")
 
-    @app_commands.command(name="testar_album", description="Força o envio do próximo álbum agora (Admin)")
+    @app_commands.command(name="aotd_testar_album", description="Força o envio do próximo álbum agora (Admin)")
     @app_commands.checks.has_permissions(administrator=True)
     async def testar_album(self, interaction: discord.Interaction):
         await self.despachar_album(interaction)
