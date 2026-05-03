@@ -60,7 +60,7 @@ class AvatarView(discord.ui.View):
         Callback que contorna a limitação da API enviando uma mensagem
         efêmera com texto limpo, permitindo que o usuário mobile pressione e copie.
         """
-        await interaction.response.send_message(content=self.current_url, ephemeral=True)
+        await interaction.response.send_message(content=f"<{self.current_url}>", ephemeral=True, suppress_embeds=True)
 
     async def swap_callback(self, interaction: discord.Interaction):
         # Garante que só quem apertou o botão possa interagir? Para avatar não faz mal ser público.
