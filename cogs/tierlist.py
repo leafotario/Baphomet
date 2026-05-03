@@ -8,24 +8,79 @@ import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import OrderedDict as OrderedDictType
+from urllib.parse import urlparse
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+
+# Evita que imagens absurdamente gigantes tentem explodir a memória do bot.
+Image.MAX_IMAGE_PIXELS = 25_000_000
 
 
 # ============================================================
-# PARTE 1 — RENDERER PILLOW
-# Matemática da imagem dinâmica com quebra de linha por Tier.
+# MODELOS DE DADOS
+# ============================================================
+
+@dataclass
+class TierItem:
+    """
+    Representa um item da Tier List.
+
+    name:
+        Nome/legenda do item.
+
+    image_url:
+        URL opcional enviada pelo usuário.
+
+    image_bytes:
+        Bytes baixados da imagem.
+        Esse campo é preenchido apenas na hora de gerar a imagem final.
+        Se for None, o renderer usa fallback de texto.
+    """
+
+    name: str
+    image_url: str | None = None
+    image_bytes: bytes | None = None
+
+
+@dataclass
+class TierListSession:
+    """
+    Estado temporário de uma Tier List em criação.
+    Fica em RAM e é apagado ao gerar, cancelar ou expirar.
+    """
+
+    owner_id: int
+    title: str
+    tiers: list[str] = field(default_factory=lambda: ["S", "A", "B", "C", "D"])
+    items: OrderedDictType[str, list[TierItem]] = field(
+        default_factory=lambda: OrderedDict(
+            {
+                "S": [],
+                "A": [],
+                "B": [],
+                "C": [],
+                "D": [],
+            }
+        )
+    )
+    panel_message: discord.Message | None = None
+
+
+# ============================================================
+# PARTE 1 — PILLOW RENDERER
 # ============================================================
 
 class TierListRenderer:
     """
-    Classe responsável APENAS por gerar a imagem final da tier list.
+    Classe responsável APENAS pela imagem.
 
-    Ela não sabe nada sobre Discord, Interactions, Views ou Modals.
-    Isso deixa o código modular e fácil de testar separadamente.
+    Ela não depende de Discord, Interaction, View ou Modal.
+    Assim o desenho fica testável e isolado.
     """
 
     WIDTH = 1200
@@ -36,20 +91,22 @@ class TierListRenderer:
     TIER_LABEL_WIDTH = 150
     TIER_GAP = 8
 
-    # Área interna de cada fileira
+    # Área interna de cada tier
     ROW_PADDING_X = 18
     ROW_PADDING_Y = 16
 
-    # Cards de texto
+    # Cards
     ITEM_WIDTH = 170
-    ITEM_HEIGHT = 62
+    TEXT_ITEM_HEIGHT = 62
+    IMAGE_ITEM_HEIGHT = 150
+    IMAGE_SIZE = 120
+
     ITEM_GAP_X = 12
     ITEM_GAP_Y = 12
 
-    # Altura mínima da fileira mesmo se ela tiver poucos itens
     MIN_ROW_HEIGHT = 96
 
-    # Cores base
+    # Cores
     BACKGROUND = "#111116"
     ROW_BACKGROUND = "#202026"
     CARD_BACKGROUND = "#303039"
@@ -57,8 +114,6 @@ class TierListRenderer:
     TEXT = "#FFFFFF"
     MUTED_TEXT = "#A7A7B3"
 
-    # Cores vibrantes das tiers.
-    # Se tiver mais tiers que cores, o código recicla a lista usando módulo.
     TIER_COLORS = [
         "#FF4D4D",  # S
         "#FF9F43",  # A
@@ -78,27 +133,18 @@ class TierListRenderer:
     def generate_tierlist_image(
         self,
         title: str,
-        tiers_dict: OrderedDictType[str, list[str]],
+        tiers_dict: OrderedDictType[str, list[TierItem]],
     ) -> io.BytesIO:
         """
         Gera a imagem final da Tier List.
 
-        Parâmetros:
-        - title: título da tier list.
-        - tiers_dict: OrderedDict no formato:
-            {
-                "S": ["Item 1", "Item 2"],
-                "A": ["Item 3"],
-                ...
-            }
-
-        Retorna:
-        - BytesIO pronto para ser enviado como discord.File.
+        tiers_dict:
+            OrderedDict({
+                "S": [TierItem(...), TierItem(...)],
+                "A": [TierItem(...)],
+            })
         """
 
-        # Imagem temporária só para termos um ImageDraw disponível.
-        # Precisamos dele ANTES de criar a imagem final porque a altura final
-        # depende de cálculos de texto/layout.
         measuring_img = Image.new("RGB", (self.WIDTH, 10), self.BACKGROUND)
         draw = ImageDraw.Draw(measuring_img)
 
@@ -108,21 +154,18 @@ class TierListRenderer:
         empty_font = self._load_font(22, bold=False)
 
         # ------------------------------------------------------------
-        # CÁLCULO DA LARGURA ÚTIL DOS ITENS
+        # LARGURA DISPONÍVEL PARA OS CARDS
         # ------------------------------------------------------------
         #
-        # A largura total da imagem é 1200px.
+        # A imagem tem largura fixa de 1200px.
         #
-        # Dentro dela temos:
-        # - OUTER_PADDING dos dois lados.
-        # - Uma coluna fixa para o nome da tier.
-        # - Padding interno da área onde os cards ficam.
+        # Dentro dela, removemos:
+        # - padding externo esquerdo e direito;
+        # - largura da coluna colorida da tier;
+        # - padding interno da área dos cards.
         #
-        # Tudo que sobra é a "items_area_width", ou seja,
-        # a largura máxima onde os cards podem ser desenhados.
-        #
-        # Essa variável é o coração da quebra de linha.
-        # Nenhum card pode ultrapassar essa largura.
+        # O resultado é a área onde os cards podem existir.
+        # Nenhum card pode passar desse limite.
         # ------------------------------------------------------------
 
         items_area_width = (
@@ -133,35 +176,30 @@ class TierListRenderer:
         )
 
         # ------------------------------------------------------------
-        # CÁLCULO DE QUANTOS CARDS CABEM POR LINHA
+        # QUANTOS CARDS CABEM POR LINHA
         # ------------------------------------------------------------
         #
-        # Cada item ocupa:
-        # - ITEM_WIDTH
-        # - ITEM_GAP_X, exceto depois do último item da linha.
-        #
-        # A fórmula:
+        # Fórmula:
         #
         #   floor((largura_disponivel + gap) / (largura_card + gap))
         #
-        # Por que somar +gap no numerador?
-        # Porque numa linha com N cards existem apenas N-1 gaps.
-        # Essa fórmula é uma forma clássica de compensar esse último gap
-        # que não existe visualmente.
+        # O +gap no numerador existe porque em uma linha com N cards
+        # existem apenas N-1 espaços entre cards.
         #
         # Exemplo:
-        # - área = 960
+        # - área = 958
         # - card = 170
         # - gap = 12
         #
-        # floor((960 + 12) / (170 + 12)) = floor(972 / 182) = 5
+        # floor((958 + 12) / (170 + 12)) = floor(970 / 182) = 5
         #
-        # Então cabem 5 cards:
-        # 5*170 + 4*12 = 850 + 48 = 898px
+        # 5 cards:
+        # 5 * 170 + 4 * 12 = 898px
         #
-        # Se tentasse 6:
-        # 6*170 + 5*12 = 1020 + 60 = 1080px
-        # Estouraria a imagem.
+        # 6 cards:
+        # 6 * 170 + 5 * 12 = 1080px
+        #
+        # Então 6 estouraria a imagem.
         # ------------------------------------------------------------
 
         items_per_line = max(
@@ -169,47 +207,80 @@ class TierListRenderer:
             math.floor((items_area_width + self.ITEM_GAP_X) / (self.ITEM_WIDTH + self.ITEM_GAP_X)),
         )
 
-        # ------------------------------------------------------------
-        # PRÉ-CÁLCULO DE ALTURA DE CADA TIER
-        # ------------------------------------------------------------
-        #
-        # Cada tier pode ter uma quantidade diferente de itens.
-        # Logo, cada fileira pode ter uma altura diferente.
-        #
-        # Para cada tier:
-        #
-        #   line_count = ceil(total_itens / items_per_line)
-        #
-        # Se a Tier A tem 15 itens e cabem 5 por linha:
-        #
-        #   ceil(15 / 5) = 3 linhas
-        #
-        # A altura de conteúdo vira:
-        #
-        #   linhas * altura_card
-        #   + gaps verticais entre linhas
-        #   + padding superior/inferior da fileira
-        #
-        # Essa é a parte que impede os itens de vazarem para fora
-        # da imagem ou por cima da próxima tier.
-        # ------------------------------------------------------------
-
         row_layouts: list[dict] = []
 
         for index, (tier_name, items) in enumerate(tiers_dict.items()):
             item_count = len(items)
-
-            # Mesmo uma tier vazia precisa de 1 linha visual,
-            # para mostrar "Sem itens ainda" e manter a estética.
             line_count = max(1, math.ceil(item_count / items_per_line))
 
-            cards_height = line_count * self.ITEM_HEIGHT
-            gaps_height = max(0, line_count - 1) * self.ITEM_GAP_Y
-            content_height = cards_height + gaps_height + self.ROW_PADDING_Y * 2
+            # ------------------------------------------------------------
+            # ALTURA DINÂMICA COM ITENS MISTOS
+            # ------------------------------------------------------------
+            #
+            # Agora existem dois tipos de cards:
+            #
+            # 1. Card de texto:
+            #    altura = TEXT_ITEM_HEIGHT
+            #
+            # 2. Card com imagem:
+            #    altura = IMAGE_ITEM_HEIGHT
+            #
+            # Não dá mais para calcular a altura assim:
+            #
+            #   line_count * ITEM_HEIGHT
+            #
+            # porque cada linha pode ter uma mistura diferente.
+            #
+            # Exemplo:
+            #
+            # Linha 0: imagem, texto, texto, imagem, texto
+            # A altura dessa linha precisa ser 150px.
+            #
+            # Linha 1: texto, texto, texto
+            # A altura dessa linha precisa ser só 62px.
+            #
+            # Por isso calculamos a altura de CADA linha separadamente:
+            #
+            #   line_heights = [62, 62, 62...]
+            #
+            # Para cada item:
+            #
+            #   item_row = item_index // items_per_line
+            #
+            # Se o item tiver imagem, a linha dele precisa ter pelo menos 150px.
+            # Se for texto, pelo menos 62px.
+            #
+            # No final, a altura da tier é:
+            #
+            #   soma(line_heights)
+            #   + gaps verticais entre linhas
+            #   + padding vertical
+            #
+            # Isso impede:
+            # - imagem invadindo a próxima tier;
+            # - card saindo para fora da direita;
+            # - fileira ficando alta demais sem necessidade.
+            # ------------------------------------------------------------
 
-            # A altura real da tier é a maior entre:
-            # - altura mínima estética
-            # - altura necessária para todas as linhas de cards
+            line_heights = [self.TEXT_ITEM_HEIGHT for _ in range(line_count)]
+
+            for item_index, item in enumerate(items):
+                item_row = item_index // items_per_line
+
+                item_height = (
+                    self.IMAGE_ITEM_HEIGHT
+                    if item.image_bytes
+                    else self.TEXT_ITEM_HEIGHT
+                )
+
+                line_heights[item_row] = max(line_heights[item_row], item_height)
+
+            content_height = (
+                sum(line_heights)
+                + max(0, line_count - 1) * self.ITEM_GAP_Y
+                + self.ROW_PADDING_Y * 2
+            )
+
             row_height = max(self.MIN_ROW_HEIGHT, content_height)
 
             row_layouts.append(
@@ -220,6 +291,7 @@ class TierListRenderer:
                     "line_count": line_count,
                     "row_height": row_height,
                     "items_per_line": items_per_line,
+                    "line_heights": line_heights,
                 }
             )
 
@@ -237,7 +309,6 @@ class TierListRenderer:
         image = Image.new("RGB", (self.WIDTH, image_height), self.BACKGROUND)
         draw = ImageDraw.Draw(image)
 
-        # Título
         self._draw_centered_text(
             draw=draw,
             box=(self.OUTER_PADDING, 0, self.WIDTH - self.OUTER_PADDING, self.TITLE_HEIGHT),
@@ -245,6 +316,7 @@ class TierListRenderer:
             font=title_font,
             fill=self.TEXT,
             max_width=self.WIDTH - self.OUTER_PADDING * 2,
+            bold=True,
         )
 
         y = self.TITLE_HEIGHT + self.OUTER_PADDING
@@ -255,20 +327,19 @@ class TierListRenderer:
             color = row["color"]
             row_height = row["row_height"]
             items_per_line = row["items_per_line"]
+            line_heights = row["line_heights"]
 
             row_x1 = self.OUTER_PADDING
             row_y1 = y
             row_x2 = self.WIDTH - self.OUTER_PADDING
             row_y2 = y + row_height
 
-            # Fundo da fileira
             draw.rounded_rectangle(
                 (row_x1, row_y1, row_x2, row_y2),
                 radius=18,
                 fill=self.ROW_BACKGROUND,
             )
 
-            # Bloco colorido da tier
             label_x1 = row_x1
             label_y1 = row_y1
             label_x2 = row_x1 + self.TIER_LABEL_WIDTH
@@ -280,7 +351,7 @@ class TierListRenderer:
                 fill=color,
             )
 
-            # Retângulo de correção para a borda direita do label não ficar arredondada.
+            # Remove o arredondamento da direita do bloco da tier.
             draw.rectangle(
                 (label_x2 - 18, label_y1, label_x2, label_y2),
                 fill=color,
@@ -293,6 +364,7 @@ class TierListRenderer:
                 font=tier_font,
                 fill="#111116",
                 max_width=self.TIER_LABEL_WIDTH - 18,
+                bold=True,
             )
 
             items_start_x = label_x2 + self.ROW_PADDING_X
@@ -306,42 +378,58 @@ class TierListRenderer:
                     font=empty_font,
                     fill=self.MUTED_TEXT,
                     max_width=row_x2 - items_start_x - self.ROW_PADDING_X,
+                    bold=False,
                 )
             else:
-                for item_index, item_text in enumerate(items):
-                    # ------------------------------------------------------------
-                    # POSICIONAMENTO MATEMÁTICO DE CADA CARD
-                    # ------------------------------------------------------------
-                    #
-                    # A posição do item é calculada por índice.
-                    #
-                    # col = índice % cards_por_linha
-                    # row = índice // cards_por_linha
-                    #
-                    # Exemplo com 5 cards por linha:
-                    #
-                    # índice 0 → row 0, col 0
-                    # índice 4 → row 0, col 4
-                    # índice 5 → row 1, col 0
-                    #
-                    # Assim, quando passa do limite horizontal,
-                    # o item automaticamente cai para a próxima linha.
-                    #
-                    # O y da nova linha considera:
-                    # - altura do card
-                    # - gap vertical
-                    #
-                    # Isso garante que a Tier expanda para baixo
-                    # sem atropelar a próxima fileira.
-                    # ------------------------------------------------------------
-
+                for item_index, item in enumerate(items):
                     item_row = item_index // items_per_line
                     item_col = item_index % items_per_line
 
+                    # ------------------------------------------------------------
+                    # Y COM LINHAS DE ALTURA VARIÁVEL
+                    # ------------------------------------------------------------
+                    #
+                    # Antes, com cards de altura fixa, dava para fazer:
+                    #
+                    #   y = start_y + row_index * (ITEM_HEIGHT + GAP)
+                    #
+                    # Agora isso quebra, porque uma linha com imagem tem 150px
+                    # e uma linha só com texto tem 62px.
+                    #
+                    # Então o Y do item precisa ser:
+                    #
+                    #   soma das alturas das linhas anteriores
+                    #   + gaps anteriores
+                    #
+                    # Exemplo:
+                    #
+                    # line_heights = [150, 62, 150]
+                    #
+                    # Item na linha 0:
+                    # offset_y = 0
+                    #
+                    # Item na linha 1:
+                    # offset_y = 150 + 1 gap
+                    #
+                    # Item na linha 2:
+                    # offset_y = 150 + 62 + 2 gaps
+                    #
+                    # Isso faz a tier se expandir naturalmente,
+                    # sem atropelar a fileira de baixo.
+                    # ------------------------------------------------------------
+
+                    offset_y = sum(line_heights[:item_row]) + item_row * self.ITEM_GAP_Y
+
+                    item_height = (
+                        self.IMAGE_ITEM_HEIGHT
+                        if item.image_bytes
+                        else self.TEXT_ITEM_HEIGHT
+                    )
+
                     item_x1 = items_start_x + item_col * (self.ITEM_WIDTH + self.ITEM_GAP_X)
-                    item_y1 = items_start_y + item_row * (self.ITEM_HEIGHT + self.ITEM_GAP_Y)
+                    item_y1 = items_start_y + offset_y
                     item_x2 = item_x1 + self.ITEM_WIDTH
-                    item_y2 = item_y1 + self.ITEM_HEIGHT
+                    item_y2 = item_y1 + item_height
 
                     draw.rounded_rectangle(
                         (item_x1, item_y1, item_x2, item_y2),
@@ -351,13 +439,22 @@ class TierListRenderer:
                         width=2,
                     )
 
-                    self._draw_centered_wrapped_text(
-                        draw=draw,
-                        box=(item_x1 + 10, item_y1 + 6, item_x2 - 10, item_y2 - 6),
-                        text=item_text,
-                        font=item_font,
-                        fill=self.TEXT,
-                    )
+                    if item.image_bytes:
+                        self._draw_image_item(
+                            base_image=image,
+                            draw=draw,
+                            item=item,
+                            box=(item_x1, item_y1, item_x2, item_y2),
+                            font=item_font,
+                        )
+                    else:
+                        self._draw_centered_wrapped_text(
+                            draw=draw,
+                            box=(item_x1 + 10, item_y1 + 6, item_x2 - 10, item_y2 - 6),
+                            text=item.name,
+                            font=item_font,
+                            fill=self.TEXT,
+                        )
 
             y += row_height + self.TIER_GAP
 
@@ -366,26 +463,115 @@ class TierListRenderer:
         buffer.seek(0)
         return buffer
 
-    def _load_font(self, size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    def _draw_image_item(
+        self,
+        base_image: Image.Image,
+        draw: ImageDraw.ImageDraw,
+        item: TierItem,
+        box: tuple[int, int, int, int],
+        font: ImageFont.ImageFont,
+    ) -> None:
         """
-        Tenta carregar uma fonte TTF.
-        Se falhar, usa a fonte padrão do Pillow.
+        Desenha um item com imagem.
 
-        Você pode passar font_path no construtor se quiser usar uma fonte específica:
-            TierListRenderer(font_path="assets/fonts/MinhaFonte.ttf")
+        A imagem original pode vir em qualquer proporção:
+        - quadrada;
+        - vertical;
+        - 16:9;
+        - gigante;
+        - minúscula.
+
+        ImageOps.fit cria uma versão padronizada:
+        - tamanho fixo;
+        - crop centralizado;
+        - sem distorção;
+        - sem esticar a imagem.
         """
 
+        x1, y1, x2, y2 = box
+
+        try:
+            if not item.image_bytes:
+                raise ValueError("Item sem bytes de imagem.")
+
+            with Image.open(io.BytesIO(item.image_bytes)) as raw:
+                raw = raw.convert("RGB")
+
+                fitted = ImageOps.fit(
+                    raw,
+                    (self.IMAGE_SIZE, self.IMAGE_SIZE),
+                    method=Image.Resampling.LANCZOS,
+                    centering=(0.5, 0.5),
+                )
+
+        except Exception:
+            # Fallback se a URL baixou algo corrompido ou inválido.
+            self._draw_centered_wrapped_text(
+                draw=draw,
+                box=(x1 + 10, y1 + 6, x2 - 10, y2 - 6),
+                text=item.name,
+                font=font,
+                fill=self.TEXT,
+            )
+            return
+
+        image_x = x1 + (self.ITEM_WIDTH - self.IMAGE_SIZE) // 2
+        image_y = y1 + 12
+
+        # Máscara arredondada para a imagem ficar com estética de card.
+        mask = Image.new("L", (self.IMAGE_SIZE, self.IMAGE_SIZE), 0)
+        mask_draw = ImageDraw.Draw(mask)
+        mask_draw.rounded_rectangle(
+            (0, 0, self.IMAGE_SIZE, self.IMAGE_SIZE),
+            radius=12,
+            fill=255,
+        )
+
+        base_image.paste(
+            fitted,
+            (image_x, image_y),
+            mask,
+        )
+
+        # Tarja escura na base da imagem para a legenda.
+        caption_height = 30
+        caption_y1 = image_y + self.IMAGE_SIZE - caption_height
+        caption_y2 = image_y + self.IMAGE_SIZE
+
+        overlay = Image.new("RGBA", (self.IMAGE_SIZE, caption_height), (0, 0, 0, 175))
+        base_image.paste(
+            overlay,
+            (image_x, caption_y1),
+            overlay,
+        )
+
+        caption_font = self._load_font(16, bold=True)
+
+        self._draw_centered_text(
+            draw=draw,
+            box=(image_x + 4, caption_y1, image_x + self.IMAGE_SIZE - 4, caption_y2),
+            text=item.name,
+            font=caption_font,
+            fill=self.TEXT,
+            max_width=self.IMAGE_SIZE - 8,
+            bold=True,
+        )
+
+    def _load_font(
+        self,
+        size: int,
+        *,
+        bold: bool = False,
+    ) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         candidates: list[str] = []
 
         if self.font_path:
             candidates.append(self.font_path)
 
-        # Tenta pegar alguma fonte dentro de assets/fonts, já que teu repo tem essa pasta.
         assets_fonts = pathlib.Path("assets/fonts")
         if assets_fonts.exists():
             candidates.extend(str(path) for path in assets_fonts.glob("*.ttf"))
 
-        # Fallbacks comuns em Linux/Windows.
         if bold:
             candidates.extend(
                 [
@@ -419,26 +605,24 @@ class TierListRenderer:
         font: ImageFont.ImageFont,
         fill: str,
         max_width: int,
+        *,
+        bold: bool,
     ) -> None:
-        """
-        Desenha texto centralizado usando textbbox.
-        Se o texto for largo demais, diminui a fonte progressivamente.
-        """
-
         x1, y1, x2, y2 = box
         current_font = font
 
-        # Tenta reduzir fonte quando for FreeTypeFont.
         if isinstance(font, ImageFont.FreeTypeFont):
             size = font.size
-            while size > 12:
+
+            while size > 10:
                 bbox = draw.textbbox((0, 0), text, font=current_font)
                 text_width = bbox[2] - bbox[0]
+
                 if text_width <= max_width:
                     break
 
                 size -= 2
-                current_font = self._load_font(size, bold=True)
+                current_font = self._load_font(size, bold=bold)
 
         bbox = draw.textbbox((0, 0), text, font=current_font)
         text_width = bbox[2] - bbox[0]
@@ -457,28 +641,35 @@ class TierListRenderer:
         font: ImageFont.ImageFont,
         fill: str,
     ) -> None:
-        """
-        Centraliza texto dentro de um card.
-        Como o Modal limita o item a 25 caracteres, normalmente 1 ou 2 linhas bastam.
-        """
-
         x1, y1, x2, y2 = box
         max_width = x2 - x1
         max_height = y2 - y1
 
         current_font = font
+        lines = [text]
 
         if isinstance(font, ImageFont.FreeTypeFont):
             size = font.size
 
             while size >= 12:
                 current_font = self._load_font(size, bold=True)
-                lines = self._wrap_text_by_pixels(draw, text, current_font, max_width, max_lines=2)
+                lines = self._wrap_text_by_pixels(
+                    draw=draw,
+                    text=text,
+                    font=current_font,
+                    max_width=max_width,
+                    max_lines=2,
+                )
+
                 line_height = self._line_height(draw, current_font)
                 total_height = len(lines) * line_height + max(0, len(lines) - 1) * 3
 
                 widest_line = max(
-                    (draw.textbbox((0, 0), line, font=current_font)[2] for line in lines),
+                    (
+                        draw.textbbox((0, 0), line, font=current_font)[2]
+                        - draw.textbbox((0, 0), line, font=current_font)[0]
+                        for line in lines
+                    ),
                     default=0,
                 )
 
@@ -486,8 +677,6 @@ class TierListRenderer:
                     break
 
                 size -= 2
-        else:
-            lines = [text]
 
         line_height = self._line_height(draw, current_font)
         total_text_height = len(lines) * line_height + max(0, len(lines) - 1) * 3
@@ -499,7 +688,13 @@ class TierListRenderer:
             line_width = bbox[2] - bbox[0]
 
             line_x = x1 + (max_width - line_width) / 2
-            draw.text((line_x, current_y - bbox[1]), line, font=current_font, fill=fill)
+
+            draw.text(
+                (line_x, current_y - bbox[1]),
+                line,
+                font=current_font,
+                fill=fill,
+            )
 
             current_y += line_height + 3
 
@@ -512,12 +707,8 @@ class TierListRenderer:
         *,
         max_lines: int,
     ) -> list[str]:
-        """
-        Quebra texto por largura real em pixels, não por número fixo de caracteres.
-        Isso evita erro com letras largas como W/M e letras finas como i/l.
-        """
-
         words = text.split()
+
         if not words:
             return [""]
 
@@ -536,9 +727,6 @@ class TierListRenderer:
                     lines.append(current)
                     current = word
                 else:
-                    # Palavra única enorme.
-                    # Como o Modal já limita a 25 chars, isso quase nunca acontece,
-                    # mas o fallback existe porque usuário sempre acha um jeito, né.
                     lines.append(word)
                     current = ""
 
@@ -548,46 +736,31 @@ class TierListRenderer:
         if current and len(lines) < max_lines:
             lines.append(current)
 
-        # Se ainda sobrou texto, adiciona reticências na última linha.
         original_joined = " ".join(words)
         visible_joined = " ".join(lines)
 
         if visible_joined != original_joined and lines:
             last = lines[-1]
+
             while last and draw.textbbox((0, 0), last + "…", font=font)[2] > max_width:
                 last = last[:-1]
+
             lines[-1] = last + "…"
 
         return lines[:max_lines]
 
-    def _line_height(self, draw: ImageDraw.ImageDraw, font: ImageFont.ImageFont) -> int:
+    def _line_height(
+        self,
+        draw: ImageDraw.ImageDraw,
+        font: ImageFont.ImageFont,
+    ) -> int:
         bbox = draw.textbbox((0, 0), "Ag", font=font)
         return bbox[3] - bbox[1]
 
 
 # ============================================================
-# PARTE 2 — DISCORD.PY
-# Sessão, Modals, Views, Select Menu e comando /tierlist criar.
+# PARTE 2 — DISCORD.PY: MODALS, SELECTS, VIEWS E SESSÃO
 # ============================================================
-
-@dataclass
-class TierListSession:
-    owner_id: int
-    title: str
-    tiers: list[str] = field(default_factory=lambda: ["S", "A", "B", "C", "D"])
-    items: OrderedDictType[str, list[str]] = field(
-        default_factory=lambda: OrderedDict(
-            {
-                "S": [],
-                "A": [],
-                "B": [],
-                "C": [],
-                "D": [],
-            }
-        )
-    )
-    panel_message: discord.Message | None = None
-
 
 class ConfigureTiersModal(discord.ui.Modal):
     def __init__(self, cog: TierListCog, owner_id: int) -> None:
@@ -617,8 +790,7 @@ class ConfigureTiersModal(discord.ui.Modal):
             )
             return
 
-        raw = str(self.tiers_input.value)
-        parsed = self.cog.parse_tiers(raw)
+        parsed = self.cog.parse_tiers(str(self.tiers_input.value))
 
         if not parsed:
             await interaction.response.send_message(
@@ -629,22 +801,25 @@ class ConfigureTiersModal(discord.ui.Modal):
 
         if len(parsed) > 25:
             await interaction.response.send_message(
-                "⚠️ O Discord só permite até **25 opções** em um Select Menu. Use no máximo 25 tiers.",
+                "⚠️ Use no máximo **25 tiers**, pois esse é o limite do Select Menu do Discord.",
                 ephemeral=True,
             )
             return
 
         old_items = session.items
-        new_items: OrderedDictType[str, list[str]] = OrderedDict((tier, []) for tier in parsed)
+        new_items: OrderedDictType[str, list[TierItem]] = OrderedDict(
+            (tier, []) for tier in parsed
+        )
 
-        # Preserva itens de tiers que continuam existindo.
+        # Preserva itens das tiers que ainda existem.
         for tier in parsed:
             if tier in old_items:
                 new_items[tier].extend(old_items[tier])
 
-        # Se o usuário removeu alguma tier antiga, não jogamos os itens fora.
-        # Eles são movidos para a primeira tier nova, evitando perda silenciosa de dados.
-        removed_items: list[str] = []
+        # Se uma tier antiga foi removida, os itens dela vão para a primeira tier nova.
+        # Assim o usuário não perde dados silenciosamente.
+        removed_items: list[TierItem] = []
+
         for old_tier, items in old_items.items():
             if old_tier not in new_items:
                 removed_items.extend(items)
@@ -672,13 +847,22 @@ class AddItemModal(discord.ui.Modal):
 
         self.item_name = discord.ui.TextInput(
             label="Nome do item",
-            placeholder="Exemplo: Pizza",
+            placeholder="Exemplo: Pizza, Minecraft, Billie...",
             min_length=1,
             max_length=25,
             required=True,
         )
 
+        self.image_url = discord.ui.TextInput(
+            label="URL da imagem",
+            placeholder="Opcional: https://exemplo.com/imagem.png",
+            min_length=0,
+            max_length=500,
+            required=False,
+        )
+
         self.add_item(self.item_name)
+        self.add_item(self.image_url)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         session = self.cog.sessions.get(self.owner_id)
@@ -698,6 +882,7 @@ class AddItemModal(discord.ui.Modal):
             return
 
         total_items = sum(len(items) for items in session.items.values())
+
         if total_items >= self.cog.MAX_ITEMS_PER_SESSION:
             await interaction.response.send_message(
                 f"⚠️ Limite de **{self.cog.MAX_ITEMS_PER_SESSION} itens** atingido nessa tier list.",
@@ -706,23 +891,34 @@ class AddItemModal(discord.ui.Modal):
             return
 
         clean_item = self.cog.clean_text(str(self.item_name.value), max_length=25)
+        clean_url = str(self.image_url.value).strip() or None
 
-        if not clean_item:
-            await interaction.response.send_message(
-                "⚠️ O item precisa ter algum texto válido.",
-                ephemeral=True,
-            )
-            return
+        # Não tenta validar baixando aqui.
+        # Só descarta URLs obviamente inválidas.
+        # O download real acontece no botão Gerar Imagem.
+        if clean_url and not self.cog.looks_like_url(clean_url):
+            clean_url = None
+
+        item = TierItem(
+            name=clean_item,
+            image_url=clean_url,
+        )
 
         view = ItemTierSelectView(
             cog=self.cog,
             owner_id=self.owner_id,
-            item_name=clean_item,
+            item=item,
             tiers=session.tiers,
         )
 
+        extra = (
+            "\n🖼️ Imagem detectada. Se o link falhar, o bot usa card de texto automaticamente."
+            if clean_url
+            else ""
+        )
+
         await interaction.response.send_message(
-            f"📌 Escolha em qual tier colocar **{discord.utils.escape_markdown(clean_item)}**:",
+            f"📌 Escolha em qual tier colocar **{discord.utils.escape_markdown(clean_item)}**:{extra}",
             view=view,
             ephemeral=True,
         )
@@ -733,12 +929,12 @@ class ItemTierSelect(discord.ui.Select):
         self,
         cog: TierListCog,
         owner_id: int,
-        item_name: str,
+        item: TierItem,
         tiers: list[str],
     ) -> None:
         self.cog = cog
         self.owner_id = owner_id
-        self.item_name = item_name
+        self.item = item
 
         options = [
             discord.SelectOption(
@@ -769,9 +965,9 @@ class ItemTierSelect(discord.ui.Select):
 
         selected_tier = self.values[0]
 
-        # Segurança importante:
-        # o usuário só consegue selecionar tiers vindas da sessão atual.
-        # Mesmo assim, validamos novamente aqui, porque nunca se confia 100% no client.
+        # Blindagem:
+        # O Select foi criado com as tiers da sessão,
+        # mas ainda validamos novamente no callback.
         if selected_tier not in session.tiers or selected_tier not in session.items:
             await interaction.response.edit_message(
                 content="❌ Essa tier não existe mais na sessão atual. Configure novamente.",
@@ -779,12 +975,17 @@ class ItemTierSelect(discord.ui.Select):
             )
             return
 
-        session.items[selected_tier].append(self.item_name)
+        session.items[selected_tier].append(self.item)
 
         await self.cog.refresh_panel(session)
 
+        image_badge = " com imagem" if self.item.image_url else ""
+
         await interaction.response.edit_message(
-            content=f"✅ **{discord.utils.escape_markdown(self.item_name)}** foi adicionado em **{selected_tier}**.",
+            content=(
+                f"✅ **{discord.utils.escape_markdown(self.item.name)}**{image_badge} "
+                f"foi adicionado em **{selected_tier}**."
+            ),
             view=None,
         )
 
@@ -794,7 +995,7 @@ class ItemTierSelectView(discord.ui.View):
         self,
         cog: TierListCog,
         owner_id: int,
-        item_name: str,
+        item: TierItem,
         tiers: list[str],
     ) -> None:
         super().__init__(timeout=120)
@@ -806,7 +1007,7 @@ class ItemTierSelectView(discord.ui.View):
             ItemTierSelect(
                 cog=cog,
                 owner_id=owner_id,
-                item_name=item_name,
+                item=item,
                 tiers=tiers,
             )
         )
@@ -868,7 +1069,11 @@ class TierListControlView(discord.ui.View):
 
         self.stop()
 
-    @discord.ui.button(label="Configurar Tiers", emoji="📝", style=discord.ButtonStyle.primary)
+    @discord.ui.button(
+        label="Configurar Tiers",
+        emoji="📝",
+        style=discord.ButtonStyle.primary,
+    )
     async def configure_tiers(
         self,
         interaction: discord.Interaction,
@@ -881,7 +1086,11 @@ class TierListControlView(discord.ui.View):
             )
         )
 
-    @discord.ui.button(label="Adicionar Item", emoji="➕", style=discord.ButtonStyle.success)
+    @discord.ui.button(
+        label="Adicionar Item",
+        emoji="➕",
+        style=discord.ButtonStyle.success,
+    )
     async def add_item(
         self,
         interaction: discord.Interaction,
@@ -910,7 +1119,11 @@ class TierListControlView(discord.ui.View):
             )
         )
 
-    @discord.ui.button(label="Gerar Imagem", emoji="🖼️", style=discord.ButtonStyle.secondary)
+    @discord.ui.button(
+        label="Gerar Imagem",
+        emoji="🖼️",
+        style=discord.ButtonStyle.secondary,
+    )
     async def generate_image(
         self,
         interaction: discord.Interaction,
@@ -934,25 +1147,42 @@ class TierListControlView(discord.ui.View):
             )
             return
 
+        # Responde imediatamente ao Discord.
+        # Isso evita timeout da interação enquanto baixamos imagens e renderizamos.
         await interaction.response.defer(thinking=True)
 
-        # Copia os dados antes de renderizar em thread separada.
-        # Isso impede que uma interação simultânea altere a lista enquanto o Pillow renderiza.
         title_snapshot = session.title
-        tiers_snapshot: OrderedDictType[str, list[str]] = OrderedDict(
-            (tier, list(session.items.get(tier, [])))
+
+        # Copia a sessão para evitar alteração enquanto renderiza.
+        tiers_snapshot: OrderedDictType[str, list[TierItem]] = OrderedDict(
+            (
+                tier,
+                [
+                    TierItem(
+                        name=item.name,
+                        image_url=item.image_url,
+                        image_bytes=None,
+                    )
+                    for item in session.items.get(tier, [])
+                ],
+            )
             for tier in session.tiers
         )
 
         try:
+            # Download assíncrono das URLs.
+            hydrated_snapshot = await self.cog.hydrate_tier_images(tiers_snapshot)
+
+            # Pillow fora do event loop.
             image_buffer = await asyncio.to_thread(
                 self.cog.renderer.generate_tierlist_image,
                 title_snapshot,
-                tiers_snapshot,
+                hydrated_snapshot,
             )
+
         except Exception:
             await interaction.followup.send(
-                "❌ O Pillow tropeçou na passarela e não conseguiu gerar a imagem.",
+                "❌ Não consegui gerar a imagem final dessa vez.",
                 ephemeral=True,
             )
             return
@@ -962,7 +1192,7 @@ class TierListControlView(discord.ui.View):
             filename="tierlist.png",
         )
 
-        # Limpa memória depois de gerar.
+        # Limpa a sessão da memória.
         self.cog.sessions.pop(self.owner_id, None)
 
         for child in self.children:
@@ -975,6 +1205,7 @@ class TierListControlView(discord.ui.View):
                     description="A imagem final foi criada e a sessão foi encerrada.",
                     color=discord.Color.green(),
                 )
+
                 await session.panel_message.edit(embed=done_embed, view=self)
         except discord.HTTPException:
             pass
@@ -986,7 +1217,11 @@ class TierListControlView(discord.ui.View):
             file=file,
         )
 
-    @discord.ui.button(label="Cancelar", emoji="❌", style=discord.ButtonStyle.danger)
+    @discord.ui.button(
+        label="Cancelar",
+        emoji="❌",
+        style=discord.ButtonStyle.danger,
+    )
     async def cancel(
         self,
         interaction: discord.Interaction,
@@ -1001,14 +1236,14 @@ class TierListControlView(discord.ui.View):
 
         await interaction.response.defer(ephemeral=True)
 
-        # Tenta excluir o painel como o usuário pediu.
-        # Se falhar, apenas edita para cancelado.
         try:
             await interaction.message.delete()
+
             await interaction.followup.send(
                 "❌ Sessão cancelada e painel removido.",
                 ephemeral=True,
             )
+
         except discord.HTTPException:
             try:
                 embed = discord.Embed(
@@ -1016,6 +1251,7 @@ class TierListControlView(discord.ui.View):
                     description="Os dados temporários foram apagados.",
                     color=discord.Color.red(),
                 )
+
                 await interaction.message.edit(embed=embed, view=self)
             except discord.HTTPException:
                 pass
@@ -1026,14 +1262,26 @@ class TierListControlView(discord.ui.View):
             )
 
 
-class TierListCog(commands.GroupCog, group_name="tierlist", group_description="Crie Tier Lists Interativas"):
+# ============================================================
+# COG PRINCIPAL
+# ============================================================
+
+class TierListCog(
+    commands.GroupCog,
+    group_name="tierlist",
+    group_description="Crie Tier Lists Interativas",
+):
     MAX_TIERS = 25
     MAX_ITEMS_PER_SESSION = 150
+
+    MAX_IMAGE_BYTES = 5 * 1024 * 1024
+    IMAGE_DOWNLOAD_TIMEOUT = 5
+    IMAGE_DOWNLOAD_CONCURRENCY = 8
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
 
-        # Estado temporário em RAM.
+        # Estado temporário:
         # user_id -> TierListSession
         self.sessions: dict[int, TierListSession] = {}
 
@@ -1041,7 +1289,7 @@ class TierListCog(commands.GroupCog, group_name="tierlist", group_description="C
 
     @app_commands.command(
         name="criar",
-        description="Cria uma tier list interativa com painel, botões e imagem final.",
+        description="Cria uma tier list interativa com texto e imagens por URL.",
     )
     @app_commands.guild_only()
     @app_commands.describe(titulo="Título da tier list")
@@ -1053,7 +1301,7 @@ class TierListCog(commands.GroupCog, group_name="tierlist", group_description="C
         owner_id = interaction.user.id
         clean_title = self.clean_text(str(titulo), max_length=80)
 
-        # Se a pessoa já tinha uma sessão aberta, substitui com segurança.
+        # Se o usuário já tinha sessão, substitui com segurança.
         old_session = self.sessions.pop(owner_id, None)
 
         if old_session and old_session.panel_message:
@@ -1063,6 +1311,7 @@ class TierListCog(commands.GroupCog, group_name="tierlist", group_description="C
                     description="Você iniciou uma nova tier list, então essa sessão antiga foi encerrada.",
                     color=discord.Color.dark_gray(),
                 )
+
                 await old_session.panel_message.edit(embed=old_embed, view=None)
             except discord.HTTPException:
                 pass
@@ -1088,12 +1337,97 @@ class TierListCog(commands.GroupCog, group_name="tierlist", group_description="C
 
         session.panel_message = await interaction.original_response()
 
+    async def fetch_image_safely(
+        self,
+        http: aiohttp.ClientSession,
+        url: str,
+    ) -> bytes | None:
+        """
+        Baixa uma imagem sem derrubar o bot.
+
+        Regras:
+        - aceita somente http/https;
+        - timeout vem do ClientSession;
+        - status precisa ser 200;
+        - Content-Type precisa começar com image/;
+        - limite de 5 MB;
+        - qualquer erro retorna None;
+        - None vira fallback silencioso para texto.
+        """
+
+        if not self.looks_like_url(url):
+            return None
+
+        try:
+            async with http.get(url, allow_redirects=True) as response:
+                if response.status != 200:
+                    return None
+
+                content_type = response.headers.get("Content-Type", "").lower()
+
+                if not content_type.startswith("image/"):
+                    return None
+
+                data = bytearray()
+
+                async for chunk in response.content.iter_chunked(64 * 1024):
+                    data.extend(chunk)
+
+                    if len(data) > self.MAX_IMAGE_BYTES:
+                        return None
+
+                if not data:
+                    return None
+
+                return bytes(data)
+
+        except Exception:
+            return None
+
+    async def hydrate_tier_images(
+        self,
+        tiers_snapshot: OrderedDictType[str, list[TierItem]],
+    ) -> OrderedDictType[str, list[TierItem]]:
+        """
+        Baixa todas as imagens antes do Pillow.
+
+        Importante:
+        - aiohttp roda de forma assíncrona;
+        - renderização Pillow roda depois em thread separada;
+        - imagem inválida vira None;
+        - None é fallback para card de texto.
+        """
+
+        timeout = aiohttp.ClientTimeout(total=self.IMAGE_DOWNLOAD_TIMEOUT)
+        semaphore = asyncio.Semaphore(self.IMAGE_DOWNLOAD_CONCURRENCY)
+
+        async with aiohttp.ClientSession(timeout=timeout) as http:
+
+            async def hydrate_one(item: TierItem) -> None:
+                if not item.image_url:
+                    return
+
+                async with semaphore:
+                    item.image_bytes = await self.fetch_image_safely(http, item.image_url)
+
+            tasks: list[asyncio.Task[None]] = []
+
+            for items in tiers_snapshot.values():
+                for item in items:
+                    if item.image_url:
+                        tasks.append(asyncio.create_task(hydrate_one(item)))
+
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        return tiers_snapshot
+
     def parse_tiers(self, raw: str) -> list[str]:
         """
-        Recebe texto tipo:
+        Entrada:
             S, A, B, C, D
 
-        Retorna:
+        Saída:
             ["S", "A", "B", "C", "D"]
 
         Remove vazios, normaliza espaços e evita duplicatas.
@@ -1122,9 +1456,14 @@ class TierListCog(commands.GroupCog, group_name="tierlist", group_description="C
 
         return tiers
 
-    def clean_text(self, text: str, *, max_length: int) -> str:
+    def clean_text(
+        self,
+        text: str,
+        *,
+        max_length: int,
+    ) -> str:
         """
-        Limpa texto de usuário:
+        Limpa texto do usuário:
         - remove quebras de linha;
         - comprime espaços repetidos;
         - corta no limite seguro.
@@ -1133,15 +1472,30 @@ class TierListCog(commands.GroupCog, group_name="tierlist", group_description="C
         text = re.sub(r"\s+", " ", text).strip()
         return text[:max_length].strip()
 
+    def looks_like_url(self, url: str) -> bool:
+        parsed = urlparse(url)
+
+        return (
+            parsed.scheme in {"http", "https"}
+            and bool(parsed.netloc)
+        )
+
     def build_panel_embed(self, session: TierListSession) -> discord.Embed:
         total_items = sum(len(items) for items in session.items.values())
+        image_items = sum(
+            1
+            for items in session.items.values()
+            for item in items
+            if item.image_url
+        )
 
         embed = discord.Embed(
             title="🧩 Painel De Criação De Tier List",
             description=(
                 f"**Título:** {discord.utils.escape_markdown(session.title)}\n"
                 f"**Tiers:** {len(session.tiers)}\n"
-                f"**Itens:** {total_items}/{self.MAX_ITEMS_PER_SESSION}\n\n"
+                f"**Itens:** {total_items}/{self.MAX_ITEMS_PER_SESSION}\n"
+                f"**Itens Com URL:** {image_items}\n\n"
                 "Use os botões abaixo para configurar, adicionar itens e gerar a imagem final."
             ),
             color=discord.Color.from_rgb(155, 93, 229),
@@ -1149,7 +1503,14 @@ class TierListCog(commands.GroupCog, group_name="tierlist", group_description="C
 
         for tier in session.tiers:
             items = session.items.get(tier, [])
-            preview = ", ".join(items[:8])
+
+            preview_parts: list[str] = []
+
+            for item in items[:8]:
+                icon = "🖼️" if item.image_url else "📝"
+                preview_parts.append(f"{icon} {item.name}")
+
+            preview = ", ".join(preview_parts)
 
             if len(items) > 8:
                 preview += f" +{len(items) - 8}"
@@ -1160,7 +1521,9 @@ class TierListCog(commands.GroupCog, group_name="tierlist", group_description="C
                 inline=False,
             )
 
-        embed.set_footer(text="A sessão expira após 15 minutos de inatividade.")
+        embed.set_footer(
+            text="A sessão expira após 15 minutos de inatividade. URLs ruins viram texto automaticamente."
+        )
 
         return embed
 
