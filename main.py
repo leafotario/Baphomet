@@ -54,6 +54,14 @@ async def on_ready() -> None:
     print("---")
 
 
+@bot.command(name="sync")
+@commands.is_owner()
+async def sync_commands(ctx: commands.Context) -> None:
+    """Força a sincronização dos slash commands. Uso: !sync"""
+    synced = await bot.tree.sync()
+    await ctx.send(f"✅ {len(synced)} comandos sincronizados globalmente!")
+
+
 if __name__ == "__main__":
     if not TOKEN:
         raise RuntimeError("DISCORD_TOKEN não encontrado no .env")

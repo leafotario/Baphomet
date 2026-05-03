@@ -272,17 +272,6 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
             return
         await interaction.response.send_message(f"🚫 O Cargo Automático Do **Nível {level}** Foi Desfeito.", ephemeral=True)
 
-    @app_commands.command(name="resetar_xp_servidor", description="Zera O XP De TODOS Os Membros Do Servidor (Irreversível) ☠️")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    async def resetar_xp_servidor(self, interaction: discord.Interaction) -> None:
-        view = _ConfirmResetView(self.service, interaction.user.id)
-        await interaction.response.send_message(
-            "⚠️ **ALERTA:** Você está prestes a zerar o XP e o Nível de **TODOS** os membros do servidor.\n"
-            "Essa ação **não pode ser desfeita**. Tem certeza?",
-            view=view,
-            ephemeral=True,
-        )
 
 
 class _ConfirmResetView(discord.ui.View):
@@ -320,7 +309,31 @@ class _ConfirmResetView(discord.ui.View):
         self.stop()
 
 
+# ── Comando standalone (FORA do GroupCog para aparecer como /resetar_xp_servidor) ──
+@app_commands.command(name="resetar_xp_servidor", description="Zera O XP De TODOS Os Membros Do Servidor (Irreversível) ☠️")
+@app_commands.default_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.guild_only()
+async def resetar_xp_servidor(interaction: discord.Interaction) -> None:
+    service: XpService = interaction.client.xp_service
+    view = _ConfirmResetView(service, interaction.user.id)
+    await interaction.response.send_message(
+        "⚠️ **ALERTA:** Você está prestes a zerar o XP e o Nível de **TODOS** os membros do servidor.\n"
+        "Essa ação **não pode ser desfeita**. Tem certeza?",
+        view=view,
+        ephemeral=True,
+    )
+
+
 async def setup(bot: commands.Bot) -> None:
     await ensure_xp_runtime(bot)
     await bot.add_cog(XpPublicCommands(bot))
     await bot.add_cog(XpAdminCommands(bot))
+    bot.tree.add_command(resetar_xp_servidor)
+
+    @bot.tree.command(name="sync", description="Sincroniza os comandos (Admin)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def sync(interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await bot.tree.sync()
+        await interaction.followup.send("Comandos sincronizados!")
