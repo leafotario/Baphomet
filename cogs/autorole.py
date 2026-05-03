@@ -109,6 +109,30 @@ class SupremeAutoRole(commands.Cog):
         await canal.send(embed=embed, view=view)
         await it.response.send_message("✅ Painel Enviado!", ephemeral=True)
 
+    @app_commands.command(name="autorole_multi", description="Cria painel para dar de 2 a 5 cargos simultaneamente.")
+    @app_commands.default_permissions(administrator=True)
+    async def multi(self, it: discord.Interaction, canal: discord.TextChannel, 
+                    cargo1: discord.Role, cargo2: discord.Role,
+                    emoji: str, texto_botao: str, mensagem: str,
+                    cargo3: discord.Role = None, cargo4: discord.Role = None, cargo5: discord.Role = None,
+                    titulo: str = "Cargos Iniciais", cor_hex: str = "#2B2D31"):
+        
+        cargos = [c for c in (cargo1, cargo2, cargo3, cargo4, cargo5) if c is not None]
+        
+        # Converte IDs para Hex para economizar espaço no custom_id (limite de 100 chars)
+        hex_ids = "-".join(hex(c.id)[2:] for c in cargos)
+        custom_id = f"spr_arm:{hex_ids}"
+        
+        mencoes = "\n".join(f"• {c.mention}" for c in cargos)
+        desc = f"{mensagem}\n\n**Cargos Recebidos:**\n{mencoes}"
+        
+        embed = self.create_base_embed(titulo, desc, cor_hex, None, None)
+        view = discord.ui.View(timeout=None)
+        view.add_item(discord.ui.Button(style=discord.ButtonStyle.primary, label=texto_botao, emoji=emoji, custom_id=custom_id))
+        
+        await canal.send(embed=embed, view=view)
+        await it.response.send_message("✅ Painel Múltiplo Enviado!", ephemeral=True)
+
     @app_commands.command(name="autorole_deci", description="Cria painel de 6-15 cargos via Parser.")
     @app_commands.default_permissions(administrator=True)
     async def deci(self, it: discord.Interaction, canal: discord.TextChannel, configuracao: str, 
@@ -171,6 +195,30 @@ class SupremeAutoRole(commands.Cog):
                     await it.response.send_message(f"Adicionado: **{cargo.name}**", ephemeral=True)
             except:
                 await it.response.send_message("❌ Erro: Verifica se o meu cargo está acima do cargo que queres atribuir.", ephemeral=True)
+
+        elif cid.startswith("spr_arm:"):
+            hex_ids = cid.split(":")[1].split("-")
+            cargos = []
+            for hid in hex_ids:
+                cargo = it.guild.get_role(int(hid, 16))
+                if cargo: cargos.append(cargo)
+                
+            if not cargos:
+                return await it.response.send_message("❌ Nenhum dos cargos foi encontrado no servidor.", ephemeral=True)
+
+            try:
+                # Se o usuário tem todos os cargos, removemos todos. Se não, damos todos.
+                has_all = all(c in it.user.roles for c in cargos)
+                if has_all:
+                    await it.user.remove_roles(*cargos)
+                    nomes = ", ".join(f"**{c.name}**" for c in cargos)
+                    await it.response.send_message(f"Removidos: {nomes}", ephemeral=True)
+                else:
+                    await it.user.add_roles(*cargos)
+                    nomes = ", ".join(f"**{c.name}**" for c in cargos)
+                    await it.response.send_message(f"Adicionados: {nomes}", ephemeral=True)
+            except:
+                await it.response.send_message("❌ Erro de Permissão: Verifica se o meu cargo está acima dos cargos que queres atribuir.", ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(SupremeAutoRole(bot))
