@@ -14,9 +14,6 @@ INSTALAÇÃO:
 COMANDOS (todos exclusivos para Administradores):
   /welcome setup   — Seleciona canal e abre o Modal de configuração
   /welcome preview — Exibe um preview do embed atual
-  /welcome status  — Painel com as configurações salvas
-  /welcome toggle  — Ativa ou desativa as boas-vindas (toggle)
-  /welcome reset   — Apaga todas as configurações do servidor
 
 VARIÁVEIS DISPONÍVEIS NOS CAMPOS DO EMBED:
   {user}          → Menção do membro          (@João)
@@ -416,119 +413,6 @@ class WelcomeCog(commands.Cog, name="Welcome"):
         preview = build_preview_embed(cfg, interaction.guild)
         await interaction.response.send_message(embeds=[info, preview], ephemeral=True)
 
-    # ── /welcome status ─────────────────────────────────────────────────────
-
-    @welcome.command(name="status", description="[Admin] Exibe as configurações salvas de boas-vindas.")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def cmd_status(self, interaction: discord.Interaction) -> None:
-        cfg = config_get(interaction.guild_id)
-        if not cfg:
-            await interaction.response.send_message(
-                "❌ Nenhuma configuração encontrada. Use `/welcome setup` primeiro.",
-                ephemeral=True,
-            )
-            return
-
-        enabled = cfg.get("enabled", True)
-        channel = interaction.guild.get_channel(cfg["channel_id"])
-        configured_at = cfg.get("configured_at", "")[:10] or "—"
-
-        embed = discord.Embed(
-            title="📋 Status — Boas-Vindas",
-            color=0x57F287 if enabled else 0xED4245,
-        )
-        embed.add_field(
-            name="Canal",
-            value=channel.mention if channel else f"`ID: {cfg['channel_id']}` (não encontrado)",
-            inline=True,
-        )
-        embed.add_field(
-            name="Status",
-            value="✅ Ativo" if enabled else "⛔ Desativado",
-            inline=True,
-        )
-        embed.add_field(
-            name="Cor",
-            value=f"`{cfg.get('color', 'blurple')}`",
-            inline=True,
-        )
-        embed.add_field(
-            name="Título",
-            value=cfg.get("title") or "—",
-            inline=False,
-        )
-        embed.add_field(
-            name="Configurado por",
-            value=f"<@{cfg['configured_by']}>",
-            inline=True,
-        )
-        embed.add_field(
-            name="Data",
-            value=configured_at,
-            inline=True,
-        )
-        embed.set_footer(text="Use /welcome setup para alterar as configurações.")
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    # ── /welcome toggle ─────────────────────────────────────────────────────
-
-    @welcome.command(name="toggle", description="[Admin] Ativa ou desativa as boas-vindas (toggle).")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def cmd_toggle(self, interaction: discord.Interaction) -> None:
-        cfg = config_get(interaction.guild_id)
-        if not cfg:
-            await interaction.response.send_message(
-                "❌ Nenhuma configuração encontrada. Use `/welcome setup` primeiro.",
-                ephemeral=True,
-            )
-            return
-
-        new_state = not cfg.get("enabled", True)
-        cfg["enabled"] = new_state
-        config_set(interaction.guild_id, cfg)
-
-        if new_state:
-            channel = interaction.guild.get_channel(cfg["channel_id"])
-            channel_str = channel.mention if channel else f"<#{cfg['channel_id']}>"
-            embed = discord.Embed(
-                title="✅ Boas-Vindas Ativadas",
-                description=(
-                    f"Mensagens serão enviadas em {channel_str} "
-                    "quando um novo membro entrar."
-                ),
-                color=0x57F287,
-            )
-        else:
-            embed = discord.Embed(
-                title="⛔ Boas-Vindas Desativadas",
-                description=(
-                    "Nenhuma mensagem será enviada até você reativar com `/welcome toggle`.\n"
-                    "As configurações foram mantidas."
-                ),
-                color=0xED4245,
-            )
-
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    # ── /welcome reset ──────────────────────────────────────────────────────
-
-    @welcome.command(name="reset", description="[Admin] Remove todas as configurações de boas-vindas do servidor.")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def cmd_reset(self, interaction: discord.Interaction) -> None:
-        removed = config_delete(interaction.guild_id)
-        if removed:
-            embed = discord.Embed(
-                title="🗑️ Configurações Removidas",
-                description="Todas as configurações de boas-vindas foram apagadas.\nUse `/welcome setup` para configurar novamente.",
-                color=0xED4245,
-            )
-        else:
-            embed = discord.Embed(
-                title="⚠️ Nada para apagar",
-                description="Este servidor não possui configurações de boas-vindas salvas.",
-                color=0xFEE75C,
-            )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # ── Tratamento de erros do grupo ────────────────────────────────────────
 
