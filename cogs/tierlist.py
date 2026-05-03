@@ -790,19 +790,17 @@ class AddItemModal(discord.ui.Modal):
                 clean_url = user.display_avatar.replace(format='png', size=256).url
             except (ValueError, discord.NotFound, discord.HTTPException):
                 clean_url = None
-        # Prioridade 3: Sem URL ou ID, mas com Pesquisa Web solicitada. Busca a imagem online!
+        # Prioridade 3: Sem URL ou ID, mas com Pesquisa Web solicitada. Busca a imagem oficial da Wikipedia!
         elif web_search_str:
-            print(f"[DEBUG] Iniciando busca no DDG pelo termo: '{web_search_str}'")
+            print(f"[DEBUG] Iniciando busca na Wikipedia pelo termo: '{web_search_str}'")
             
-            # Conector agressivo para contornar falhas de SSL em sites de imagens antigas
-            connector = aiohttp.TCPConnector(verify_ssl=False)
-            async with aiohttp.ClientSession(connector=connector) as http:
-                fetched_bytes = await self.cog.fetch_image_from_web(http, web_search_str)
+            async with aiohttp.ClientSession() as http:
+                fetched_bytes = await self.cog.fetch_wikipedia_image(http, web_search_str)
                 if fetched_bytes:
                     image_bytes = fetched_bytes
-                    clean_url = "(Pesquisa Web Automática)"  # Fallback estético para o log interno
+                    clean_url = "(Pesquisa Wikipedia Automática)"  # Fallback estético para o log interno
                 else:
-                    print(f"[ERRO] Busca web retornou falha total para '{web_search_str}'. Aplicando fallback para texto.")
+                    print(f"[ERRO] Wikipedia retornou falha total para '{web_search_str}'. Aplicando fallback para texto.")
 
         item = TierItem(
             name=clean_item,
@@ -1205,110 +1203,100 @@ class TierListCog(
 
         self.renderer = TierListRenderer()
 
-    async def fetch_image_from_web(self, http: aiohttp.ClientSession, query: str) -> bytes | None:
+    async def fetch_wikipedia_image(self, http: aiohttp.ClientSession, query: str) -> bytes | None:
         """
-        Pesquisa imagens usando DDGS e baixa a melhor candidata.
-        Opção "Nuclear": Rastreamento extremo e contorno de limites da API.
+        Pesquisa o artigo na Wikipedia e extrai a imagem principal (thumbnail), garantindo alta estabilidade e sem Rate Limits.
         """
-        if not DDGS:
-            print("[ERRO] DDGS não instalado. Abortando busca web.")
-            return None
-
-        # 2. Bloqueios de CDN e User-Agent
+        # Header Obrigatório pela Wikimedia Foundation
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7',
-            'Sec-Fetch-Dest': 'image',
-            'Sec-Fetch-Mode': 'no-cors',
-            'Sec-Fetch-Site': 'cross-site'
+            "User-Agent": "BaphometTierList/1.0",
+            "Accept": "application/json"
         }
         
-        # 4. Timeouts Acumulados (3 segundos rígidos)
-        timeout = aiohttp.ClientTimeout(total=3)
+        base_url = "https://pt.wikipedia.org/w/api.php"
+        timeout = aiohttp.ClientTimeout(total=5)
 
         try:
-            print(f"[DEBUG] Iniciando busca no DDG pelo termo: '{query}'")
-            # 1. Falhas na Biblioteca DuckDuckGo (Isolamento em to_thread com try/except)
-            def run_search():
-                try:
-                    with DDGS() as ddgs:
-                        return list(ddgs.images(query, safesearch='on', max_results=5))
-                except Exception as e:
-                    print(f"[ERRO] Falha interna no DuckDuckGo Search (Rate Limit/Conexão): {e}")
-                    return []
-
-            results = await asyncio.to_thread(run_search)
+            print(f"[DEBUG] Buscando artigo na Wikipedia para: '{query}'")
+            # Passo 1: Resolução do Título
+            search_params = {
+                "action": "query",
+                "list": "search",
+                "srsearch": query,
+                "format": "json"
+            }
             
-            if not results:
-                print(f"[ERRO] Pesquisa '{query}' não retornou imagens ou foi bloqueada pelo DDG.")
+            async with http.get(base_url, params=search_params, headers=headers, timeout=timeout) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                
+            search_results = data.get("query", {}).get("search", [])
+            if not search_results:
+                print(f"[ERRO] Wikipedia: Nenhum artigo encontrado para '{query}'.")
+                return None
+                
+            titulo_artigo = search_results[0].get("title")
+            if not titulo_artigo:
+                return None
+                
+            print(f"[DEBUG] Artigo encontrado: '{titulo_artigo}'. Buscando thumbnail...")
+
+            # Passo 2: Extração da Thumbnail
+            image_params = {
+                "action": "query",
+                "prop": "pageimages",
+                "titles": titulo_artigo,
+                "pithumbsize": 500,
+                "format": "json"
+            }
+            
+            async with http.get(base_url, params=image_params, headers=headers, timeout=timeout) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                
+            pages = data.get("query", {}).get("pages", {})
+            if not pages:
+                return None
+                
+            # Extrai o primeiro resultado do dicionário de páginas
+            page_info = next(iter(pages.values()), {})
+            image_url = page_info.get("thumbnail", {}).get("source")
+            
+            if not image_url:
+                print(f"[ERRO] Wikipedia: O artigo '{titulo_artigo}' não possui imagem principal.")
+                return None
+                
+            # Filtro de Extensão Restrita
+            if image_url.lower().endswith(".svg") or "ambox" in image_url.lower():
+                print(f"[ERRO] Wikipedia: Imagem rejeitada (SVG / Ícone de Sistema) -> {image_url}")
                 return None
 
-            print(f"[DEBUG] Resultados encontrados pelo DDG: {len(results)}")
-
-            for i, img_info in enumerate(results, 1):
-                url = img_info.get("image")
-                
-                # 5. URLs Corrompidas e Base64
-                if not url or not (url.startswith('http://') or url.startswith('https://')):
-                    preview = url[:30] if url else "None"
-                    print(f"[ERRO] Falha ao baixar {preview}... | Motivo: URL Inválida ou Base64")
-                    continue
-                    
-                print(f"[DEBUG] Tentando baixar URL {i}/5: {url}")
-                try:
-                    # 3. Falhas de SSL e Redirecionamentos (ssl=False, allow_redirects=True)
-                    async with http.get(url, headers=headers, allow_redirects=True, timeout=timeout) as response:
-                        if response.status != 200:
-                            print(f"[ERRO] Falha ao baixar {url} | Motivo: Status HTTP {response.status}")
-                            continue
-                            
-                        # 5. Formatos Inválidos no Header
-                        content_type = response.headers.get("Content-Type", "").lower()
-                        if "image/" not in content_type or "svg" in content_type:
-                            print(f"[ERRO] Falha ao baixar {url} | Motivo: Content-Type incompatível ({content_type})")
-                            continue
-                            
-                        data = bytearray()
-                        async for chunk in response.content.iter_chunked(64 * 1024):
-                            data.extend(chunk)
-                            if len(data) > getattr(self, 'MAX_IMAGE_BYTES', 5 * 1024 * 1024):
-                                break
-                                
-                        if len(data) > getattr(self, 'MAX_IMAGE_BYTES', 5 * 1024 * 1024) or not data:
-                            print(f"[ERRO] Falha ao baixar {url} | Motivo: Imagem excedeu 5MB ou payload vazio")
-                            continue
-                            
-                        print(f"[DEBUG] Bytes baixados: {len(data)} | Tentando abrir no Pillow...")
-                        
-                        # 5. Sanitização final no Pillow (Blindagem de bytes corrompidos)
-                        try:
-                            # Tenta abrir para validar se os bytes são realmente decodificáveis
-                            img_test = Image.open(io.BytesIO(bytes(data)))
-                            # Força o RGBA como pedido e garante que a imagem sobrevive à conversão
-                            img_test.convert('RGBA')
-                        except Exception as e:
-                            print(f"[ERRO] Pillow recusou o arquivo | Motivo: {type(e).__name__} ({e})")
-                            continue
-                            
-                        print(f"[DEBUG] Sucesso! Imagem de {len(data)} bytes validada e pronta para Tier List.")
-                        return bytes(data)
-                        
-                except asyncio.TimeoutError:
-                    print(f"[ERRO] Falha ao baixar {url} | Motivo: Timeout (demorou mais de 3 segundos)")
-                    continue
-                except aiohttp.ClientError as e:
-                    print(f"[ERRO] Falha ao baixar {url} | Motivo: Erro de Rede / Cloudflare ({e})")
-                    continue
-                except Exception as e:
-                    print(f"[ERRO] Falha ao baixar {url} | Motivo: Exceção Inesperada ({e})")
-                    continue
+            print(f"[DEBUG] Fazendo download da imagem oficial: {image_url}")
             
-            print(f"[ERRO] Todos os 5 links falharam para a busca: '{query}'. Acionando fallback textual.")
-            return None
+            # Passo 3: Download da Imagem e Sanitização no Pillow
+            async with http.get(image_url, headers=headers, timeout=timeout) as resp:
+                if resp.status != 200:
+                    return None
+                    
+                image_data = await resp.read()
+                
+                try:
+                    # Tenta abrir para validar se os bytes são realmente decodificáveis
+                    img_test = Image.open(io.BytesIO(bytes(image_data)))
+                    # Força o RGBA como pedido e garante que a imagem sobrevive à conversão
+                    # (A conversão real para o fluxo principal ocorre no TierListRenderer._draw_image_card)
+                    img_test.convert('RGBA')
+                except Exception as e:
+                    print(f"[ERRO] Pillow recusou o arquivo da Wikipedia | Motivo: {e}")
+                    return None
+                    
+                print(f"[DEBUG] Sucesso! Imagem da Wikipedia de {len(image_data)} bytes pronta.")
+                return bytes(image_data)
 
         except Exception as e:
-            print(f"[ERRO] Erro Crítico no iterador de busca web: {e}")
+            print(f"[ERRO] Falha silenciosa no motor da Wikipedia: {e}")
             return None
 
     @app_commands.command(
