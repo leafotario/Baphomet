@@ -16,6 +16,11 @@ from discord import app_commands
 from discord.ext import commands
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
+try:
+    from duckduckgo_search import DDGS
+except ImportError:
+    DDGS = None
+
 
 # Evita que imagens absurdamente gigantes tentem explodir a memória do bot.
 Image.MAX_IMAGE_PIXELS = 25_000_000
@@ -459,7 +464,7 @@ class TierListRenderer:
         sz = self.ITEM_SIZE
 
         try:
-            raw = Image.open(io.BytesIO(item.image_bytes)).convert("RGB")
+            raw = Image.open(io.BytesIO(item.image_bytes)).convert("RGBA")
             fitted = ImageOps.fit(raw, (sz, sz), method=Image.Resampling.LANCZOS)
         except Exception:
             # Fallback para card de texto
@@ -714,21 +719,42 @@ class AddItemModal(discord.ui.Modal):
             required=False,
         )
 
+        self.user_id_input = discord.ui.TextInput(
+            label="Foto de Usuário (ID)",
+            placeholder="ID do usuário: 123456789012345678",
+            min_length=0,
+            max_length=25,
+            required=False,
+        )
+
+        self.web_search_input = discord.ui.TextInput(
+            label="Pesquisa na Web (Termo)",
+            placeholder="Exemplo: Maçã, Goku, Logo do Python",
+            min_length=0,
+            max_length=50,
+            required=False,
+        )
+
         self.add_item(self.item_name)
         self.add_item(self.image_url)
+        self.add_item(self.user_id_input)
+        self.add_item(self.web_search_input)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        # Prevenção de Timeouts: Avisa ao Discord que o processamento será longo
+        await interaction.response.defer(ephemeral=True)
+
         session = self.cog.sessions.get(self.owner_id)
 
         if session is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ Essa sessão expirou ou foi cancelada.",
                 ephemeral=True,
             )
             return
 
         if not session.tiers:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "⚠️ Configure as tiers antes de adicionar itens.",
                 ephemeral=True,
             )
@@ -737,7 +763,7 @@ class AddItemModal(discord.ui.Modal):
         total_items = sum(len(items) for items in session.items.values())
 
         if total_items >= self.cog.MAX_ITEMS_PER_SESSION:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 f"⚠️ Limite de **{self.cog.MAX_ITEMS_PER_SESSION} itens** atingido nessa tier list.",
                 ephemeral=True,
             )
@@ -745,16 +771,36 @@ class AddItemModal(discord.ui.Modal):
 
         clean_item = self.cog.clean_text(str(self.item_name.value), max_length=25)
         clean_url = str(self.image_url.value).strip() or None
+        user_id_str = str(self.user_id_input.value).strip()
+        web_search_str = str(self.web_search_input.value).strip()
+        
+        image_bytes = None
 
-        # Não tenta validar baixando aqui.
-        # Só descarta URLs obviamente inválidas.
-        # O download real acontece no botão Gerar Imagem.
-        if clean_url and not self.cog.looks_like_url(clean_url):
-            clean_url = None
+        # Hierarquia Estrita de Prioridade
+        # Prioridade 1: Usa a URL informada
+        if clean_url:
+            if not self.cog.looks_like_url(clean_url):
+                clean_url = None
+        # Prioridade 2: Sem URL, mas com ID informado. Tenta baixar avatar via Discord API
+        elif user_id_str:
+            try:
+                user_id = int(user_id_str)
+                user = await interaction.client.fetch_user(user_id)
+                clean_url = user.display_avatar.replace(format='png', size=256).url
+            except (ValueError, discord.NotFound, discord.HTTPException):
+                clean_url = None
+        # Prioridade 3: Sem URL ou ID, mas com Pesquisa Web solicitada. Busca a imagem online!
+        elif web_search_str:
+            async with aiohttp.ClientSession() as http:
+                fetched_bytes = await self.cog.fetch_image_from_web(http, web_search_str)
+                if fetched_bytes:
+                    image_bytes = fetched_bytes
+                    clean_url = "(Pesquisa Web Automática)"  # Fallback estético para o log interno
 
         item = TierItem(
             name=clean_item,
             image_url=clean_url,
+            image_bytes=image_bytes,
         )
 
         view = ItemTierSelectView(
@@ -765,16 +811,17 @@ class AddItemModal(discord.ui.Modal):
         )
 
         extra = (
-            "\n🖼️ Imagem detectada. Se o link falhar, o bot usa card de texto automaticamente."
-            if clean_url
+            "\n🖼️ Imagem detectada com sucesso. Se a renderização falhar, o bot usará card de texto."
+            if (clean_url or image_bytes)
             else ""
         )
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"📌 Escolha em qual tier colocar **{discord.utils.escape_markdown(clean_item)}**:{extra}",
             view=view,
             ephemeral=True,
         )
+
 
 
 class ItemTierSelect(discord.ui.Select):
@@ -1150,6 +1197,70 @@ class TierListCog(
         self.sessions: dict[int, TierListSession] = {}
 
         self.renderer = TierListRenderer()
+
+    async def fetch_image_from_web(self, http: aiohttp.ClientSession, query: str) -> bytes | None:
+        """
+        Pesquisa imagens usando DDGS e baixa a melhor candidata.
+        Tenta iterativamente o top 5 resultados para contornar links quebrados e Timeouts.
+        """
+        if not DDGS:
+            return None
+
+        # Headers pesados para fingir ser navegador e evitar 403 no download das imagens
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        }
+        
+        # Timeout restrito de 4s por tentativa
+        timeout = aiohttp.ClientTimeout(total=4)
+
+        try:
+            # 1. Realiza a busca bloqueante em outra thread para manter o Event Loop livre
+            def run_search():
+                # safesearch='on' para evitar conteúdo explícito (banimento do bot)
+                with DDGS() as ddgs:
+                    return list(ddgs.images(query, safesearch='on', max_results=5))
+
+            results = await asyncio.to_thread(run_search)
+            
+            if not results:
+                return None
+
+            # 2. Tenta baixar o Top 5 até dar certo
+            for img_info in results:
+                url = img_info.get("image")
+                if not url:
+                    continue
+                    
+                try:
+                    async with http.get(url, headers=headers, allow_redirects=True, timeout=timeout) as response:
+                        if response.status != 200:
+                            continue
+                            
+                        content_type = response.headers.get("Content-Type", "").lower()
+                        # Restrição de tipos - descarta svg, text/html, etc
+                        if "image/" not in content_type or "svg" in content_type:
+                            continue
+                            
+                        data = bytearray()
+                        async for chunk in response.content.iter_chunked(64 * 1024):
+                            data.extend(chunk)
+                            if len(data) > self.MAX_IMAGE_BYTES:
+                                break  # aborta leitura se passar do tamanho, pula para proxima imagem
+                                
+                        if len(data) > self.MAX_IMAGE_BYTES or not data:
+                            continue
+                            
+                        return bytes(data)
+                except (aiohttp.ClientError, asyncio.TimeoutError):
+                    continue  # Timeout ou erro HTTP -> Próxima imagem!
+            
+            # Se tentou as 5 e todas falharam (ou links zumbis), retorna None
+            return None
+
+        except Exception:
+            return None
 
     @app_commands.command(
         name="criar",
