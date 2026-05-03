@@ -14,7 +14,13 @@ from .xp_cards import XpCardRenderer
 from .xp_models import XpDifficulty
 from .xp_repository import XpRepository
 from .xp_service import XpService
-from .xp_views import LeaderboardView, RankCardView, build_leaderboard_embed
+from .xp_views import (
+    LeaderboardImagePaginator,
+    LeaderboardView,
+    RankCardView,
+    _resolve_entries,
+    build_leaderboard_embed,
+)
 
 LOGGER = logging.getLogger("baphomet.xp")
 DATA_DIR = pathlib.Path("data")
@@ -155,24 +161,31 @@ class XpPublicCommands(commands.Cog):
             await interaction.response.send_message("🕯️ Este Comando Só Pode Ser Usado Dentro De Um Servidor.", ephemeral=True)
             return
         await interaction.response.defer(thinking=True)
-        view = LeaderboardView(self.service)
-        entries = await self.service.get_leaderboard_entries(interaction.guild, 5)
-        resolved: list[tuple] = []
-        for entry in entries:
-            member = interaction.guild.get_member(entry.user_id)
-            if member is None:
-                try:
-                    member = await interaction.guild.fetch_member(entry.user_id)
-                except discord.HTTPException:
-                    member = None
-            resolved.append((entry, member))
+
+        # Busca o total de usuários no BD para calcular páginas
+        total = await self.service.repository.count_ranked_profiles(interaction.guild.id)
+
+        # Monta o paginador de imagens
+        view = LeaderboardImagePaginator(
+            service=self.service,
+            cards=self.cards,
+            guild=interaction.guild,
+            author_id=interaction.user.id,
+            total_entries=total,
+        )
+
         try:
-            image = await self.cards.render_leaderboard_card(guild=interaction.guild, entries=resolved)
-            await interaction.edit_original_response(attachments=[discord.File(image, filename="leaderboard.png")], view=view)
+            file = await view._render_page()
+            await interaction.edit_original_response(attachments=[file], view=view)
         except Exception:
+            # Fallback para embed de texto caso o Pillow falhe
             page = await self.service.get_leaderboard_page(interaction.guild, page=0, page_size=5)
             embed = build_leaderboard_embed(interaction.guild, page.entries, page.page, page.total_entries, page.page_size)
-            await interaction.edit_original_response(embed=embed, view=view)
+            fallback = LeaderboardView(self.service)
+            await interaction.edit_original_response(embed=embed, view=fallback)
+            fallback.message = await interaction.original_response()
+            return
+
         view.message = await interaction.original_response()
 
 

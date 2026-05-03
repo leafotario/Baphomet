@@ -416,7 +416,7 @@ class XpCardRenderer:
         # Offload para a Thread
         return await asyncio.to_thread(self._build_rank_card_image, guild.name, snapshot, avatar_bytes, banner_bytes)
 
-    def _build_leaderboard_image(self, guild_name: str, icon_bytes: bytes | None, entries_data: list[tuple[LeaderboardEntry, bytes | None]]) -> io.BytesIO:
+    def _build_leaderboard_image(self, guild_name: str, icon_bytes: bytes | None, entries_data: list[tuple[LeaderboardEntry, bytes | None]], page_label: str = "") -> io.BytesIO:
         """Constrói o leaderboard escalando a altura magicamente de acordo com N itens."""
         width = 1180
         row_height = 140
@@ -435,28 +435,36 @@ class XpCardRenderer:
         self._draw_text_with_shadow(draw, (60, 50), "HALL DA GLÓRIA", font=self._font(58, bold=True), fill=(255, 255, 255, 255))
         self._draw_text_with_shadow(draw, (60, 120), self._truncate(guild_name, 45), font=self._font(30), fill=(210, 210, 210, 255))
         
-        # Cores Premium para o Pódio
+        # Indicador de página no canto superior direito
+        if page_label:
+            self._draw_text_with_shadow(draw, (width - 280, 65), page_label, font=self._font(26, bold=True), fill=(180, 180, 180, 255))
+        
+        # Cores Premium para o Pódio (posições globais 1, 2, 3)
         medal_colors = {1: (255, 215, 0, 255), 2: (211, 211, 211, 255), 3: (205, 127, 50, 255)}
         
         if not entries_data:
             self._draw_text_with_shadow(draw, (60, 210), "Nenhuma lenda emergiu neste servidor ainda.", font=self._font(30), fill=(180, 180, 180, 255))
         else:
-            for index, (entry, avatar_bytes) in enumerate(entries_data, start=1):
-                y = top_padding + ((index - 1) * row_height)
+            for visual_index, (entry, avatar_bytes) in enumerate(entries_data):
+                y = top_padding + (visual_index * row_height)
+                
+                # Usa a posição REAL do ranking (entry.position), não o índice local
+                rank = entry.position
                 
                 # Container da Linha
-                bg_alpha = 150 if index == 1 else 110 if index == 2 else 90 if index == 3 else 60
-                outline_color = (255, 255, 255, 40) if index <= 3 else None
+                bg_alpha = 150 if rank == 1 else 110 if rank == 2 else 90 if rank == 3 else 60
+                outline_color = (255, 255, 255, 40) if rank <= 3 else None
                 draw.rounded_rectangle((50, y, width - 50, y + 120), radius=28, fill=(0, 0, 0, bg_alpha), outline=outline_color, width=2)
                 
                 # Badge de Posição
-                badge_color = medal_colors.get(index, (80, 80, 80, 200))
+                badge_color = medal_colors.get(rank, (80, 80, 80, 200))
                 draw.rounded_rectangle((75, y + 25, 145, y + 95), radius=20, fill=badge_color)
                 
                 # Texto centralizado no badge
-                text_bbox = draw.textbbox((0,0), f"#{index}", font=self._font(36, bold=True))
+                rank_text = f"#{rank}"
+                text_bbox = draw.textbbox((0,0), rank_text, font=self._font(36, bold=True))
                 text_w = text_bbox[2] - text_bbox[0]
-                self._draw_text_with_shadow(draw, (75 + (70 - text_w)//2, y + 25), f"#{index}", font=self._font(36, bold=True), fill=(0, 0, 0, 255), shadow_color=(0,0,0,0))
+                self._draw_text_with_shadow(draw, (75 + (70 - text_w)//2, y + 25), rank_text, font=self._font(36, bold=True), fill=(0, 0, 0, 255), shadow_color=(0,0,0,0))
                 
                 # Avatar
                 avatar, dom_color = self._create_circular_avatar(avatar_bytes, 85)
@@ -465,13 +473,13 @@ class XpCardRenderer:
                 
                 # Info
                 display_name = self._truncate(entry.display_name, 22)
-                name_color = badge_color if index <= 3 else (255, 255, 255, 255)
+                name_color = badge_color if rank <= 3 else (255, 255, 255, 255)
                 self._draw_text_with_shadow(draw, (280, y + 25), display_name, font=self._font(32, bold=True), fill=name_color)
                 self._draw_text_with_shadow(draw, (280, y + 70), f"LVL {entry.level}  •  {entry.total_xp:,} XP", font=self._font(22), fill=(200, 200, 200, 255))
                 
                 # Progress Bar Menor
                 bar_box = (720, y + 45, 1080, y + 65)
-                grad_start = badge_color if index <= 3 else dom_color + (255,)
+                grad_start = badge_color if rank <= 3 else dom_color + (255,)
                 gradient_bar = self._draw_progress_bar(draw, bar_box, entry.progress_ratio, start_color=grad_start, end_color=(0, 255, 255, 255))
                 if gradient_bar:
                     layer.paste(gradient_bar, (bar_box[0], bar_box[1]), gradient_bar)
@@ -490,6 +498,7 @@ class XpCardRenderer:
         *,
         guild: discord.Guild,
         entries: Iterable[tuple[LeaderboardEntry, discord.Member | discord.User | None]],
+        page_label: str = "",
     ) -> io.BytesIO:
         """Busca todas as imagens (Icone, Avatares) e delega para thread pool."""
         entries_list = list(entries)
@@ -510,4 +519,4 @@ class XpCardRenderer:
         # Monta payload para o Worker
         entries_data = [(entry, avatar) for (entry, _), avatar in zip(entries_list, avatars_bytes)]
         
-        return await asyncio.to_thread(self._build_leaderboard_image, guild.name, icon_bytes, entries_data)
+        return await asyncio.to_thread(self._build_leaderboard_image, guild.name, icon_bytes, entries_data, page_label)

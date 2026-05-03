@@ -126,3 +126,114 @@ class LeaderboardView(discord.ui.View):
         paginator = FullLeaderboardPaginator(self.service, interaction.guild, interaction.user.id)
         embed = await paginator._embed()
         await interaction.response.send_message(embed=embed, view=paginator, ephemeral=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Paginador Visual do Leaderboard (Imagem Pillow + Botões)
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _resolve_entries(
+    guild: discord.Guild,
+    entries: list[LeaderboardEntry],
+) -> list[tuple[LeaderboardEntry, discord.Member | discord.User | None]]:
+    """Resolve os membros do Discord a partir das entries do banco de dados."""
+    resolved: list[tuple[LeaderboardEntry, discord.Member | discord.User | None]] = []
+    for entry in entries:
+        member = guild.get_member(entry.user_id)
+        if member is None:
+            try:
+                member = await guild.fetch_member(entry.user_id)
+            except discord.HTTPException:
+                member = None
+        resolved.append((entry, member))
+    return resolved
+
+
+class LeaderboardImagePaginator(discord.ui.View):
+    """View paginada com imagem Pillow. Usa LIMIT/OFFSET no banco de dados."""
+
+    PAGE_SIZE = 5
+
+    def __init__(
+        self,
+        service: XpService,
+        cards: XpCardRenderer,
+        guild: discord.Guild,
+        author_id: int,
+        total_entries: int,
+        *,
+        timeout: float = 180,
+    ) -> None:
+        super().__init__(timeout=timeout)
+        self.service = service
+        self.cards = cards
+        self.guild = guild
+        self.author_id = author_id
+        self.total_entries = total_entries
+        self.current_page = 0
+        self.total_pages = max(1, math.ceil(total_entries / self.PAGE_SIZE))
+        self.message: discord.Message | None = None
+        self._update_buttons()
+
+    def _update_buttons(self) -> None:
+        """Atualiza o estado dos botões com base na página atual."""
+        self.btn_prev.disabled = self.current_page <= 0
+        self.btn_indicator.label = f"Página {self.current_page + 1}/{self.total_pages}"
+        self.btn_next.disabled = self.current_page >= self.total_pages - 1
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message(
+                "⛔ Esse paginador pertence a quem abriu o leaderboard.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+    async def _render_page(self) -> discord.File:
+        """Busca os 5 usuários da página atual no BD e renderiza o card."""
+        page_result = await self.service.get_leaderboard_page(
+            self.guild, self.current_page, self.PAGE_SIZE
+        )
+        # Atualiza o total caso membros tenham entrado/saído entre cliques
+        self.total_entries = page_result.total_entries
+        self.total_pages = max(1, math.ceil(self.total_entries / self.PAGE_SIZE))
+
+        resolved = await _resolve_entries(self.guild, page_result.entries)
+
+        page_label = f"Página {self.current_page + 1}/{self.total_pages}"
+        image = await self.cards.render_leaderboard_card(
+            guild=self.guild, entries=resolved, page_label=page_label
+        )
+        return discord.File(image, filename="leaderboard.png")
+
+    # ── Botões ──────────────────────────────────────────────────────
+
+    @discord.ui.button(label="⬅️ Anterior", style=discord.ButtonStyle.secondary, custom_id="lb_prev")
+    async def btn_prev(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer()
+        self.current_page = max(0, self.current_page - 1)
+        self._update_buttons()
+        file = await self._render_page()
+        await interaction.edit_original_response(attachments=[file], view=self)
+
+    @discord.ui.button(label="Página 1/1", style=discord.ButtonStyle.primary, disabled=True, custom_id="lb_indicator")
+    async def btn_indicator(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        # Botão decorativo — nunca clicável
+        await interaction.response.defer()
+
+    @discord.ui.button(label="Próxima ➡️", style=discord.ButtonStyle.secondary, custom_id="lb_next")
+    async def btn_next(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer()
+        self.current_page = min(self.total_pages - 1, self.current_page + 1)
+        self._update_buttons()
+        file = await self._render_page()
+        await interaction.edit_original_response(attachments=[file], view=self)
