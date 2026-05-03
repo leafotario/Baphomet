@@ -13,23 +13,31 @@ from ..utils import LeaderboardEntry, RankSnapshot
 
 # Caminhos sugeridos para as fontes customizadas. 
 # O usuário deve colocar as fontes nesta pasta para o efeito máximo.
-FONT_REG = "assets/fonts/Poppins-Regular.ttf"
+FONT_REGULAR = "assets/fonts/Poppins-Regular.ttf"
 FONT_BOLD = "assets/fonts/Poppins-Bold.ttf"
+FONT_BLACK = "assets/fonts/Montserrat-Black.ttf"
 
 
 class XpCardRenderer:
-    def __init__(self, *, font_regular_path: str = FONT_REG, font_bold_path: str = FONT_BOLD) -> None:
+    def __init__(self, font_regular_path: str = FONT_REGULAR, font_bold_path: str = FONT_BOLD, font_black_path: str = FONT_BLACK) -> None:
         self.font_regular_path = font_regular_path
         self.font_bold_path = font_bold_path
+        self.font_black_path = font_black_path
 
-    def _font(self, size: int, *, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-        path = self.font_bold_path if bold else self.font_regular_path
+    def _font(self, size: int, weight: str = "regular") -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+        if weight == "black":
+            path = self.font_black_path
+        elif weight == "bold":
+            path = self.font_bold_path
+        else:
+            path = self.font_regular_path
+            
         try:
             return ImageFont.truetype(path, size=size)
         except OSError:
             try:
                 # Fallbacks nativos do Linux caso a fonte customizada não exista
-                fallback = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+                fallback = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if weight in ["bold", "black"] else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
                 return ImageFont.truetype(fallback, size=size)
             except OSError:
                 return ImageFont.load_default()
@@ -53,21 +61,26 @@ class XpCardRenderer:
             return (color[0], color[1], color[2])
         return (120, 60, 240) # Roxo Baphomet fallback
 
-    def _draw_text_with_shadow(
+    def _draw_text(
         self, 
         draw: ImageDraw.ImageDraw, 
         pos: tuple[int, int], 
         text: str, 
         font: ImageFont.FreeTypeFont | ImageFont.ImageFont, 
         fill: tuple, 
-        shadow_color: tuple = (0, 0, 0, 200), 
-        offset: tuple[int, int] = (3, 3)
+        shadow_color: tuple = (0, 0, 0, 180), 
+        shadow_offset: tuple[int, int] = (3, 3),
+        stroke_width: int = 1,
+        stroke_fill: tuple = (0, 0, 0, 150)
     ) -> None:
-        """Desenha texto com Drop Shadow."""
+        """Desenha texto com Shadow e Contorno (Stroke) para legibilidade impecável."""
         x, y = pos
-        sx, sy = offset
-        draw.text((x + sx, y + sy), text, font=font, fill=shadow_color)
-        draw.text((x, y), text, font=font, fill=fill)
+        sx, sy = shadow_offset
+        # Drop Shadow Direcional
+        if shadow_color[3] > 0:
+            draw.text((x + sx, y + sy), text, font=font, fill=shadow_color)
+        # Texto principal com Stroke (Borda)
+        draw.text((x, y), text, font=font, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
 
     def _create_circular_avatar(self, avatar_bytes: bytes | None, size: int) -> tuple[Image.Image, tuple[int, int, int]]:
         """Recorta um avatar com Anti-Aliasing perfeito e extrai a cor dominante."""
@@ -192,14 +205,14 @@ class XpCardRenderer:
         rank_text = f"RANK #{snapshot.position}" if snapshot.position is not None else "SEM RANK"
         progress_text = f"{snapshot.xp_into_level:,} / {snapshot.xp_for_next_level:,} XP"
         
-        # Textos com Sombra
-        self._draw_text_with_shadow(draw, (300, 60), guild_text, font=self._font(26, bold=True), fill=(210, 210, 210, 255))
-        self._draw_text_with_shadow(draw, (300, 120), user_name, font=self._font(54, bold=True), fill=(255, 255, 255, 255))
+        # Textos Refinados com Tipografia Avançada
+        self._draw_text(draw, (300, 60), guild_text, font=self._font(26, weight="bold"), fill=(210, 210, 210, 255))
+        self._draw_text(draw, (300, 110), user_name, font=self._font(56, weight="bold"), fill=(255, 255, 255, 255), stroke_width=1, stroke_fill=(0,0,0,100))
         
-        self._draw_text_with_shadow(draw, (300, 200), f"LVL {snapshot.level}", font=self._font(42, bold=True), fill=dom_color + (255,))
-        self._draw_text_with_shadow(draw, (470, 215), f"Total: {snapshot.total_xp:,} XP", font=self._font(22), fill=(220, 220, 220, 255))
+        self._draw_text(draw, (300, 200), f"LVL {snapshot.level}", font=self._font(48, weight="black"), fill=dom_color + (255,), stroke_width=2, stroke_fill=(0,0,0,180))
+        self._draw_text(draw, (490, 222), f"Total: {snapshot.total_xp:,} XP", font=self._font(22, weight="regular"), fill=(220, 220, 220, 255))
         
-        self._draw_text_with_shadow(draw, (width - 340, 60), rank_text, font=self._font(36, bold=True), fill=(255, 220, 50, 255))
+        self._draw_text(draw, (width - 340, 60), rank_text, font=self._font(36, weight="black"), fill=(255, 220, 50, 255), stroke_width=2, stroke_fill=(0,0,0,120))
         
         # Barra de Progresso
         bar_box = (300, 260, width - 60, 295)
@@ -208,11 +221,12 @@ class XpCardRenderer:
         if gradient_bar:
             layer.paste(gradient_bar, (bar_box[0], bar_box[1]), gradient_bar)
             
-        # Texto dentro da barra
-        text_bbox = draw.textbbox((0, 0), progress_text, font=self._font(20, bold=True))
+        # Texto dentro da barra matematicamente centralizado
+        text_font = self._font(20, weight="bold")
+        text_bbox = draw.textbbox((0, 0), progress_text, font=text_font)
         text_w = text_bbox[2] - text_bbox[0]
         text_x = bar_box[0] + (bar_box[2] - bar_box[0]) // 2 - text_w // 2
-        self._draw_text_with_shadow(draw, (text_x, bar_box[1] + 5), progress_text, font=self._font(20, bold=True), fill=(255, 255, 255, 255), shadow_color=(0,0,0,255))
+        self._draw_text(draw, (text_x, bar_box[1] + 5), progress_text, font=text_font, fill=(255, 255, 255, 255), shadow_color=(0,0,0,255), stroke_width=2, stroke_fill=(0,0,0,255))
         
         # Mesclar as Layers
         final_img = Image.alpha_composite(canvas, layer)
@@ -243,10 +257,10 @@ class XpCardRenderer:
         return await asyncio.to_thread(self._build_rank_card_image, guild.name, snapshot, avatar_bytes, banner_bytes)
 
     def _build_leaderboard_image(self, guild_name: str, icon_bytes: bytes | None, entries_data: list[tuple[LeaderboardEntry, bytes | None]]) -> io.BytesIO:
-        """Constrói o leaderboard escalando a altura magicamente de acordo com N itens."""
-        width = 1180
-        row_height = 140
-        top_padding = 190
+        """Constrói o leaderboard com alinhamento matemático e espaçamento premium."""
+        width = 1200
+        row_height = 150
+        top_padding = 220
         bottom_padding = 60
         
         # Altura dinâmica à prova de futuro
@@ -258,52 +272,59 @@ class XpCardRenderer:
         
         draw.rounded_rectangle((24, 24, width - 24, height - 24), radius=35, fill=(0, 0, 0, 110), outline=(255, 255, 255, 30), width=2)
         
-        self._draw_text_with_shadow(draw, (60, 50), "HALL DA GLÓRIA", font=self._font(58, bold=True), fill=(255, 255, 255, 255))
-        self._draw_text_with_shadow(draw, (60, 120), self._truncate(guild_name, 45), font=self._font(30), fill=(210, 210, 210, 255))
+        self._draw_text(draw, (60, 50), "LEADERBOARD", font=self._font(64, weight="black"), fill=(255, 255, 255, 255), stroke_width=2, stroke_fill=(0,0,0,100))
+        self._draw_text(draw, (65, 130), self._truncate(guild_name, 45), font=self._font(32, weight="regular"), fill=(210, 210, 210, 255))
         
         # Cores Premium para o Pódio
         medal_colors = {1: (255, 215, 0, 255), 2: (211, 211, 211, 255), 3: (205, 127, 50, 255)}
         
         if not entries_data:
-            self._draw_text_with_shadow(draw, (60, 210), "Nenhuma lenda emergiu neste servidor ainda.", font=self._font(30), fill=(180, 180, 180, 255))
+            self._draw_text(draw, (60, 230), "Nenhuma lenda emergiu neste servidor ainda.", font=self._font(30, weight="regular"), fill=(180, 180, 180, 255))
         else:
             for index, (entry, avatar_bytes) in enumerate(entries_data, start=1):
                 y = top_padding + ((index - 1) * row_height)
                 
-                # Container da Linha
+                # Container da Linha (Maior respiro, y + 130)
                 bg_alpha = 150 if index == 1 else 110 if index == 2 else 90 if index == 3 else 60
                 outline_color = (255, 255, 255, 40) if index <= 3 else None
-                draw.rounded_rectangle((50, y, width - 50, y + 120), radius=28, fill=(0, 0, 0, bg_alpha), outline=outline_color, width=2)
+                draw.rounded_rectangle((50, y, width - 50, y + 130), radius=28, fill=(0, 0, 0, bg_alpha), outline=outline_color, width=2)
                 
-                # Badge de Posição
+                # Badge de Posição Matematicamente Alinhado
+                badge_x, badge_w, badge_h = 80, 90, 70
                 badge_color = medal_colors.get(index, (80, 80, 80, 200))
-                draw.rounded_rectangle((75, y + 25, 145, y + 95), radius=20, fill=badge_color)
+                draw.rounded_rectangle((badge_x, y + 30, badge_x + badge_w, y + 30 + badge_h), radius=20, fill=badge_color)
                 
-                # Texto centralizado no badge
-                text_bbox = draw.textbbox((0,0), f"#{index}", font=self._font(36, bold=True))
+                # Texto centralizado no badge usando textbbox real
+                badge_font = self._font(36, weight="black")
+                text_bbox = draw.textbbox((0,0), f"#{index}", font=badge_font)
                 text_w = text_bbox[2] - text_bbox[0]
-                self._draw_text_with_shadow(draw, (75 + (70 - text_w)//2, y + 25), f"#{index}", font=self._font(36, bold=True), fill=(0, 0, 0, 255), shadow_color=(0,0,0,0))
+                text_h = text_bbox[3] - text_bbox[1]
+                pos_x = badge_x + (badge_w - text_w)//2
+                # Ajuste óptico no Y por causa do topo das fontes maiúsculas
+                pos_y = y + 30 + (badge_h - text_h)//2 - 6 
+                self._draw_text(draw, (pos_x, pos_y), f"#{index}", font=badge_font, fill=(0, 0, 0, 255), shadow_color=(0,0,0,0), stroke_width=0)
                 
-                # Avatar
-                avatar, dom_color = self._create_circular_avatar(avatar_bytes, 85)
-                draw.ellipse((161, y + 15, 249, y + 103), fill=dom_color + (255,))
-                layer.paste(avatar, (165, y + 19), avatar)
+                # Avatar (Fixo no eixo X = 200)
+                avatar, dom_color = self._create_circular_avatar(avatar_bytes, 90)
+                # Borda Dinâmica
+                draw.ellipse((196, y + 16, 294, y + 114), fill=dom_color + (255,))
+                layer.paste(avatar, (200, y + 20), avatar)
                 
-                # Info
-                display_name = self._truncate(entry.display_name, 22)
+                # Nome e Info (Fixo no eixo X = 320)
+                display_name = self._truncate(entry.display_name, 18)
                 name_color = badge_color if index <= 3 else (255, 255, 255, 255)
-                self._draw_text_with_shadow(draw, (280, y + 25), display_name, font=self._font(32, bold=True), fill=name_color)
-                self._draw_text_with_shadow(draw, (280, y + 70), f"LVL {entry.level}  •  {entry.total_xp:,} XP", font=self._font(22), fill=(200, 200, 200, 255))
+                self._draw_text(draw, (320, y + 30), display_name, font=self._font(34, weight="bold"), fill=name_color, stroke_width=1)
+                self._draw_text(draw, (320, y + 78), f"LVL {entry.level}  •  {entry.total_xp:,} XP", font=self._font(24, weight="regular"), fill=(200, 200, 200, 255))
                 
-                # Progress Bar Menor
-                bar_box = (720, y + 45, 1080, y + 65)
+                # Progress Bar (Fixo no eixo X = 780 para não colidir com os nomes longos)
+                bar_box = (780, y + 50, 1120, y + 70)
                 grad_start = badge_color if index <= 3 else dom_color + (255,)
                 gradient_bar = self._draw_progress_bar(draw, bar_box, entry.progress_ratio, start_color=grad_start, end_color=(0, 255, 255, 255))
                 if gradient_bar:
                     layer.paste(gradient_bar, (bar_box[0], bar_box[1]), gradient_bar)
                     
                 # Texto Progress Menor
-                self._draw_text_with_shadow(draw, (720, y + 75), f"Faltam {entry.remaining_to_next:,} XP", font=self._font(18), fill=(180, 180, 180, 255))
+                self._draw_text(draw, (780, y + 80), f"Faltam {entry.remaining_to_next:,} XP", font=self._font(18, weight="regular"), fill=(180, 180, 180, 255))
                 
         final_img = Image.alpha_composite(canvas, layer)
         output = io.BytesIO()
