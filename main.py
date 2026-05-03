@@ -47,9 +47,14 @@ class MyBot(commands.Bot):
     async def setup_hook(self) -> None:
         asyncio.create_task(start_web_server())
         for filename in sorted(os.listdir("./cogs")):
-            if not filename.endswith(".py") or filename.startswith("__"):
+            if filename.startswith("__") or filename.startswith("xp_"):
                 continue
-            extension = f"cogs.{filename[:-3]}"
+            if filename.endswith(".py"):
+                extension = f"cogs.{filename[:-3]}"
+            elif os.path.isdir(f"./cogs/{filename}") and os.path.isfile(f"./cogs/{filename}/__init__.py"):
+                extension = f"cogs.{filename}"
+            else:
+                continue
             try:
                 await self.load_extension(extension)
                 print(f"✅ Cog {extension} carregado.")
@@ -59,10 +64,10 @@ class MyBot(commands.Bot):
         print("🚀 Comandos sincronizados globalmente!")
 
     async def close(self) -> None:
-        repository = getattr(self, "xp_repository", None)
-        if repository is not None:
+        runtime = getattr(self, "xp_runtime", None)
+        if runtime is not None:
             try:
-                await repository.close()
+                await runtime.repository.close()
             except Exception:
                 pass
         await super().close()
