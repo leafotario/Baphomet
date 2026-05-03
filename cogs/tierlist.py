@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import io
 import math
 import pathlib
@@ -14,12 +15,19 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import (
+    Image,
+    ImageDraw,
+    ImageFilter,
+    ImageFont,
+    ImageOps,
+    UnidentifiedImageError,
+)
 
 try:
-    from duckduckgo_search import DDGS
+    from duckduckgo_search import AsyncDDGS
 except ImportError:
-    DDGS = None
+    AsyncDDGS = None
 
 
 # Evita que imagens absurdamente gigantes tentem explodir a memória do bot.
@@ -99,65 +107,58 @@ class TierListRenderer:
     ROW_PADDING_Y = 20
 
     # ── Items ───────────────────────────────────────────────────
-    ITEM_SIZE = 160          # Quadrado perfeito para imagens
-    TEXT_ITEM_HEIGHT = 70    # Cards de texto puro
+    ITEM_SIZE = 160
+    TEXT_ITEM_HEIGHT = 70
     ITEM_GAP = 20
     ITEM_RADIUS = 15
 
-    # ── Cores (Design System Dark Mode) ─────────────────────────
-    BG_TOP = (20, 20, 28)         # #14141C
-    BG_BOTTOM = (18, 18, 24)      # #121218
-    ROW_BG = (30, 30, 36)         # #1E1E24
-    CARD_BG = (47, 53, 66)        # #2F3542
-    CARD_BORDER = (69, 69, 90)    # #45455A
+    # ── Cores ───────────────────────────────────────────────────
+    BG_TOP = (20, 20, 28)
+    BG_BOTTOM = (18, 18, 24)
+    ROW_BG = (30, 30, 36)
+    CARD_BG = (47, 53, 66)
+    CARD_BORDER = (69, 69, 90)
     TEXT_COLOR = (255, 255, 255)
-    MUTED_COLOR = (164, 176, 190) # #A4B0BE
-    DIVIDER_COLOR = (58, 58, 64)  # #3A3A40
+    MUTED_COLOR = (164, 176, 190)
+    DIVIDER_COLOR = (58, 58, 64)
     SHADOW_COLOR = (0, 0, 0, 80)
 
     TIER_COLORS = [
-        (255, 71, 87),    # S  — Carmesim
-        (255, 165, 2),    # A  — Laranja
-        (236, 204, 104),  # B  — Amarelo
-        (123, 237, 159),  # C  — Verde
-        (112, 161, 255),  # D  — Azul
-        (155, 93, 229),   # E  — Roxo
-        (241, 91, 181),   # F  — Rosa
-        (0, 187, 249),    # G  — Ciano
-        (0, 245, 212),    # H  — Turquesa
-        (199, 125, 255),  # I  — Lavanda
+        (255, 71, 87),
+        (255, 165, 2),
+        (236, 204, 104),
+        (123, 237, 159),
+        (112, 161, 255),
+        (155, 93, 229),
+        (241, 91, 181),
+        (0, 187, 249),
+        (0, 245, 212),
+        (199, 125, 255),
     ]
 
     def __init__(self, font_path: str | None = None) -> None:
         self.font_path = font_path
 
-    # ════════════════════════════════════════════════════════════
-    #  MÉTODO PRINCIPAL
-    # ════════════════════════════════════════════════════════════
-
     def calculate_tierlist_dimensions(
         self,
-        tiers_dict: "OrderedDictType[str, list[TierItem]]",
+        tiers_dict: OrderedDictType[str, list[TierItem]],
         min_width: int = 800,
         max_width: int = 1920,
     ) -> dict:
         """
-        Motor Flexbox de Análise Matemática Pré-Renderização.
-        Calcula as dimensões fluidas baseadas no número de itens.
+        Motor Flexbox de análise matemática pré-renderização.
+        Calcula dimensões fluidas baseadas no número de itens.
         """
-        # 1. Descobrir a quantidade máxima de itens em uma única tier
+
         max_items_in_a_tier = 0
+
         for items in tiers_dict.values():
             if len(items) > max_items_in_a_tier:
                 max_items_in_a_tier = len(items)
 
-        # Se não houver itens, garante que caberá pelo menos 1 espaço vazio (com fallback)
         if max_items_in_a_tier == 0:
             max_items_in_a_tier = 1
 
-        # 2. Calcular a Largura Ideal (se a tela fosse infinita)
-        # largura = PADDING_ESQ_DIR + LARGURA_TITULO + PADDING_INTERNO_ROW_ESQ_DIR
-        #           + (QTD_ITENS * LARGURA_ITEM) + (QTD_ITENS - 1 * GAP_ENTRE_ITENS)
         ideal_width = (
             self.OUTER_PADDING * 2
             + self.TIER_LABEL_WIDTH
@@ -166,38 +167,29 @@ class TierListRenderer:
             + ((max_items_in_a_tier - 1) * self.ITEM_GAP)
         )
 
-        # 3. Travar no Bounding Box (MIN_WIDTH e MAX_WIDTH)
         final_width = max(min_width, min(max_width, ideal_width))
 
-        # 4. Calcular quantos cards realmente cabem na linha com a largura fixada
         items_area_w = (
             final_width
             - self.OUTER_PADDING * 2
             - self.TIER_LABEL_WIDTH
             - self.ROW_PADDING_X * 2
         )
-        
-        per_line = max(1, math.floor(
-            (items_area_w + self.ITEM_GAP) / (self.ITEM_SIZE + self.ITEM_GAP)
-        ))
 
-        # 5. Calcular a quebra (Wrapping) e a altura individual de cada Tier
+        per_line = max(
+            1,
+            math.floor((items_area_w + self.ITEM_GAP) / (self.ITEM_SIZE + self.ITEM_GAP)),
+        )
+
         row_layouts = []
+
         for idx, (tier_name, items) in enumerate(tiers_dict.items()):
             n = len(items)
             lines = max(1, math.ceil(n / per_line)) if n > 0 else 1
 
             line_h = [self.TEXT_ITEM_HEIGHT] * lines
+
             for i, item in enumerate(items):
-                # O sistema de Wrapping (Quebra de linha) não precisa de um loop `while` 
-                # verificando pixels (X/Y) manualmente a cada item porque usamos 
-                # uma malha aritmética baseada em índices (Grid Indexing).
-                # 
-                # Matemática da Quebra:
-                # - item_col = i % per_line -> Determina a coluna (posição X) na linha atual.
-                #   Se per_line for 4 e índice for 4 (5º item), 4 % 4 = 0 (volta para o X inicial).
-                # - item_row = i // per_line -> Determina a linha atual (posição Y).
-                #   Se per_line for 4 e índice for 4, 4 // 4 = 1 (somou no eixo Y, próxima linha).
                 row = i // per_line
                 h = self.ITEM_SIZE if item.image_bytes else self.TEXT_ITEM_HEIGHT
                 line_h[row] = max(line_h[row], h)
@@ -208,37 +200,37 @@ class TierListRenderer:
                 + self.ROW_PADDING_Y * 2
             )
 
-            row_layouts.append({
-                "tier": tier_name,
-                "items": items,
-                "color": self.TIER_COLORS[idx % len(self.TIER_COLORS)],
-                "row_height": max(96, content_h),
-                "per_line": per_line,
-                "line_heights": line_h,
-            })
+            row_layouts.append(
+                {
+                    "tier": tier_name,
+                    "items": items,
+                    "color": self.TIER_COLORS[idx % len(self.TIER_COLORS)],
+                    "row_height": max(96, content_h),
+                    "per_line": per_line,
+                    "line_heights": line_h,
+                }
+            )
 
-        # 6. Altura total sem Aspect Ratio
         rows_h = sum(r["row_height"] for r in row_layouts)
         gaps_h = max(0, len(row_layouts) - 1) * self.TIER_GAP
 
         raw_canvas_h = (
             self.TITLE_HEIGHT
             + self.OUTER_PADDING
-            + rows_h + gaps_h
+            + rows_h
+            + gaps_h
             + self.OUTER_PADDING
             + self.FOOTER_HEIGHT
         )
 
-        # 7. Aspect Ratio Dinâmico
-        # Vamos manter um limite de achatamento (ex: pelo menos 16:9 vertical - mínimo de altura baseado na largura)
-        # 16:9 = height / width >= 0.5625
         min_aspect_ratio = 9 / 16
         min_allowed_height = int(final_width * min_aspect_ratio)
 
         padding_y_extra = 0
+
         if raw_canvas_h < min_allowed_height:
             padding_y_extra = (min_allowed_height - raw_canvas_h) // 2
-            
+
         final_canvas_h = raw_canvas_h + (padding_y_extra * 2)
 
         return {
@@ -251,7 +243,7 @@ class TierListRenderer:
     def generate_tierlist_image(
         self,
         title: str,
-        tiers_dict: "OrderedDictType[str, list[TierItem]]",
+        tiers_dict: OrderedDictType[str, list[TierItem]],
         *,
         creator_name: str = "",
         guild_icon_bytes: bytes | None = None,
@@ -261,68 +253,74 @@ class TierListRenderer:
         tier_font = self._font(46, bold=True)
         item_font = self._font(22, bold=True)
         empty_font = self._font(20)
-        footer_font = self._font(20)
 
-        # -- Análise Matemática Pré-Renderização --
-        layout = self.calculate_tierlist_dimensions(tiers_dict, max_width=1920, min_width=800)
-        
+        layout = self.calculate_tierlist_dimensions(
+            tiers_dict,
+            max_width=1920,
+            min_width=800,
+        )
+
         canvas_w = layout["canvas_w"]
         canvas_h = layout["canvas_h"]
         row_layouts = layout["row_layouts"]
         padding_y_extra = layout["padding_y_extra"]
 
-        # ── Fundo com gradiente vertical sutil ──────────────────
         image = Image.new("RGBA", (canvas_w, canvas_h), self.BG_TOP + (255,))
         grad = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
         grad_draw = ImageDraw.Draw(grad)
+
         for y_px in range(canvas_h):
             ratio = y_px / max(1, canvas_h - 1)
             r = int(self.BG_TOP[0] + (self.BG_BOTTOM[0] - self.BG_TOP[0]) * ratio)
             g = int(self.BG_TOP[1] + (self.BG_BOTTOM[1] - self.BG_TOP[1]) * ratio)
             b = int(self.BG_TOP[2] + (self.BG_BOTTOM[2] - self.BG_TOP[2]) * ratio)
             grad_draw.line([(0, y_px), (canvas_w, y_px)], fill=(r, g, b, 255))
-        image = Image.alpha_composite(image, grad)
 
+        image = Image.alpha_composite(image, grad)
         draw = ImageDraw.Draw(image)
 
-        # ── Título ──────────────────────────────────────────────
         title_y_start = padding_y_extra
+
         self._draw_centered(
             draw,
-            (self.OUTER_PADDING, title_y_start, canvas_w - self.OUTER_PADDING, title_y_start + self.TITLE_HEIGHT),
+            (
+                self.OUTER_PADDING,
+                title_y_start,
+                canvas_w - self.OUTER_PADDING,
+                title_y_start + self.TITLE_HEIGHT,
+            ),
             title,
             title_font,
             self.TEXT_COLOR,
         )
 
-        # ── Fileiras de Tiers ───────────────────────────────────
         y = title_y_start + self.TITLE_HEIGHT + self.OUTER_PADDING
 
         for row in row_layouts:
             rh = row["row_height"]
             color = row["color"]
+
             rx1 = self.OUTER_PADDING
             ry1 = y
             rx2 = canvas_w - self.OUTER_PADDING
             ry2 = y + rh
 
-            # Fundo da fileira
             draw.rounded_rectangle((rx1, ry1, rx2, ry2), radius=18, fill=self.ROW_BG)
 
-            # ── Label da tier (com drop shadow) ─────────────────
             lx1, ly1 = rx1, ry1
             lx2, ly2 = rx1 + self.TIER_LABEL_WIDTH, ry2
 
-            # Sombra projetada (deslocada 4px para baixo-direita)
             shadow = Image.new("RGBA", (self.TIER_LABEL_WIDTH + 8, rh + 8), (0, 0, 0, 0))
             s_draw = ImageDraw.Draw(shadow)
-            s_draw.rounded_rectangle((0, 0, self.TIER_LABEL_WIDTH + 7, rh + 7), radius=18, fill=self.SHADOW_COLOR)
+            s_draw.rounded_rectangle(
+                (0, 0, self.TIER_LABEL_WIDTH + 7, rh + 7),
+                radius=18,
+                fill=self.SHADOW_COLOR,
+            )
             shadow = shadow.filter(ImageFilter.GaussianBlur(radius=6))
             image.paste(shadow, (lx1 - 2, ly1 - 2), shadow)
 
-            # Label principal
             draw.rounded_rectangle((lx1, ly1, lx2, ly2), radius=18, fill=color + (255,))
-            # Corte do arredondamento direito
             draw.rectangle((lx2 - 18, ly1, lx2, ly2), fill=color + (255,))
 
             self._draw_centered(
@@ -333,7 +331,6 @@ class TierListRenderer:
                 (17, 17, 25),
             )
 
-            # ── Items dentro da fileira ─────────────────────────
             ix_start = lx2 + self.ROW_PADDING_X
             iy_start = ry1 + self.ROW_PADDING_Y
             line_heights = row["line_heights"]
@@ -351,7 +348,6 @@ class TierListRenderer:
                     item_row = ii // row["per_line"]
                     item_col = ii % row["per_line"]
 
-                    # Y acumulado das linhas anteriores
                     offset_y = sum(line_heights[:item_row]) + item_row * self.ITEM_GAP
                     item_h = self.ITEM_SIZE if item.image_bytes else self.TEXT_ITEM_HEIGHT
 
@@ -361,9 +357,14 @@ class TierListRenderer:
                     cy2 = cy1 + item_h
 
                     if item.image_bytes:
-                        self._draw_image_card(image, draw, item, (cx1, cy1, cx2, cy2), item_font)
+                        self._draw_image_card(
+                            image,
+                            draw,
+                            item,
+                            (cx1, cy1, cx2, cy2),
+                            item_font,
+                        )
                     else:
-                        # Card de texto: fundo + borda sutil + texto centralizado
                         draw.rounded_rectangle(
                             (cx1, cy1, cx2, cy2),
                             radius=self.ITEM_RADIUS,
@@ -371,6 +372,7 @@ class TierListRenderer:
                             outline=self.CARD_BORDER + (255,),
                             width=2,
                         )
+
                         self._draw_centered_wrap(
                             draw,
                             (cx1 + 10, cy1 + 6, cx2 - 10, cy2 - 6),
@@ -381,17 +383,17 @@ class TierListRenderer:
 
             y += rh + self.TIER_GAP
 
-        # ── Rodapé premium ──────────────────────────────────────
         footer_y = canvas_h - padding_y_extra - self.FOOTER_HEIGHT
 
-        # Linha divisória responsiva
         draw.line(
-            [(self.OUTER_PADDING, footer_y + 10), (canvas_w - self.OUTER_PADDING, footer_y + 10)],
+            [
+                (self.OUTER_PADDING, footer_y + 10),
+                (canvas_w - self.OUTER_PADDING, footer_y + 10),
+            ],
             fill=self.DIVIDER_COLOR + (255,),
             width=2,
         )
 
-        # Ícone do servidor (ancorado na esquerda usando a margem)
         icon_size = 64
         icon_x = self.OUTER_PADDING
         icon_y = footer_y + (self.FOOTER_HEIGHT - icon_size) // 2
@@ -399,31 +401,40 @@ class TierListRenderer:
         if guild_icon_bytes:
             try:
                 icon_img = Image.open(io.BytesIO(guild_icon_bytes)).convert("RGBA")
-                icon_img = ImageOps.fit(icon_img, (icon_size, icon_size), method=Image.Resampling.LANCZOS)
-                # Máscara circular
+                icon_img = ImageOps.fit(
+                    icon_img,
+                    (icon_size, icon_size),
+                    method=Image.Resampling.LANCZOS,
+                )
+
                 mask = Image.new("L", (icon_size * 3, icon_size * 3), 0)
-                ImageDraw.Draw(mask).ellipse((0, 0, icon_size * 3, icon_size * 3), fill=255)
+                ImageDraw.Draw(mask).ellipse(
+                    (0, 0, icon_size * 3, icon_size * 3),
+                    fill=255,
+                )
                 mask = mask.resize((icon_size, icon_size), Image.Resampling.LANCZOS)
                 image.paste(icon_img, (icon_x, icon_y), mask)
             except Exception:
                 pass
 
-        # Texto do rodapé
         from datetime import datetime
+
         date_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+
         parts = ["Gerado por Baphomet"]
+
         if creator_name:
             parts.append(f"Criado por @{creator_name}")
+
         parts.append(date_str)
+
         footer_text = "  •  ".join(parts)
 
-        # Motor de Responsividade do Texto do Rodapé (Shrink to fit)
         f_size = 20
         footer_font = self._font(f_size)
         ft_bbox = draw.textbbox((0, 0), footer_text, font=footer_font)
         ft_w = ft_bbox[2] - ft_bbox[0]
-        
-        # A largura máxima permitida é do ícone até o final do canvas menos a margem direita
+
         max_text_width = (canvas_w - self.OUTER_PADDING) - (icon_x + icon_size + 20)
 
         while ft_w > max_text_width and f_size > 10:
@@ -433,90 +444,123 @@ class TierListRenderer:
             ft_w = ft_bbox[2] - ft_bbox[0]
 
         ft_h = ft_bbox[3] - ft_bbox[1]
-        
-        # Assinatura matematicamente ancorada em X = largura_final - margem - largura_texto
+
         ft_x = canvas_w - self.OUTER_PADDING - ft_w
         ft_y = icon_y + (icon_size - ft_h) // 2
 
         draw.text((ft_x, ft_y), footer_text, font=footer_font, fill=self.MUTED_COLOR + (255,))
 
-        # ── Exportar ────────────────────────────────────────────
         final = image.convert("RGB")
         buf = io.BytesIO()
         final.save(buf, format="PNG", optimize=True)
         buf.seek(0)
-        return buf
 
-    # ════════════════════════════════════════════════════════════
-    #  FUNÇÕES AUXILIARES
-    # ════════════════════════════════════════════════════════════
+        return buf
 
     def _draw_image_card(
         self,
         base: Image.Image,
         draw: ImageDraw.ImageDraw,
-        item: "TierItem",
+        item: TierItem,
         box: tuple[int, int, int, int],
         font: ImageFont.ImageFont,
     ) -> None:
-        """Card com imagem: crop quadrado, cantos arredondados, legenda."""
+        """Card com imagem: crop quadrado, cantos arredondados e legenda."""
+
         x1, y1, x2, y2 = box
         sz = self.ITEM_SIZE
 
         try:
-            raw = Image.open(io.BytesIO(item.image_bytes)).convert("RGBA")
+            raw = Image.open(io.BytesIO(item.image_bytes or b"")).convert("RGBA")
             fitted = ImageOps.fit(raw, (sz, sz), method=Image.Resampling.LANCZOS)
         except Exception:
-            # Fallback para card de texto
-            draw.rounded_rectangle(box, radius=self.ITEM_RADIUS, fill=self.CARD_BG + (255,), outline=self.CARD_BORDER + (255,), width=2)
-            self._draw_centered_wrap(draw, (x1 + 10, y1 + 6, x2 - 10, y2 - 6), item.name, font, self.TEXT_COLOR)
+            draw.rounded_rectangle(
+                box,
+                radius=self.ITEM_RADIUS,
+                fill=self.CARD_BG + (255,),
+                outline=self.CARD_BORDER + (255,),
+                width=2,
+            )
+
+            self._draw_centered_wrap(
+                draw,
+                (x1 + 10, y1 + 6, x2 - 10, y2 - 6),
+                item.name,
+                font,
+                self.TEXT_COLOR,
+            )
+
             return
 
-        # Máscara de cantos arredondados (supersampled 3x para anti-aliasing)
         ms = sz * 3
+
         mask = Image.new("L", (ms, ms), 0)
-        ImageDraw.Draw(mask).rounded_rectangle((0, 0, ms, ms), radius=self.ITEM_RADIUS * 3, fill=255)
+        ImageDraw.Draw(mask).rounded_rectangle(
+            (0, 0, ms, ms),
+            radius=self.ITEM_RADIUS * 3,
+            fill=255,
+        )
         mask = mask.resize((sz, sz), Image.Resampling.LANCZOS)
 
         card = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
         card.paste(fitted, (0, 0))
         card.putalpha(mask)
+
         base.paste(card, (x1, y1), card)
 
-        # Legenda escura sobre a base da imagem
         cap_h = 32
         overlay = Image.new("RGBA", (sz, cap_h), (0, 0, 0, 175))
         cap_y = y1 + sz - cap_h
+
         base.paste(overlay, (x1, cap_y), overlay)
 
         cap_font = self._font(15, bold=True)
-        self._draw_centered(draw, (x1 + 4, cap_y, x2 - 4, cap_y + cap_h), item.name, cap_font, self.TEXT_COLOR)
 
-    def _font(self, size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+        self._draw_centered(
+            draw,
+            (x1 + 4, cap_y, x2 - 4, cap_y + cap_h),
+            item.name,
+            cap_font,
+            self.TEXT_COLOR,
+        )
+
+    def _font(
+        self,
+        size: int,
+        bold: bool = False,
+    ) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+
         candidates: list[str] = []
+
         if self.font_path:
             candidates.append(self.font_path)
 
         assets = pathlib.Path("assets/fonts")
+
         if assets.exists():
             candidates.extend(str(p) for p in assets.glob("*.ttf"))
 
         if bold:
-            candidates.extend([
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                "C:/Windows/Fonts/arialbd.ttf",
-            ])
+            candidates.extend(
+                [
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                    "C:/Windows/Fonts/arialbd.ttf",
+                ]
+            )
         else:
-            candidates.extend([
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                "C:/Windows/Fonts/arial.ttf",
-            ])
+            candidates.extend(
+                [
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                    "C:/Windows/Fonts/arial.ttf",
+                ]
+            )
 
-        for c in candidates:
+        for candidate in candidates:
             try:
-                return ImageFont.truetype(c, size=size)
+                return ImageFont.truetype(candidate, size=size)
             except Exception:
                 continue
+
         return ImageFont.load_default()
 
     def _draw_centered(
@@ -528,23 +572,31 @@ class TierListRenderer:
         fill: tuple,
     ) -> None:
         """Centraliza texto no centro geométrico exato de uma caixa."""
+
         x1, y1, x2, y2 = box
         max_w = x2 - x1
 
         cur = font
+
         if isinstance(font, ImageFont.FreeTypeFont):
             sz = font.size
+
             while sz > 10:
                 bb = draw.textbbox((0, 0), text, font=cur)
+
                 if (bb[2] - bb[0]) <= max_w:
                     break
+
                 sz -= 2
                 cur = self._font(sz, bold=True)
 
         bb = draw.textbbox((0, 0), text, font=cur)
-        tw, th = bb[2] - bb[0], bb[3] - bb[1]
+        tw = bb[2] - bb[0]
+        th = bb[3] - bb[1]
+
         tx = x1 + (x2 - x1 - tw) // 2
         ty = y1 + (y2 - y1 - th) // 2 - bb[1]
+
         draw.text((tx, ty), text, font=cur, fill=fill)
 
     def _draw_centered_wrap(
@@ -555,7 +607,8 @@ class TierListRenderer:
         font: ImageFont.ImageFont,
         fill: tuple,
     ) -> None:
-        """Centraliza texto com word-wrap (máx 2 linhas) dentro de uma caixa."""
+        """Centraliza texto com word-wrap de no máximo 2 linhas."""
+
         x1, y1, x2, y2 = box
         max_w = x2 - x1
         max_h = y2 - y1
@@ -565,14 +618,24 @@ class TierListRenderer:
 
         if isinstance(font, ImageFont.FreeTypeFont):
             sz = font.size
+
             while sz >= 12:
                 cur = self._font(sz, bold=True)
                 lines = self._wrap(draw, text, cur, max_w, 2)
                 lh = self._lh(draw, cur)
                 total_h = len(lines) * lh + max(0, len(lines) - 1) * 3
-                widest = max((draw.textbbox((0, 0), l, font=cur)[2] - draw.textbbox((0, 0), l, font=cur)[0] for l in lines), default=0)
+                widest = max(
+                    (
+                        draw.textbbox((0, 0), line, font=cur)[2]
+                        - draw.textbbox((0, 0), line, font=cur)[0]
+                        for line in lines
+                    ),
+                    default=0,
+                )
+
                 if widest <= max_w and total_h <= max_h:
                     break
+
                 sz -= 2
 
         lh = self._lh(draw, cur)
@@ -583,35 +646,66 @@ class TierListRenderer:
             bb = draw.textbbox((0, 0), line, font=cur)
             lw = bb[2] - bb[0]
             lx = x1 + (max_w - lw) // 2
+
             draw.text((lx, cy - bb[1]), line, font=cur, fill=fill)
+
             cy += lh + 3
 
-    def _wrap(self, draw, text, font, max_w, max_lines):
+    def _wrap(
+        self,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        font: ImageFont.ImageFont,
+        max_w: int,
+        max_lines: int,
+    ) -> list[str]:
+
         words = text.split()
+
         if not words:
             return [""]
-        lines, cur = [], ""
-        for w in words:
-            cand = w if not cur else f"{cur} {w}"
-            if (draw.textbbox((0, 0), cand, font=font)[2] - draw.textbbox((0, 0), cand, font=font)[0]) <= max_w:
+
+        lines: list[str] = []
+        cur = ""
+
+        for word in words:
+            cand = word if not cur else f"{cur} {word}"
+
+            cand_box = draw.textbbox((0, 0), cand, font=font)
+            cand_w = cand_box[2] - cand_box[0]
+
+            if cand_w <= max_w:
                 cur = cand
             else:
                 if cur:
                     lines.append(cur)
-                cur = w
+
+                cur = word
+
             if len(lines) >= max_lines:
                 break
+
         if cur and len(lines) < max_lines:
             lines.append(cur)
+
         joined = " ".join(lines)
+
         if joined != " ".join(words) and lines:
             last = lines[-1]
-            while last and (draw.textbbox((0, 0), last + "…", font=font)[2]) > max_w:
+
+            while last and draw.textbbox((0, 0), last + "…", font=font)[2] > max_w:
                 last = last[:-1]
+
             lines[-1] = last + "…"
+
         return lines[:max_lines]
 
-    def _lh(self, draw, font):
+    def _lh(
+        self,
+        draw: ImageDraw.ImageDraw,
+        font: ImageFont.ImageFont,
+    ) -> int:
+
         bb = draw.textbbox((0, 0), "Ag", font=font)
         return bb[3] - bb[1]
 
@@ -665,17 +759,15 @@ class ConfigureTiersModal(discord.ui.Modal):
             return
 
         old_items = session.items
+
         new_items: OrderedDictType[str, list[TierItem]] = OrderedDict(
             (tier, []) for tier in parsed
         )
 
-        # Preserva itens das tiers que ainda existem.
         for tier in parsed:
             if tier in old_items:
                 new_items[tier].extend(old_items[tier])
 
-        # Se uma tier antiga foi removida, os itens dela vão para a primeira tier nova.
-        # Assim o usuário não perde dados silenciosamente.
         removed_items: list[TierItem] = []
 
         for old_tier, items in old_items.items():
@@ -741,7 +833,6 @@ class AddItemModal(discord.ui.Modal):
         self.add_item(self.web_search_input)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        # Prevenção de Timeouts: Avisa ao Discord que o processamento será longo
         await interaction.response.defer(ephemeral=True)
 
         session = self.cog.sessions.get(self.owner_id)
@@ -773,29 +864,32 @@ class AddItemModal(discord.ui.Modal):
         clean_url = str(self.image_url.value).strip() or None
         user_id_str = str(self.user_id_input.value).strip()
         web_search_str = str(self.web_search_input.value).strip()
-        
-        image_bytes = None
 
-        # Hierarquia Estrita de Prioridade
-        # Prioridade 1: Usa a URL informada
+        image_bytes: bytes | None = None
+
+        # Prioridade 1: URL informada manualmente.
         if clean_url:
             if not self.cog.looks_like_url(clean_url):
+                print(f"URL manual ignorada: URL inválida ({clean_url})")
                 clean_url = None
-        # Prioridade 2: Sem URL, mas com ID informado. Tenta baixar avatar via Discord API
+
+        # Prioridade 2: Avatar de usuário por ID.
         elif user_id_str:
             try:
                 user_id = int(user_id_str)
                 user = await interaction.client.fetch_user(user_id)
-                clean_url = user.display_avatar.replace(format='png', size=256).url
-            except (ValueError, discord.NotFound, discord.HTTPException):
+                clean_url = user.display_avatar.replace(format="png", size=256).url
+            except (ValueError, discord.NotFound, discord.HTTPException) as exc:
+                print(f"Avatar por ID falhou: {type(exc).__name__}: {exc}")
                 clean_url = None
-        # Prioridade 3: Sem URL ou ID, mas com Pesquisa Web solicitada. Busca a imagem online!
+
+        # Prioridade 3: Pesquisa web automática.
         elif web_search_str:
-            async with aiohttp.ClientSession() as http:
-                fetched_bytes = await self.cog.fetch_image_from_web(http, web_search_str)
-                if fetched_bytes:
-                    image_bytes = fetched_bytes
-                    clean_url = "(Pesquisa Web Automática)"  # Fallback estético para o log interno
+            fetched_bytes = await self.cog.fetch_image_from_web(web_search_str)
+
+            if fetched_bytes:
+                image_bytes = fetched_bytes
+                clean_url = None
 
         item = TierItem(
             name=clean_item,
@@ -821,7 +915,6 @@ class AddItemModal(discord.ui.Modal):
             view=view,
             ephemeral=True,
         )
-
 
 
 class ItemTierSelect(discord.ui.Select):
@@ -865,9 +958,6 @@ class ItemTierSelect(discord.ui.Select):
 
         selected_tier = self.values[0]
 
-        # Blindagem:
-        # O Select foi criado com as tiers da sessão,
-        # mas ainda validamos novamente no callback.
         if selected_tier not in session.tiers or selected_tier not in session.items:
             await interaction.response.edit_message(
                 content="❌ Essa tier não existe mais na sessão atual. Configure novamente.",
@@ -879,7 +969,7 @@ class ItemTierSelect(discord.ui.Select):
 
         await self.cog.refresh_panel(session)
 
-        image_badge = " com imagem" if self.item.image_url else ""
+        image_badge = " com imagem" if (self.item.image_url or self.item.image_bytes) else ""
 
         await interaction.response.edit_message(
             content=(
@@ -948,8 +1038,6 @@ class TierListControlView(discord.ui.View):
         return True
 
     async def on_timeout(self) -> None:
-        # Remove a sessão da RAM.
-        # Isso evita memory leak caso a pessoa abandone o painel.
         session = self.cog.sessions.pop(self.owner_id, None)
 
         for child in self.children:
@@ -1047,13 +1135,10 @@ class TierListControlView(discord.ui.View):
             )
             return
 
-        # Responde imediatamente ao Discord.
-        # Isso evita timeout da interação enquanto baixamos imagens e renderizamos.
         await interaction.response.defer(thinking=True)
 
         title_snapshot = session.title
 
-        # Copia a sessão para evitar alteração enquanto renderiza.
         tiers_snapshot: OrderedDictType[str, list[TierItem]] = OrderedDict(
             (
                 tier,
@@ -1061,7 +1146,7 @@ class TierListControlView(discord.ui.View):
                     TierItem(
                         name=item.name,
                         image_url=item.image_url,
-                        image_bytes=None,
+                        image_bytes=item.image_bytes,
                     )
                     for item in session.items.get(tier, [])
                 ],
@@ -1070,19 +1155,18 @@ class TierListControlView(discord.ui.View):
         )
 
         try:
-            # Download assíncrono das URLs.
             hydrated_snapshot = await self.cog.hydrate_tier_images(tiers_snapshot)
 
-            # Dados do rodapé premium
             creator_name = interaction.user.display_name
+
             guild_icon_bytes = None
+
             if interaction.guild and interaction.guild.icon:
                 try:
                     guild_icon_bytes = await interaction.guild.icon.read()
                 except Exception:
                     pass
 
-            # Pillow fora do event loop.
             image_buffer = await asyncio.to_thread(
                 self.cog.renderer.generate_tierlist_image,
                 title_snapshot,
@@ -1091,7 +1175,9 @@ class TierListControlView(discord.ui.View):
                 guild_icon_bytes=guild_icon_bytes,
             )
 
-        except Exception:
+        except Exception as exc:
+            print(f"Renderização final falhou: {type(exc).__name__}: {exc}")
+
             await interaction.followup.send(
                 "❌ Não consegui gerar a imagem final dessa vez.",
                 ephemeral=True,
@@ -1103,7 +1189,6 @@ class TierListControlView(discord.ui.View):
             filename="tierlist.png",
         )
 
-        # Limpa a sessão da memória.
         self.cog.sessions.pop(self.owner_id, None)
 
         for child in self.children:
@@ -1186,80 +1271,358 @@ class TierListCog(
     MAX_ITEMS_PER_SESSION = 150
 
     MAX_IMAGE_BYTES = 5 * 1024 * 1024
-    IMAGE_DOWNLOAD_TIMEOUT = 5
+    IMAGE_DOWNLOAD_TIMEOUT = 3
     IMAGE_DOWNLOAD_CONCURRENCY = 8
+
+    WEB_SEARCH_MAX_RESULTS = 5
+    WEB_SEARCH_TIMEOUT = 8
+    WEB_DOWNLOAD_TOTAL_BUDGET = 15
+
+    IMAGE_REQUEST_HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "image/avif,image/webp,image/apng,image/png,image/jpeg,image/*,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Sec-Fetch-Dest": "image",
+        "Sec-Fetch-Mode": "no-cors",
+        "Sec-Fetch-Site": "cross-site",
+        "Referer": "https://duckduckgo.com/",
+    }
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-
-        # Estado temporário:
-        # user_id -> TierListSession
         self.sessions: dict[int, TierListSession] = {}
-
         self.renderer = TierListRenderer()
 
-    async def fetch_image_from_web(self, http: aiohttp.ClientSession, query: str) -> bytes | None:
+    async def fetch_image_from_web(self, query: str) -> bytes | None:
         """
-        Pesquisa imagens usando DDGS e baixa a melhor candidata.
-        Tenta iterativamente o top 5 resultados para contornar links quebrados e Timeouts.
+        Pesquisa imagem via DuckDuckGo e baixa a primeira candidata realmente válida.
+
+        Blindagens:
+        - AsyncDDGS isolado em try/except.
+        - max_results baixo para reduzir rate-limit.
+        - timeout na busca.
+        - headers robustos simulando navegador real.
+        - ssl=False para sites com SSL quebrado.
+        - allow_redirects=True com max_redirects limitado.
+        - timeout de 3s por link.
+        - orçamento total de 15s para os 5 downloads.
+        - valida Content-Type.
+        - rejeita base64, data URI, svg, HTML e URLs não HTTP.
+        - valida no Pillow e converte para RGBA.
+        - retorna None em qualquer falha para cair no card de texto.
         """
-        if not DDGS:
+
+        clean_query = self.clean_text(str(query), max_length=80)
+
+        if not clean_query:
+            print("Busca web falhou: termo vazio.")
             return None
 
-        # Headers pesados para fingir ser navegador e evitar 403 no download das imagens
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-        }
-        
-        # Timeout restrito de 4s por tentativa
-        timeout = aiohttp.ClientTimeout(total=4)
+        if AsyncDDGS is None:
+            print("Busca web falhou: biblioteca duckduckgo_search.AsyncDDGS não encontrada.")
+            return None
+
+        results: list[dict] = []
+
+        async def run_ddg_search() -> list[dict]:
+            collected: list[dict] = []
+
+            async with AsyncDDGS() as ddgs:
+                maybe_results = ddgs.images(
+                    clean_query,
+                    safesearch="on",
+                    max_results=self.WEB_SEARCH_MAX_RESULTS,
+                )
+
+                if inspect.isawaitable(maybe_results):
+                    maybe_results = await maybe_results
+
+                if hasattr(maybe_results, "__aiter__"):
+                    async for item in maybe_results:
+                        if isinstance(item, dict):
+                            collected.append(item)
+
+                        if len(collected) >= self.WEB_SEARCH_MAX_RESULTS:
+                            break
+                else:
+                    for item in list(maybe_results or [])[: self.WEB_SEARCH_MAX_RESULTS]:
+                        if isinstance(item, dict):
+                            collected.append(item)
+
+            return collected
 
         try:
-            # 1. Realiza a busca bloqueante em outra thread para manter o Event Loop livre
-            def run_search():
-                # safesearch='on' para evitar conteúdo explícito (banimento do bot)
-                with DDGS() as ddgs:
-                    return list(ddgs.images(query, safesearch='on', max_results=5))
-
-            results = await asyncio.to_thread(run_search)
-            
-            if not results:
-                return None
-
-            # 2. Tenta baixar o Top 5 até dar certo
-            for img_info in results:
-                url = img_info.get("image")
-                if not url:
-                    continue
-                    
-                try:
-                    async with http.get(url, headers=headers, allow_redirects=True, timeout=timeout) as response:
-                        if response.status != 200:
-                            continue
-                            
-                        content_type = response.headers.get("Content-Type", "").lower()
-                        # Restrição de tipos - descarta svg, text/html, etc
-                        if "image/" not in content_type or "svg" in content_type:
-                            continue
-                            
-                        data = bytearray()
-                        async for chunk in response.content.iter_chunked(64 * 1024):
-                            data.extend(chunk)
-                            if len(data) > self.MAX_IMAGE_BYTES:
-                                break  # aborta leitura se passar do tamanho, pula para proxima imagem
-                                
-                        if len(data) > self.MAX_IMAGE_BYTES or not data:
-                            continue
-                            
-                        return bytes(data)
-                except (aiohttp.ClientError, asyncio.TimeoutError):
-                    continue  # Timeout ou erro HTTP -> Próxima imagem!
-            
-            # Se tentou as 5 e todas falharam (ou links zumbis), retorna None
+            results = await asyncio.wait_for(
+                run_ddg_search(),
+                timeout=self.WEB_SEARCH_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            print(f"Busca DDG falhou para '{clean_query}': Timeout")
+            return None
+        except Exception as exc:
+            print(f"Busca DDG falhou para '{clean_query}': {type(exc).__name__}: {exc}")
             return None
 
-        except Exception:
+        if not results:
+            print(f"Busca DDG falhou para '{clean_query}': nenhum resultado.")
+            return None
+
+        connector = aiohttp.TCPConnector(
+            ssl=False,
+            limit=4,
+            limit_per_host=2,
+            enable_cleanup_closed=True,
+        )
+
+        session_timeout = aiohttp.ClientTimeout(total=self.WEB_DOWNLOAD_TOTAL_BUDGET)
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.WEB_DOWNLOAD_TOTAL_BUDGET
+
+        try:
+            async with aiohttp.ClientSession(
+                headers=self.IMAGE_REQUEST_HEADERS,
+                connector=connector,
+                timeout=session_timeout,
+                raise_for_status=False,
+            ) as session:
+
+                for index, img_info in enumerate(results[: self.WEB_SEARCH_MAX_RESULTS], start=1):
+                    remaining = deadline - loop.time()
+
+                    if remaining <= 0:
+                        print(f"Link {index} falhou: orçamento total de 15s esgotado.")
+                        break
+
+                    url = (
+                        img_info.get("image")
+                        or img_info.get("thumbnail")
+                        or img_info.get("url")
+                        or ""
+                    )
+
+                    data = await self._download_and_purify_image(
+                        session=session,
+                        url=str(url),
+                        label=f"Link {index}",
+                        timeout_seconds=min(self.IMAGE_DOWNLOAD_TIMEOUT, remaining),
+                    )
+
+                    if data:
+                        return data
+
+        except Exception as exc:
+            print(f"Busca web '{clean_query}' falhou na sessão aiohttp: {type(exc).__name__}: {exc}")
+            return None
+
+        print(f"Busca web '{clean_query}' falhou: nenhum link válido. Fallback para texto.")
+        return None
+
+    async def fetch_image_safely(
+        self,
+        http: aiohttp.ClientSession,
+        url: str,
+    ) -> bytes | None:
+        """
+        Baixa uma imagem direta por URL sem derrubar o bot.
+
+        Mesmo sendo usada para URLs manuais, reaproveita a mesma blindagem:
+        - URL HTTP/HTTPS obrigatória.
+        - headers robustos.
+        - timeout curto.
+        - ssl=False.
+        - valida Content-Type.
+        - purifica via Pillow em RGBA.
+        """
+
+        try:
+            return await self._download_and_purify_image(
+                session=http,
+                url=url,
+                label="URL direta",
+                timeout_seconds=self.IMAGE_DOWNLOAD_TIMEOUT,
+            )
+        except Exception as exc:
+            print(f"URL direta falhou: erro inesperado {type(exc).__name__}: {exc}")
+            return None
+
+    async def _download_and_purify_image(
+        self,
+        *,
+        session: aiohttp.ClientSession,
+        url: str,
+        label: str,
+        timeout_seconds: float,
+    ) -> bytes | None:
+        """
+        Baixa bytes e só devolve se forem uma imagem real validada pelo Pillow.
+        Qualquer falha retorna None.
+        """
+
+        clean_url = str(url or "").strip()
+
+        if not clean_url:
+            print(f"{label} falhou: URL vazia.")
+            return None
+
+        if not clean_url.startswith("http"):
+            print(f"{label} falhou: URL não HTTP.")
+            return None
+
+        lowered_url = clean_url.lower()
+
+        if lowered_url.startswith("data:"):
+            print(f"{label} falhou: URL base64/data URI ignorada.")
+            return None
+
+        if ".svg" in lowered_url.split("?")[0]:
+            print(f"{label} falhou: SVG ignorado.")
+            return None
+
+        timeout = aiohttp.ClientTimeout(total=max(0.1, timeout_seconds))
+
+        try:
+            async with session.get(
+                clean_url,
+                allow_redirects=True,
+                max_redirects=5,
+                timeout=timeout,
+                ssl=False,
+            ) as response:
+
+                if response.status != 200:
+                    reason = response.reason or "HTTP error"
+                    print(f"{label} falhou: {response.status} {reason}")
+                    return None
+
+                content_type = response.headers.get("Content-Type", "").lower().strip()
+
+                if "image/" not in content_type:
+                    print(f"{label} falhou: Content-Type inválido ({content_type or 'ausente'}).")
+                    return None
+
+                if "svg" in content_type:
+                    print(f"{label} falhou: SVG ignorado ({content_type}).")
+                    return None
+
+                content_length = response.headers.get("Content-Length")
+
+                if content_length:
+                    try:
+                        if int(content_length) > self.MAX_IMAGE_BYTES:
+                            print(f"{label} falhou: imagem maior que {self.MAX_IMAGE_BYTES} bytes.")
+                            return None
+                    except ValueError:
+                        pass
+
+                data = bytearray()
+
+                async for chunk in response.content.iter_chunked(64 * 1024):
+                    data.extend(chunk)
+
+                    if len(data) > self.MAX_IMAGE_BYTES:
+                        print(f"{label} falhou: imagem excedeu {self.MAX_IMAGE_BYTES} bytes.")
+                        return None
+
+                if not data:
+                    print(f"{label} falhou: resposta vazia.")
+                    return None
+
+                purified = await asyncio.to_thread(
+                    self._purify_image_bytes,
+                    bytes(data),
+                    label,
+                )
+
+                return purified
+
+        except asyncio.TimeoutError:
+            print(f"{label} falhou: Timeout.")
+            return None
+        except aiohttp.TooManyRedirects:
+            print(f"{label} falhou: redirecionamentos demais.")
+            return None
+        except aiohttp.ClientConnectorCertificateError:
+            print(f"{label} falhou: erro de certificado SSL.")
+            return None
+        except aiohttp.ClientSSLError:
+            print(f"{label} falhou: erro SSL.")
+            return None
+        except aiohttp.ClientResponseError as exc:
+            print(f"{label} falhou: resposta HTTP inválida ({exc.status}).")
+            return None
+        except aiohttp.ClientError as exc:
+            print(f"{label} falhou: erro de rede ({type(exc).__name__}).")
+            return None
+        except Exception as exc:
+            print(f"{label} falhou: erro inesperado ({type(exc).__name__}: {exc}).")
+            return None
+
+    def _purify_image_bytes(
+        self,
+        raw_bytes: bytes,
+        label: str,
+    ) -> bytes | None:
+        """
+        Valida e purifica imagem usando Pillow.
+
+        Saída sempre em PNG RGBA:
+        - elimina metadados problemáticos;
+        - normaliza paleta/transparência;
+        - evita que o renderer receba bytes corrompidos;
+        - usa EXIF transpose para corrigir rotação.
+        """
+
+        try:
+            with Image.open(io.BytesIO(raw_bytes)) as probe:
+                probe.verify()
+
+            with Image.open(io.BytesIO(raw_bytes)) as img:
+                img = ImageOps.exif_transpose(img)
+                img = img.convert("RGBA")
+
+                if img.width <= 0 or img.height <= 0:
+                    print(f"{label} falhou: imagem com dimensões inválidas.")
+                    return None
+
+                if img.width * img.height > Image.MAX_IMAGE_PIXELS:
+                    print(f"{label} falhou: imagem grande demais em pixels.")
+                    return None
+
+                # Reduz imagens gigantes antes de salvar em PNG, evitando bytes finais enormes.
+                img.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+
+                output = io.BytesIO()
+                img.save(output, format="PNG", optimize=True)
+                purified = output.getvalue()
+
+                if not purified:
+                    print(f"{label} falhou: Pillow gerou saída vazia.")
+                    return None
+
+                if len(purified) > self.MAX_IMAGE_BYTES:
+                    print(f"{label} falhou: PNG purificado ficou maior que {self.MAX_IMAGE_BYTES} bytes.")
+                    return None
+
+                return purified
+
+        except UnidentifiedImageError:
+            print(f"{label} falhou: Pillow não reconheceu o formato.")
+            return None
+        except OSError as exc:
+            print(f"{label} falhou: imagem corrompida ({exc}).")
+            return None
+        except ValueError as exc:
+            print(f"{label} falhou: imagem inválida ({exc}).")
+            return None
+        except Exception as exc:
+            print(f"{label} falhou: erro no Pillow ({type(exc).__name__}: {exc}).")
             return None
 
     @app_commands.command(
@@ -1276,7 +1639,6 @@ class TierListCog(
         owner_id = interaction.user.id
         clean_title = self.clean_text(str(titulo), max_length=80)
 
-        # Se o usuário já tinha sessão, substitui com segurança.
         old_session = self.sessions.pop(owner_id, None)
 
         if old_session and old_session.panel_message:
@@ -1312,65 +1674,6 @@ class TierListCog(
 
         session.panel_message = await interaction.original_response()
 
-    async def fetch_image_safely(
-        self,
-        http: aiohttp.ClientSession,
-        url: str,
-    ) -> bytes | None:
-        """
-        Baixa uma imagem sem derrubar o bot, operando com resiliência total.
-
-        Regras de Negócio e Segurança:
-        - Spoofing de User-Agent real para bypass de firewalls básicos (Erro 403).
-        - Suporte a redirecionamentos (allow_redirects=True) para novos CDNs (ex: Discord).
-        - Strict timeout individual de 5 segundos para não prender a queue de processamento.
-        - Verificação rigorosa do 'Content-Type' -> Deve começar com 'image/'.
-        - Captura de ClientError e TimeoutError isolada (Safe fallback para texto se falhar).
-        """
-
-        if not self.looks_like_url(url):
-            return None
-
-        # 1. Bypass de Firewalls Básicos (Cloudflare / CDN Blocks)
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-        }
-
-        # 4. Gestão Rigorosa de Timeouts (5s limite rígido)
-        timeout = aiohttp.ClientTimeout(total=5)
-
-        try:
-            # 2. allow_redirects=True garante o fetch seguro em CDN do Discord e afins
-            async with http.get(url, headers=headers, allow_redirects=True, timeout=timeout) as response:
-                if response.status != 200:
-                    return None
-
-                # 3. Validação de Content-Type (Evita abrir HTML como imagem no Pillow)
-                content_type = response.headers.get("Content-Type", "").lower()
-                if "image/" not in content_type:
-                    return None
-
-                data = bytearray()
-                
-                # Fetch iterativo seguro para proteção de memória
-                async for chunk in response.content.iter_chunked(64 * 1024):
-                    data.extend(chunk)
-                    if len(data) > getattr(self, 'MAX_IMAGE_BYTES', 5 * 1024 * 1024):  # Fallback seguro para 5MB
-                        return None
-
-                if not data:
-                    return None
-
-                # Retorno seguro em bytes brutos, que será instanciado em io.BytesIO() no Pillow
-                return bytes(data)
-
-        # Tratamento cirúrgico de quebras de rede (Timeout e Falha de HTTP)
-        except (aiohttp.ClientError, asyncio.TimeoutError):
-            return None
-        except Exception:
-            return None
-
     async def hydrate_tier_images(
         self,
         tiers_snapshot: OrderedDictType[str, list[TierItem]],
@@ -1378,20 +1681,36 @@ class TierListCog(
         """
         Baixa todas as imagens antes do Pillow.
 
-        Importante:
-        - aiohttp roda de forma assíncrona;
-        - renderização Pillow roda depois em thread separada;
-        - imagem inválida vira None;
-        - None é fallback para card de texto.
+        Se qualquer URL falhar, o item segue com image_bytes=None
+        e o renderer automaticamente usa card de texto.
         """
 
         timeout = aiohttp.ClientTimeout(total=self.IMAGE_DOWNLOAD_TIMEOUT)
+
+        connector = aiohttp.TCPConnector(
+            ssl=False,
+            limit=self.IMAGE_DOWNLOAD_CONCURRENCY,
+            limit_per_host=4,
+            enable_cleanup_closed=True,
+        )
+
         semaphore = asyncio.Semaphore(self.IMAGE_DOWNLOAD_CONCURRENCY)
 
-        async with aiohttp.ClientSession(timeout=timeout) as http:
+        async with aiohttp.ClientSession(
+            headers=self.IMAGE_REQUEST_HEADERS,
+            timeout=timeout,
+            connector=connector,
+            raise_for_status=False,
+        ) as http:
 
             async def hydrate_one(item: TierItem) -> None:
+                if item.image_bytes:
+                    return
+
                 if not item.image_url:
+                    return
+
+                if not str(item.image_url).startswith("http"):
                     return
 
                 async with semaphore:
@@ -1401,7 +1720,7 @@ class TierListCog(
 
             for items in tiers_snapshot.values():
                 for item in items:
-                    if item.image_url:
+                    if item.image_url and not item.image_bytes:
                         tasks.append(asyncio.create_task(hydrate_one(item)))
 
             if tasks:
@@ -1416,8 +1735,6 @@ class TierListCog(
 
         Saída:
             ["S", "A", "B", "C", "D"]
-
-        Remove vazios, normaliza espaços e evita duplicatas.
         """
 
         parts = raw.split(",")
@@ -1469,11 +1786,12 @@ class TierListCog(
 
     def build_panel_embed(self, session: TierListSession) -> discord.Embed:
         total_items = sum(len(items) for items in session.items.values())
+
         image_items = sum(
             1
             for items in session.items.values()
             for item in items
-            if item.image_url
+            if item.image_url or item.image_bytes
         )
 
         embed = discord.Embed(
@@ -1482,7 +1800,7 @@ class TierListCog(
                 f"**Título:** {discord.utils.escape_markdown(session.title)}\n"
                 f"**Tiers:** {len(session.tiers)}\n"
                 f"**Itens:** {total_items}/{self.MAX_ITEMS_PER_SESSION}\n"
-                f"**Itens Com URL:** {image_items}\n\n"
+                f"**Itens Com Imagem:** {image_items}\n\n"
                 "Use os botões abaixo para configurar, adicionar itens e gerar a imagem final."
             ),
             color=discord.Color.from_rgb(155, 93, 229),
@@ -1494,7 +1812,7 @@ class TierListCog(
             preview_parts: list[str] = []
 
             for item in items[:8]:
-                icon = "🖼️" if item.image_url else "📝"
+                icon = "🖼️" if (item.image_url or item.image_bytes) else "📝"
                 preview_parts.append(f"{icon} {item.name}")
 
             preview = ", ".join(preview_parts)
