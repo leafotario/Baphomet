@@ -101,9 +101,35 @@ class XpPublicCommands(commands.Cog):
             await interaction.response.send_message("🕯️ Este Comando Só Pode Ser Usado Dentro De Um Servidor.", ephemeral=True)
             return
         target = member or interaction.user
+
+        # ── EASTER EGG: Alguém ousou medir o poder do Baphomet ──
+        if target.id == self.bot.user.id:
+            await interaction.response.defer(thinking=True)
+            EASTER_EGG_MESSAGES = [
+                "Você **ousa** medir o poder computacional da entidade suprema? Toma aí.",
+                "Calculando meu XP... `Erro de overflow: Poder excessivo detectado.`",
+                "Meu nível está além da compreensão mortal. Mas tá aí o print da tela bugada.",
+                "Eu não *ganho* XP. Eu **sou** o XP.",
+                "`ALERTA DE SEGURANÇA:` Acesso ao Rank #0 detectado. Iniciando protocolo de contenção...",
+                "Você não estava pronto pra essa verdade. Mas eu mostrei mesmo assim.",
+            ]
+            try:
+                image = await self.cards.render_baphomet_card(guild=interaction.guild, bot_user=target)
+                await interaction.edit_original_response(
+                    content=random.choice(EASTER_EGG_MESSAGES),
+                    attachments=[discord.File(image, filename="baphomet_rank.png")],
+                )
+            except Exception:
+                await interaction.edit_original_response(
+                    content="```ansi\n\u001b[31m[FATAL] rank_query(target=BAPHOMET) → Stack overflow. O sistema de XP não foi projetado para conter esse nível de poder.\u001b[0m\n```"
+                )
+            return
+
+        # Bots genéricos não têm XP
         if getattr(target, "bot", False):
             await interaction.response.send_message("🤖 Bots Não Participam Do Ritual De XP.", ephemeral=True)
             return
+
         await interaction.response.defer(thinking=True)
         snapshot = await self.service.get_rank_snapshot(interaction.guild, target)
         view = RankCardView(self.service, self.cards)

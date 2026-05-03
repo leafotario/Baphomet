@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import random
 from typing import Iterable
 
 import discord
@@ -220,6 +221,179 @@ class XpCardRenderer:
         final_img.save(output, format="PNG")
         output.seek(0)
         return output
+
+    # ══════════════════════════════════════════════════════════════════
+    # ░░░░░░░░ EASTER EGG: O CARD DO BAPHOMET ░░░░░░░░░░░░░░░░░░░░░░░
+    # ══════════════════════════════════════════════════════════════════
+    # Este método é SEPARADO de propósito.
+    # Ele NÃO consulta o banco de dados. Ele NÃO usa RankSnapshot.
+    # Ele existe UNICAMENTE para a brincadeira de quando alguém
+    # tenta ver o /rank do próprio bot.
+    # ══════════════════════════════════════════════════════════════════
+
+    def _build_baphomet_card(self, guild_name: str, bot_name: str, avatar_bytes: bytes | None) -> io.BytesIO:
+        """Card especial do Baphomet: glitchado, corrompido, transcendental."""
+        width, height = 1040, 340
+
+        # ── Fundo: Púrpura abissal em vez de glassmorphism ──
+        canvas = Image.new("RGBA", (width, height), (15, 5, 25, 255))
+
+        # Scanlines horizontais para efeito de "tela falhando"
+        # Cada linha ímpar recebe uma faixa escura translúcida
+        scanline_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        scan_draw = ImageDraw.Draw(scanline_layer)
+        for y in range(0, height, 4):
+            scan_draw.line([(0, y), (width, y)], fill=(0, 0, 0, 60))
+        canvas = Image.alpha_composite(canvas, scanline_layer)
+
+        # ── Layer principal de conteúdo ──
+        layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(layer)
+
+        # Caixa principal com borda vermelha neon (alerta de sistema)
+        draw.rounded_rectangle(
+            (24, 24, width - 24, height - 24),
+            radius=32,
+            fill=(0, 0, 0, 120),
+            outline=(255, 30, 30, 200),
+            width=3,
+        )
+
+        # ── Avatar do Bot ──
+        avatar_size = 190
+        avatar, _ = self._create_circular_avatar(avatar_bytes, avatar_size)
+        # Borda vermelha neon no avatar
+        border_size = avatar_size + 14
+        draw.ellipse(
+            (60 - 7, 75 - 7, 60 + border_size - 7, 75 + border_size - 7),
+            fill=(255, 0, 0, 255),
+        )
+        layer.paste(avatar, (60, 75), avatar)
+
+        # ── Textos "Corrompidos" ──
+        guild_text = self._truncate(guild_name, 28).upper()
+        self._draw_text_with_shadow(
+            draw, (300, 60), guild_text,
+            font=self._font(26, bold=True),
+            fill=(210, 60, 60, 255),
+        )
+        # Nome do bot
+        self._draw_text_with_shadow(
+            draw, (300, 120), bot_name,
+            font=self._font(54, bold=True),
+            fill=(255, 255, 255, 255),
+        )
+
+        # Nível: [DADOS CORROMPIDOS]
+        self._draw_text_with_shadow(
+            draw, (300, 200), "LVL ∞",
+            font=self._font(42, bold=True),
+            fill=(255, 30, 30, 255),
+        )
+        # XP absurdo
+        self._draw_text_with_shadow(
+            draw, (470, 215), "Total: ℵ₀ XP",
+            font=self._font(22),
+            fill=(255, 100, 100, 255),
+        )
+
+        # Rank #0 — acima de todo mundo
+        self._draw_text_with_shadow(
+            draw, (width - 340, 60), "RANK #0",
+            font=self._font(36, bold=True),
+            fill=(255, 50, 50, 255),
+        )
+
+        # ── BARRA DE XP OVERFLOW (O BUG DE PROPÓSITO) ──
+        # A barra ULTRAPASSA o limite direito do card intencionalmente
+        bar_y0, bar_y1 = 260, 295
+        bar_x0 = 300
+        bar_overflow_x1 = width + 200  # 200px ALÉM da borda do card
+
+        # Fundo da barra (cinza normal, dentro dos limites)
+        draw.rounded_rectangle(
+            (bar_x0, bar_y0, width - 60, bar_y1),
+            radius=(bar_y1 - bar_y0) // 2,
+            fill=(0, 0, 0, 140),
+            outline=(255, 255, 255, 40),
+            width=1,
+        )
+
+        # Barra preenchida: vermelho neon SANGRANDO para fora do card
+        overflow_bar = Image.new("RGBA", (width + 200, height), (0, 0, 0, 0))
+        overflow_draw = ImageDraw.Draw(overflow_bar)
+
+        bar_width = bar_overflow_x1 - bar_x0
+        for i in range(bar_width):
+            # Gradiente: roxo escuro → vermelho neon → magenta
+            ratio = i / bar_width
+            r = int(120 + 135 * ratio)
+            g = int(0 + 30 * (1 - ratio))
+            b = int(180 * (1 - ratio) + 60 * ratio)
+            overflow_draw.line(
+                [(bar_x0 + i, bar_y0 + 2), (bar_x0 + i, bar_y1 - 2)],
+                fill=(r, g, b, 230),
+            )
+
+        # Cola a barra overflow no layer (será cortada pelo tamanho do canvas)
+        layer.paste(overflow_bar.crop((0, 0, width, height)), (0, 0), overflow_bar.crop((0, 0, width, height)))
+
+        # Texto dentro da barra
+        progress_text = "999.999.999 / 10 XP"
+        text_bbox = draw.textbbox((0, 0), progress_text, font=self._font(20, bold=True))
+        text_w = text_bbox[2] - text_bbox[0]
+        text_x = bar_x0 + (width - 60 - bar_x0) // 2 - text_w // 2
+        self._draw_text_with_shadow(
+            draw, (text_x, bar_y0 + 5), progress_text,
+            font=self._font(20, bold=True),
+            fill=(255, 255, 255, 255),
+            shadow_color=(0, 0, 0, 255),
+        )
+
+        # ── EFEITO GLITCH: Texto aleatório corrompido ──
+        glitch_texts = [
+            "ERR_OVERFLOW", "0xDEADBEEF", "STACK SMASH",
+            "NaN", "segfault", "kernel panic",
+            "sudo rm -rf /xp/*", "BUFFER_OVERFLOW",
+            "¿¿¿???", "█▓▒░ CORRUPTED ░▒▓█",
+        ]
+        glitch_font = self._font(14)
+        for _ in range(random.randint(4, 8)):
+            gx = random.randint(40, width - 200)
+            gy = random.randint(30, height - 40)
+            text = random.choice(glitch_texts)
+            alpha = random.randint(40, 120)
+            draw.text(
+                (gx, gy), text,
+                font=glitch_font,
+                fill=(255, random.randint(0, 80), random.randint(0, 80), alpha),
+            )
+
+        # ── Linhas de glitch horizontais aleatórias ──
+        for _ in range(random.randint(3, 6)):
+            gy = random.randint(0, height)
+            gh = random.randint(1, 4)
+            draw.rectangle(
+                [(0, gy), (width, gy + gh)],
+                fill=(255, 0, random.randint(60, 180), random.randint(30, 90)),
+            )
+
+        # Mesclar Layers
+        final_img = Image.alpha_composite(canvas, layer)
+        output = io.BytesIO()
+        final_img.save(output, format="PNG")
+        output.seek(0)
+        return output
+
+    async def render_baphomet_card(self, *, guild: discord.Guild, bot_user: discord.Member | discord.User) -> io.BytesIO:
+        """API Assíncrona para o Easter Egg do Baphomet. Sem consulta ao BD."""
+        avatar_bytes = await self._read_asset(bot_user.display_avatar)
+        return await asyncio.to_thread(
+            self._build_baphomet_card,
+            guild.name,
+            bot_user.display_name,
+            avatar_bytes,
+        )
 
     async def render_rank_card(self, *, guild: discord.Guild, member: discord.Member | discord.User, snapshot: RankSnapshot) -> io.BytesIO:
         """API Assíncrona. Fetch concorrente de imagens e execução em ThreadPool."""
