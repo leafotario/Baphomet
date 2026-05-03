@@ -379,17 +379,17 @@ class TierListRenderer:
         # ── Rodapé premium ──────────────────────────────────────
         footer_y = canvas_h - padding_y_extra - self.FOOTER_HEIGHT
 
-        # Linha divisória
+        # Linha divisória responsiva
         draw.line(
             [(self.OUTER_PADDING, footer_y + 10), (canvas_w - self.OUTER_PADDING, footer_y + 10)],
             fill=self.DIVIDER_COLOR + (255,),
             width=2,
         )
 
-        # Ícone do servidor (círculo perfeito, lado esquerdo)
+        # Ícone do servidor (ancorado na esquerda usando a margem)
         icon_size = 64
-        icon_x = self.OUTER_PADDING + 10
-        icon_y = footer_y + (self.FOOTER_HEIGHT - icon_size) // 2 + 5
+        icon_x = self.OUTER_PADDING
+        icon_y = footer_y + (self.FOOTER_HEIGHT - icon_size) // 2
 
         if guild_icon_bytes:
             try:
@@ -403,7 +403,7 @@ class TierListRenderer:
             except Exception:
                 pass
 
-        # Texto do rodapé (lado direito, alinhado verticalmente ao ícone)
+        # Texto do rodapé
         from datetime import datetime
         date_str = datetime.now().strftime("%d/%m/%Y %H:%M")
         parts = ["Gerado por Baphomet"]
@@ -412,10 +412,25 @@ class TierListRenderer:
         parts.append(date_str)
         footer_text = "  •  ".join(parts)
 
+        # Motor de Responsividade do Texto do Rodapé (Shrink to fit)
+        f_size = 20
+        footer_font = self._font(f_size)
         ft_bbox = draw.textbbox((0, 0), footer_text, font=footer_font)
         ft_w = ft_bbox[2] - ft_bbox[0]
+        
+        # A largura máxima permitida é do ícone até o final do canvas menos a margem direita
+        max_text_width = (canvas_w - self.OUTER_PADDING) - (icon_x + icon_size + 20)
+
+        while ft_w > max_text_width and f_size > 10:
+            f_size -= 1
+            footer_font = self._font(f_size)
+            ft_bbox = draw.textbbox((0, 0), footer_text, font=footer_font)
+            ft_w = ft_bbox[2] - ft_bbox[0]
+
         ft_h = ft_bbox[3] - ft_bbox[1]
-        ft_x = canvas_w - self.OUTER_PADDING - ft_w - 10
+        
+        # Assinatura matematicamente ancorada em X = largura_final - margem - largura_texto
+        ft_x = canvas_w - self.OUTER_PADDING - ft_w
         ft_y = icon_y + (icon_size - ft_h) // 2
 
         draw.text((ft_x, ft_y), footer_text, font=footer_font, fill=self.MUTED_COLOR + (255,))

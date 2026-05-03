@@ -31,6 +31,16 @@ class AvatarView(discord.ui.View):
             )
         )
 
+        # Botão de Copiar URL (Melhoria de UX para Mobile)
+        copy_button = discord.ui.Button(
+            label="Copiar URL",
+            style=discord.ButtonStyle.secondary,
+            emoji="🔗",
+            custom_id="copy_avatar_url"
+        )
+        copy_button.callback = self.copy_url_callback
+        self.add_item(copy_button)
+
         # Botão de Alternância (Aparece apenas se houver diferença entre Global e Servidor)
         if has_custom_server_avatar:
             label = "Ver Avatar do Servidor" if is_global else "Ver Avatar Global"
@@ -44,6 +54,13 @@ class AvatarView(discord.ui.View):
             )
             swap_button.callback = self.swap_callback
             self.add_item(swap_button)
+
+    async def copy_url_callback(self, interaction: discord.Interaction):
+        """
+        Callback que contorna a limitação da API enviando uma mensagem
+        efêmera com texto limpo, permitindo que o usuário mobile pressione e copie.
+        """
+        await interaction.response.send_message(content=self.current_url, ephemeral=True)
 
     async def swap_callback(self, interaction: discord.Interaction):
         # Garante que só quem apertou o botão possa interagir? Para avatar não faz mal ser público.
