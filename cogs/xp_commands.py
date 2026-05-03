@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+import random
 
 import discord
 from discord import app_commands
@@ -19,6 +20,19 @@ LOGGER = logging.getLogger("baphomet.xp")
 DATA_DIR = pathlib.Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "baphomet_xp.sqlite3"
+
+LEVEL_UP_MESSAGES = [
+    "🔥 Magnífico! {mention} acaba de romper as correntes e alcançar o **Nível {level}**!",
+    "✨ Incrível! {mention} transcendeu a realidade e chegou ao **Nível {level}**!",
+    "⚔️ Que poder absurdo! {mention} upou e agora domina no **Nível {level}**!",
+    "👑 Curvem-se! {mention} provou seu valor e subiu para o **Nível {level}**!",
+    "🎮 GG WP! {mention} farmou XP o suficiente para chegar ao **Nível {level}**!",
+    "🚀 Pra cima! {mention} decolou direto para o **Nível {level}**!",
+    "🔮 As profecias estavam certas... {mention} despertou seu poder no **Nível {level}**!",
+    "🌟 Um novo astro brilha! {mention} iluminou o servidor alcançando o **Nível {level}**!",
+    "🎉 Parabéns, {mention}! Mais um degrau escalado rumo ao topo. Você está no **Nível {level}**!",
+    "⚡ O poder de {mention} ultrapassou os limites! Novo **Nível {level}** desbloqueado!"
+]
 
 DIFFICULTY_CHOICES = [
     app_commands.Choice(name="🌸 Muito Fácil", value=XpDifficulty.VERY_EASY.value),
@@ -67,8 +81,9 @@ class XpPublicCommands(commands.Cog):
             channel = message.guild.get_channel(config.levelup_channel_id) if config.levelup_channel_id else message.channel
             if channel is None:
                 return
+            message_template = random.choice(LEVEL_UP_MESSAGES)
             embed = discord.Embed(
-                description=f"🔥 Magnífico! {message.author.mention} Acaba De Romper As Correntes E Alcançar O **Nível {result.new_level}**!",
+                description=message_template.format(mention=message.author.mention, level=result.new_level),
                 color=discord.Color.from_rgb(120, 60, 240),
             )
             try:
