@@ -1,0 +1,282 @@
+"""Sistema de Lembrete de Bump do Disboard — Persistente e à Prova de Reboot."""
+
+from __future__ import annotations
+
+import logging
+import pathlib
+from datetime import datetime, timedelta, timezone
+
+import aiosqlite
+import discord
+from discord import app_commands
+from discord.ext import commands, tasks
+
+LOGGER = logging.getLogger("baphomet.bump")
+
+# ── Constantes ──────────────────────────────────────────────────────────────
+DISBOARD_BOT_ID = 302050872383242240
+BUMP_COOLDOWN = timedelta(hours=2)
+
+# Palavras-chave que aparecem APENAS em bumps bem-sucedidos do Disboard.
+# O Disboard responde em vários idiomas, então cobrimos os mais comuns.
+SUCCESS_KEYWORDS = (
+    "bump done",        # EN
+    "bump efetuado",    # PT
+    "check it out",     # EN (variante)
+    "bump efectuado",   # ES
+)
+
+# Cor do embed de sucesso do Disboard (verde-água / #24b7b7 em decimal).
+# Se o Disboard estiver em cooldown, o embed é vermelho/laranja.
+DISBOARD_SUCCESS_COLOR = 0x24B7B7
+
+DATA_DIR = pathlib.Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+DB_PATH = DATA_DIR / "bump_reminder.sqlite3"
+
+
+# ── Camada de Persistência ──────────────────────────────────────────────────
+class BumpRepository:
+    """Acesso direto ao SQLite — isolado da lógica de negócio."""
+
+    def __init__(self, db_path: str) -> None:
+        self.db_path = db_path
+        self._conn: aiosqlite.Connection | None = None
+
+    async def connect(self) -> None:
+        if self._conn is not None:
+            return
+        self._conn = await aiosqlite.connect(self.db_path)
+        self._conn.row_factory = aiosqlite.Row
+        await self._conn.execute("PRAGMA journal_mode = WAL")
+        await self._conn.execute("PRAGMA busy_timeout = 5000")
+        await self._create_tables()
+
+    async def close(self) -> None:
+        if self._conn:
+            await self._conn.close()
+            self._conn = None
+
+    @property
+    def conn(self) -> aiosqlite.Connection:
+        if self._conn is None:
+            raise RuntimeError("BumpRepository não conectado.")
+        return self._conn
+
+    async def _create_tables(self) -> None:
+        await self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS bump_config (
+                guild_id       INTEGER PRIMARY KEY,
+                channel_id     INTEGER,
+                role_id        INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS bump_pending (
+                guild_id       INTEGER PRIMARY KEY,
+                channel_id     INTEGER NOT NULL,
+                release_at     TEXT    NOT NULL
+            );
+        """)
+        await self.conn.commit()
+
+    # ── Config ──────────────────────────────────────────────────────────────
+    async def upsert_config(self, guild_id: int, channel_id: int | None, role_id: int | None) -> None:
+        await self.conn.execute(
+            """
+            INSERT INTO bump_config (guild_id, channel_id, role_id)
+            VALUES (?, ?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                channel_id = excluded.channel_id,
+                role_id    = excluded.role_id
+            """,
+            (guild_id, channel_id, role_id),
+        )
+        await self.conn.commit()
+
+    async def get_config(self, guild_id: int) -> dict | None:
+        rows = await self.conn.execute_fetchall(
+            "SELECT channel_id, role_id FROM bump_config WHERE guild_id = ?",
+            (guild_id,),
+        )
+        if not rows:
+            return None
+        return {"channel_id": rows[0]["channel_id"], "role_id": rows[0]["role_id"]}
+
+    # ── Pending bumps ───────────────────────────────────────────────────────
+    async def schedule_bump(self, guild_id: int, channel_id: int, release_at: datetime) -> None:
+        await self.conn.execute(
+            """
+            INSERT INTO bump_pending (guild_id, channel_id, release_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                channel_id = excluded.channel_id,
+                release_at = excluded.release_at
+            """,
+            (guild_id, channel_id, release_at.isoformat()),
+        )
+        await self.conn.commit()
+
+    async def get_ready_bumps(self, now: datetime) -> list[dict]:
+        """Retorna todos os bumps cujo release_at já passou."""
+        rows = await self.conn.execute_fetchall(
+            "SELECT guild_id, channel_id, release_at FROM bump_pending WHERE release_at <= ?",
+            (now.isoformat(),),
+        )
+        return [
+            {
+                "guild_id": r["guild_id"],
+                "channel_id": r["channel_id"],
+                "release_at": r["release_at"],
+            }
+            for r in rows
+        ]
+
+    async def delete_pending(self, guild_id: int) -> None:
+        await self.conn.execute(
+            "DELETE FROM bump_pending WHERE guild_id = ?",
+            (guild_id,),
+        )
+        await self.conn.commit()
+
+
+# ── O Cog ───────────────────────────────────────────────────────────────────
+class BumpReminderCog(commands.Cog):
+    """Monitora bumps do Disboard e envia lembretes persistentes."""
+
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+        self.repo = BumpRepository(str(DB_PATH))
+
+    async def cog_load(self) -> None:
+        await self.repo.connect()
+        self.check_pending_bumps.start()
+        LOGGER.info("BumpReminderCog carregado e task iniciada.")
+
+    async def cog_unload(self) -> None:
+        self.check_pending_bumps.cancel()
+        await self.repo.close()
+
+    # ── Interceptação do Disboard ───────────────────────────────────────────
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        # ┌─────────────────────────────────────────────────────────────────┐
+        # │  FILTRO 1: Só nos interessa mensagens do bot do Disboard.      │
+        # └─────────────────────────────────────────────────────────────────┘
+        if message.author.id != DISBOARD_BOT_ID:
+            return
+        if not message.embeds:
+            return
+        if message.guild is None:
+            return
+
+        embed = message.embeds[0]
+
+        # ┌─────────────────────────────────────────────────────────────────┐
+        # │  FILTRO 2 (CRÍTICO): Distinguir SUCESSO vs COOLDOWN.           │
+        # │                                                                 │
+        # │  O Disboard usa cores distintas nos embeds:                     │
+        # │    • Sucesso  → verde-água (#24B7B7 / decimal 2406327)         │
+        # │    • Cooldown → vermelho/laranja                               │
+        # │                                                                 │
+        # │  Além da cor, verificamos palavras-chave na descrição como      │
+        # │  fallback, pois o Disboard pode mudar a paleta no futuro.      │
+        # └─────────────────────────────────────────────────────────────────┘
+        is_success = False
+
+        # Verificação por cor do embed
+        if embed.color and embed.color.value == DISBOARD_SUCCESS_COLOR:
+            is_success = True
+
+        # Verificação por palavras-chave (fallback multilíngue)
+        description = (embed.description or "").lower()
+        if any(kw in description for kw in SUCCESS_KEYWORDS):
+            is_success = True
+
+        if not is_success:
+            # É uma resposta de cooldown ou erro — ignorar silenciosamente.
+            return
+
+        # ── Bump confirmado! Agendar o próximo lembrete. ────────────────
+        guild_id = message.guild.id
+        release_at = datetime.now(timezone.utc) + BUMP_COOLDOWN
+
+        # Decidir o canal de destino: configuração do admin ou canal atual.
+        config = await self.repo.get_config(guild_id)
+        target_channel_id = (config["channel_id"] if config and config["channel_id"] else message.channel.id)
+
+        await self.repo.schedule_bump(guild_id, target_channel_id, release_at)
+        LOGGER.info(f"[Guild {guild_id}] Bump registrado. Lembrete agendado para {release_at.isoformat()}.")
+
+    # ── Task Loop — Agendador Imparável ─────────────────────────────────
+    @tasks.loop(minutes=1)
+    async def check_pending_bumps(self) -> None:
+        """Consulta o banco a cada minuto e dispara lembretes vencidos."""
+        now = datetime.now(timezone.utc)
+        ready = await self.repo.get_ready_bumps(now)
+
+        for entry in ready:
+            guild_id = entry["guild_id"]
+            channel_id = entry["channel_id"]
+
+            channel = self.bot.get_channel(channel_id)
+            if channel is None:
+                # Canal inacessível — limpar registro para não ficar preso.
+                await self.repo.delete_pending(guild_id)
+                LOGGER.warning(f"[Guild {guild_id}] Canal {channel_id} inacessível. Registro removido.")
+                continue
+
+            # Montar a mensagem de lembrete com ping opcional.
+            config = await self.repo.get_config(guild_id)
+            ping = ""
+            if config and config["role_id"]:
+                ping = f"<@&{config['role_id']}> "
+
+            try:
+                await channel.send(f"⏰ {ping}Pessoal, o `/bump` está disponível novamente!")
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                LOGGER.error(f"[Guild {guild_id}] Falha ao enviar lembrete: {exc}")
+
+            # ── Deletar IMEDIATAMENTE para não duplicar no próximo minuto.
+            await self.repo.delete_pending(guild_id)
+
+    @check_pending_bumps.before_loop
+    async def before_check(self) -> None:
+        await self.bot.wait_until_ready()
+
+    # ── Comando de Configuração (Admin) ─────────────────────────────────
+    @app_commands.command(
+        name="configurar_bump",
+        description="Define o canal e cargo para o lembrete do /bump 🔔",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        canal="Canal onde o lembrete será enviado (padrão: onde o bump foi dado)",
+        cargo="Cargo que será mencionado no lembrete (opcional)",
+    )
+    async def configurar_bump(
+        self,
+        interaction: discord.Interaction,
+        canal: discord.TextChannel | None = None,
+        cargo: discord.Role | None = None,
+    ) -> None:
+        await self.repo.upsert_config(
+            guild_id=interaction.guild.id,
+            channel_id=canal.id if canal else None,
+            role_id=cargo.id if cargo else None,
+        )
+
+        parts = ["✅ Configuração do Bump Reminder salva!"]
+        if canal:
+            parts.append(f"📍 **Canal:** {canal.mention}")
+        else:
+            parts.append("📍 **Canal:** Mesmo canal onde o `/bump` for dado.")
+        if cargo:
+            parts.append(f"🔔 **Cargo pingado:** {cargo.mention}")
+        else:
+            parts.append("🔔 **Cargo pingado:** Nenhum.")
+
+        await interaction.response.send_message("\n".join(parts), ephemeral=True)
+
+
+async def setup(bot: commands.Bot) -> None:
+    await bot.add_cog(BumpReminderCog(bot))
