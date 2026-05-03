@@ -798,6 +798,48 @@ class ItemTierSelectView(discord.ui.View):
         return True
 
 
+class EditTitleModal(discord.ui.Modal):
+    def __init__(self, current_title: str, view_instance: "TierListControlView") -> None:
+        super().__init__(title="Editar Nome da Tier List", timeout=5 * 60)
+        self.view_instance = view_instance
+        self.old_title = current_title
+        
+        self.new_title = discord.ui.TextInput(
+            label="Novo Título",
+            style=discord.TextStyle.short,
+            placeholder="Digite o novo título da Tier List...",
+            default=current_title,  # Injeta o título atual para UX
+            required=True,
+            min_length=1,
+            max_length=100,
+        )
+        self.add_item(self.new_title)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        # Passo 1: Prevenção de Timeout
+        await interaction.response.defer()
+
+        # Passo 2: Atualização de Estado
+        session = self.view_instance.cog.sessions.get(self.view_instance.owner_id)
+        if not session:
+            await interaction.followup.send("❌ Essa sessão expirou.", ephemeral=True)
+            return
+
+        new_val = str(self.new_title.value).strip()
+        session.title = new_val
+
+        # Passo 3 e 4: Regeração Visual e Edição da Mensagem
+        try:
+            # Tenta atualizar o painel principal (isso recria o Embed com o novo título)
+            await self.view_instance.cog.refresh_panel(session)
+            await interaction.followup.send("✅ Título atualizado com sucesso!", ephemeral=True)
+        except Exception as e:
+            # Preservação Absoluta de Dados (Blindagem) em caso de falha visual
+            session.title = self.old_title
+            print(f"[ERRO] Falha ao atualizar título no painel: {e}")
+            await interaction.followup.send("❌ Houve um erro ao atualizar o painel. O título foi revertido.", ephemeral=True)
+
+
 class TierListControlView(discord.ui.View):
     def __init__(self, cog: TierListCog, owner_id: int) -> None:
         super().__init__(timeout=15 * 60)
