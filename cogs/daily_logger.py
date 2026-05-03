@@ -107,6 +107,29 @@ class DailyLoggerCog(commands.Cog):
             ephemeral=True
         )
 
+    @app_commands.command(name="status_logs", description="Exibe a configuração atual do Daily Logger 📊")
+    @app_commands.default_permissions(administrator=True)
+    async def status_logs(self, interaction: discord.Interaction) -> None:
+        if not self._db:
+            return await interaction.response.send_message("❌ Banco de dados não está pronto.", ephemeral=True)
+            
+        row = await self._db.execute_fetchall(
+            "SELECT target_channel_id FROM logger_config WHERE guild_id = ?", 
+            (interaction.guild.id,)
+        )
+        
+        embed = discord.Embed(title="📊 Status — Daily Logger", color=discord.Color.blurple())
+        
+        if not row:
+            embed.description = "⚠️ Nenhuma configuração definida para este módulo."
+            embed.color = discord.Color.red()
+        else:
+            target_id = row[0]["target_channel_id"]
+            embed.description = f"🟢 **Ativo**\nOs logs diários deste servidor estão sendo enviados para: <#{target_id}>"
+            embed.color = discord.Color.green()
+            
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     # =========================================================
     # MOTOR DE CAPTURA (Assíncrono e Otimizado)
     # =========================================================

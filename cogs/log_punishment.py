@@ -217,6 +217,27 @@ class PunishmentLogs(commands.GroupCog, group_name="logs", group_description="co
             ephemeral=True,
         )
 
+    @app_commands.command(name="status", description="exibe a configuração atual dos logs de punições")
+    async def status_logs(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            return await interaction.response.send_message("esse comando só pode ser usado dentro de um servidor.", ephemeral=True)
+
+        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
+            return await interaction.response.send_message("você precisa da permissão **administrator** para usar isso.", ephemeral=True)
+
+        cfg = self._get_config(interaction.guild.id)
+        
+        embed = discord.Embed(title="⚖️ Status — Logs de Punições")
+        
+        if not cfg.enabled or cfg.channel_id is None:
+            embed.description = "⚠️ Nenhuma configuração definida para este módulo (ou está desativado)."
+            embed.color = discord.Color.red()
+        else:
+            embed.description = f"🟢 **Ativo**\nLogs de banimentos, expulsões e timeouts serão enviados para: <#{cfg.channel_id}>"
+            embed.color = discord.Color.green()
+            
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     # =========================
     # listeners
     # =========================

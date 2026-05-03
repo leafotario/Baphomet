@@ -40,6 +40,21 @@ class AntiInviteCog(commands.Cog):
         status_texto = "🔴 **ATIVADO**" if estado else "⚪ **DESATIVADO**"
         await it.response.send_message(f"O sistema de Anti-Invite agora está: {status_texto}", ephemeral=True)
 
+    @app_commands.command(name="anti_invite_status", description="Exibe a configuração atual do Anti-Invite.")
+    @app_commands.default_permissions(administrator=True)
+    async def anti_invite_status(self, it: discord.Interaction):
+        guild_id = str(it.guild.id)
+        estado = self.config.get(guild_id, False)
+        
+        embed = discord.Embed(title="🛡️ Status — Anti-Invite", color=discord.Color.green() if estado else discord.Color.red())
+        
+        if estado:
+            embed.description = "🟢 **Ativo**\nConvites de outros servidores serão apagados automaticamente (exceto de administradores)."
+        else:
+            embed.description = "⚠️ **Nenhuma configuração definida para este módulo** (ou está desativado).\nConvites estão liberados."
+            
+        await it.response.send_message(embed=embed, ephemeral=True)
+
     # --- LISTENER DE MENSAGENS ---
     @commands.Cog.listener()
     async def on_message(self, message):

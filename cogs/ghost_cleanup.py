@@ -244,6 +244,25 @@ class GhostCleanupCog(commands.Cog):
             ephemeral=True,
         )
 
+    @app_commands.command(
+        name="status_limpeza_saida",
+        description="Exibe a configuração atual do Ghost Cleanup 👻",
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def status_limpeza_saida(self, interaction: discord.Interaction) -> None:
+        minutes = await self.repo.get_config(interaction.guild.id)
+        
+        embed = discord.Embed(title="👻 Status — Limpeza de Ghost Joiners", color=discord.Color.dark_gray())
+        
+        if minutes is None:
+            embed.description = "⚠️ Nenhuma configuração definida para este módulo."
+            embed.color = discord.Color.red()
+        else:
+            embed.description = f"🟢 **Ativo**\nMembros que saírem antes de completar **{minutes} minuto(s)** terão seus rastros completamente apagados do servidor."
+            embed.color = discord.Color.green()
+            
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(GhostCleanupCog(bot))
