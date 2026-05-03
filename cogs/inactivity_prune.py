@@ -41,6 +41,12 @@ class ActivityRepository:
                 last_seen  TEXT    NOT NULL,
                 PRIMARY KEY (guild_id, user_id)
             );
+            CREATE TABLE IF NOT EXISTS prune_whitelist (
+                guild_id    INTEGER NOT NULL,
+                target_id   INTEGER NOT NULL,
+                target_type TEXT    NOT NULL CHECK(target_type IN ('user', 'role')),
+                PRIMARY KEY (guild_id, target_id)
+            );
         """)
         await self._conn.commit()
 
@@ -77,6 +83,51 @@ class ActivityRepository:
         if not rows:
             return None
         return datetime.fromisoformat(rows[0]["last_seen"])
+
+    # ── Whitelist ───────────────────────────────────────────────────────────
+    async def add_whitelist(self, guild_id: int, target_id: int, target_type: str) -> bool:
+        """Adiciona um user ou role à whitelist. Retorna True se inserido."""
+        try:
+            await self.conn.execute(
+                "INSERT OR IGNORE INTO prune_whitelist (guild_id, target_id, target_type) VALUES (?, ?, ?)",
+                (guild_id, target_id, target_type),
+            )
+            await self.conn.commit()
+            return self.conn.total_changes > 0
+        except Exception:
+            return False
+
+    async def remove_whitelist(self, guild_id: int, target_id: int) -> bool:
+        """Remove um ID da whitelist. Retorna True se existia."""
+        cur = await self.conn.execute(
+            "DELETE FROM prune_whitelist WHERE guild_id = ? AND target_id = ?",
+            (guild_id, target_id),
+        )
+        await self.conn.commit()
+        return cur.rowcount > 0
+
+    async def get_whitelist(self, guild_id: int) -> list[dict]:
+        """Retorna todos os registros da whitelist de um servidor."""
+        rows = await self.conn.execute_fetchall(
+            "SELECT target_id, target_type FROM prune_whitelist WHERE guild_id = ?",
+            (guild_id,),
+        )
+        return [{"target_id": r["target_id"], "target_type": r["target_type"]} for r in rows]
+
+    async def get_whitelist_sets(self, guild_id: int) -> tuple[set[int], set[int]]:
+        """Retorna (user_ids, role_ids) da whitelist como sets para lookup O(1)."""
+        rows = await self.conn.execute_fetchall(
+            "SELECT target_id, target_type FROM prune_whitelist WHERE guild_id = ?",
+            (guild_id,),
+        )
+        user_ids: set[int] = set()
+        role_ids: set[int] = set()
+        for r in rows:
+            if r["target_type"] == "user":
+                user_ids.add(r["target_id"])
+            else:
+                role_ids.add(r["target_id"])
+        return user_ids, role_ids
 
 
 # ── View de Confirmação ─────────────────────────────────────────────────────
@@ -168,6 +219,15 @@ class InactivityPruneCog(commands.Cog):
         targets: list[discord.Member] = []
 
         # ┌─────────────────────────────────────────────────────────────────┐
+        # │  PRÉ-CARREGAMENTO DA WHITELIST                                  │
+        # │                                                                 │
+        # │  Carregamos a whitelist inteira para a memória ANTES do loop    │
+        # │  para evitar N consultas ao banco (uma por membro).             │
+        # │  Usar sets garante lookup O(1) por ID.                          │
+        # └─────────────────────────────────────────────────────────────────┘
+        wl_user_ids, wl_role_ids = await self.repo.get_whitelist_sets(guild.id)
+
+        # ┌─────────────────────────────────────────────────────────────────┐
         # │              LÓGICA DE FILTRAGEM (O CORAÇÃO)                   │
         # │                                                                 │
         # │  Cada membro passa por uma cascata de verificações de          │
@@ -192,6 +252,16 @@ class InactivityPruneCog(commands.Cog):
             # Se o membro tem um cargo mais alto que o bot na hierarquia,
             # o kick falharia com Forbidden de qualquer forma.
             if member.top_role >= bot_member.top_role:
+                continue
+
+            # ── IMUNIDADE 5: Whitelist (Usuário ou Cargo). ──────────────
+            # Se o ID do membro está na whitelist → imune.
+            if member.id in wl_user_ids:
+                continue
+            # Se QUALQUER cargo do membro está na whitelist → imune.
+            # Interseção de conjuntos: O(min(len(a), len(b))).
+            member_role_ids = {role.id for role in member.roles}
+            if member_role_ids & wl_role_ids:
                 continue
 
             # ── DETERMINAÇÃO DA ÚLTIMA ATIVIDADE ────────────────────────
@@ -314,5 +384,121 @@ class InactivityPruneCog(commands.Cog):
         LOGGER.info(f"[Guild {interaction.guild.id}] Prune finalizado: {kicked} expulsos, {failed} falhas.")
 
 
+# ── Grupo de Comandos: Whitelist ────────────────────────────────────────────
+class WhitelistGroup(app_commands.Group):
+    """Gerencia a lista de exceções do sistema de expulsão por inatividade."""
+
+    def __init__(self, cog: InactivityPruneCog) -> None:
+        super().__init__(
+            name="whitelist_inativos",
+            description="Gerencia a whitelist do Prune de inativos 🛡️",
+            default_permissions=discord.Permissions(administrator=True),
+        )
+        self.cog = cog
+
+    @app_commands.command(name="adicionar", description="Adiciona um membro ou cargo à whitelist 🛡️")
+    @app_commands.describe(
+        usuario="Membro que será imune à expulsão (opcional)",
+        cargo="Cargo cujos membros serão imunes à expulsão (opcional)",
+    )
+    async def adicionar(
+        self,
+        interaction: discord.Interaction,
+        usuario: discord.Member | None = None,
+        cargo: discord.Role | None = None,
+    ) -> None:
+        if usuario is None and cargo is None:
+            await interaction.response.send_message(
+                "⚠️ Você precisa informar pelo menos um **usuário** ou **cargo**.", ephemeral=True
+            )
+            return
+
+        results: list[str] = []
+
+        if usuario:
+            added = await self.cog.repo.add_whitelist(interaction.guild.id, usuario.id, "user")
+            if added:
+                results.append(f"✅ {usuario.mention} adicionado à whitelist.")
+            else:
+                results.append(f"ℹ️ {usuario.mention} já estava na whitelist.")
+
+        if cargo:
+            added = await self.cog.repo.add_whitelist(interaction.guild.id, cargo.id, "role")
+            if added:
+                results.append(f"✅ Cargo {cargo.mention} adicionado à whitelist.")
+            else:
+                results.append(f"ℹ️ Cargo {cargo.mention} já estava na whitelist.")
+
+        await interaction.response.send_message("\n".join(results), ephemeral=True)
+
+    @app_commands.command(name="remover", description="Remove um membro ou cargo da whitelist 🗑️")
+    @app_commands.describe(
+        usuario="Membro a ser removido da whitelist (opcional)",
+        cargo="Cargo a ser removido da whitelist (opcional)",
+    )
+    async def remover(
+        self,
+        interaction: discord.Interaction,
+        usuario: discord.Member | None = None,
+        cargo: discord.Role | None = None,
+    ) -> None:
+        if usuario is None and cargo is None:
+            await interaction.response.send_message(
+                "⚠️ Você precisa informar pelo menos um **usuário** ou **cargo**.", ephemeral=True
+            )
+            return
+
+        results: list[str] = []
+
+        if usuario:
+            removed = await self.cog.repo.remove_whitelist(interaction.guild.id, usuario.id)
+            if removed:
+                results.append(f"🗑️ {usuario.mention} removido da whitelist.")
+            else:
+                results.append(f"⚠️ {usuario.mention} não estava na whitelist.")
+
+        if cargo:
+            removed = await self.cog.repo.remove_whitelist(interaction.guild.id, cargo.id)
+            if removed:
+                results.append(f"🗑️ Cargo {cargo.mention} removido da whitelist.")
+            else:
+                results.append(f"⚠️ Cargo {cargo.mention} não estava na whitelist.")
+
+        await interaction.response.send_message("\n".join(results), ephemeral=True)
+
+    @app_commands.command(name="listar", description="Mostra quem está imune ao prune 📋")
+    async def listar(self, interaction: discord.Interaction) -> None:
+        entries = await self.cog.repo.get_whitelist(interaction.guild.id)
+
+        if not entries:
+            await interaction.response.send_message(
+                "📋 A whitelist deste servidor está **vazia**. Ninguém tem imunidade extra.",
+                ephemeral=True,
+            )
+            return
+
+        users = [e for e in entries if e["target_type"] == "user"]
+        roles = [e for e in entries if e["target_type"] == "role"]
+
+        embed = discord.Embed(
+            title="🛡️ Whitelist de Inatividade",
+            color=discord.Color.green(),
+            description="Membros e cargos listados abaixo são **imunes** à expulsão por inatividade.",
+        )
+
+        if users:
+            user_lines = [f"• <@{e['target_id']}>" for e in users]
+            embed.add_field(name=f"👤 Usuários ({len(users)})", value="\n".join(user_lines), inline=False)
+
+        if roles:
+            role_lines = [f"• <@&{e['target_id']}>" for e in roles]
+            embed.add_field(name=f"🎭 Cargos ({len(roles)})", value="\n".join(role_lines), inline=False)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 async def setup(bot: commands.Bot) -> None:
-    await bot.add_cog(InactivityPruneCog(bot))
+    cog = InactivityPruneCog(bot)
+    cog.__cog_app_commands_group__ = None  # Permitir grupo externo
+    bot.tree.add_command(WhitelistGroup(cog))
+    await bot.add_cog(cog)
