@@ -887,6 +887,24 @@ class TierListControlView(discord.ui.View):
         self.stop()
 
     @discord.ui.button(
+        label="Editar Título",
+        emoji="✏️",
+        style=discord.ButtonStyle.secondary,
+        row=0,
+    )
+    async def edit_title(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        session = self.cog.sessions.get(self.owner_id)
+        if not session:
+            await interaction.response.send_message("❌ Essa sessão expirou.", ephemeral=True)
+            return
+            
+        await interaction.response.send_modal(EditTitleModal(current_title=session.title, view_instance=self))
+
+    @discord.ui.button(
         label="Configurar Tiers",
         emoji="📝",
         style=discord.ButtonStyle.primary,
