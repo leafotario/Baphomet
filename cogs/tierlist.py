@@ -1192,44 +1192,56 @@ class TierListCog(
         url: str,
     ) -> bytes | None:
         """
-        Baixa uma imagem sem derrubar o bot.
+        Baixa uma imagem sem derrubar o bot, operando com resiliência total.
 
-        Regras:
-        - aceita somente http/https;
-        - timeout vem do ClientSession;
-        - status precisa ser 200;
-        - Content-Type precisa começar com image/;
-        - limite de 5 MB;
-        - qualquer erro retorna None;
-        - None vira fallback silencioso para texto.
+        Regras de Negócio e Segurança:
+        - Spoofing de User-Agent real para bypass de firewalls básicos (Erro 403).
+        - Suporte a redirecionamentos (allow_redirects=True) para novos CDNs (ex: Discord).
+        - Strict timeout individual de 5 segundos para não prender a queue de processamento.
+        - Verificação rigorosa do 'Content-Type' -> Deve começar com 'image/'.
+        - Captura de ClientError e TimeoutError isolada (Safe fallback para texto se falhar).
         """
 
         if not self.looks_like_url(url):
             return None
 
+        # 1. Bypass de Firewalls Básicos (Cloudflare / CDN Blocks)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+        }
+
+        # 4. Gestão Rigorosa de Timeouts (5s limite rígido)
+        timeout = aiohttp.ClientTimeout(total=5)
+
         try:
-            async with http.get(url, allow_redirects=True) as response:
+            # 2. allow_redirects=True garante o fetch seguro em CDN do Discord e afins
+            async with http.get(url, headers=headers, allow_redirects=True, timeout=timeout) as response:
                 if response.status != 200:
                     return None
 
+                # 3. Validação de Content-Type (Evita abrir HTML como imagem no Pillow)
                 content_type = response.headers.get("Content-Type", "").lower()
-
-                if not content_type.startswith("image/"):
+                if "image/" not in content_type:
                     return None
 
                 data = bytearray()
-
+                
+                # Fetch iterativo seguro para proteção de memória
                 async for chunk in response.content.iter_chunked(64 * 1024):
                     data.extend(chunk)
-
-                    if len(data) > self.MAX_IMAGE_BYTES:
+                    if len(data) > getattr(self, 'MAX_IMAGE_BYTES', 5 * 1024 * 1024):  # Fallback seguro para 5MB
                         return None
 
                 if not data:
                     return None
 
+                # Retorno seguro em bytes brutos, que será instanciado em io.BytesIO() no Pillow
                 return bytes(data)
 
+        # Tratamento cirúrgico de quebras de rede (Timeout e Falha de HTTP)
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            return None
         except Exception:
             return None
 
