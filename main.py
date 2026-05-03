@@ -1,40 +1,11 @@
-import asyncio
 import os
-from threading import Thread
 
 import discord
-from aiohttp import web
 from discord.ext import commands
 from dotenv import load_dotenv
-from flask import Flask
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
-
-app = Flask("")
-
-
-@app.route("/")
-def home():
-    return "Bot está online!"
-
-
-def run_http() -> None:
-    app.run(host="0.0.0.0", port=10000)
-
-
-async def handle(request: web.Request) -> web.Response:
-    return web.Response(text="Baphomet está online!")
-
-
-async def start_web_server() -> None:
-    server = web.Application()
-    server.router.add_get("/health", handle)
-    runner = web.AppRunner(server)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 8080)
-    await site.start()
-    print("Servidor web auxiliar iniciado na porta 8080")
 
 
 class MyBot(commands.Bot):
@@ -45,7 +16,6 @@ class MyBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self) -> None:
-        asyncio.create_task(start_web_server())
         for filename in sorted(os.listdir("./cogs")):
             if filename.startswith("__") or filename.startswith("xp_"):
                 continue
@@ -87,5 +57,4 @@ async def on_ready() -> None:
 if __name__ == "__main__":
     if not TOKEN:
         raise RuntimeError("DISCORD_TOKEN não encontrado no .env")
-    Thread(target=run_http, daemon=True).start()
     bot.run(TOKEN)
