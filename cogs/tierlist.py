@@ -83,7 +83,6 @@ class TierListRenderer:
     """
 
     # ── Canvas ──────────────────────────────────────────────────
-    WIDTH = 1600
     OUTER_PADDING = 40
     TITLE_HEIGHT = 120
     FOOTER_HEIGHT = 120
@@ -131,46 +130,69 @@ class TierListRenderer:
     #  MÉTODO PRINCIPAL
     # ════════════════════════════════════════════════════════════
 
-    def generate_tierlist_image(
+    def calculate_tierlist_dimensions(
         self,
-        title: str,
         tiers_dict: "OrderedDictType[str, list[TierItem]]",
-        *,
-        creator_name: str = "",
-        guild_icon_bytes: bytes | None = None,
-    ) -> io.BytesIO:
+        min_width: int = 800,
+        max_width: int = 1920,
+    ) -> dict:
+        """
+        Motor Flexbox de Análise Matemática Pré-Renderização.
+        Calcula as dimensões fluidas baseadas no número de itens.
+        """
+        # 1. Descobrir a quantidade máxima de itens em uma única tier
+        max_items_in_a_tier = 0
+        for items in tiers_dict.values():
+            if len(items) > max_items_in_a_tier:
+                max_items_in_a_tier = len(items)
 
-        title_font = self._font(48, bold=True)
-        tier_font = self._font(46, bold=True)
-        item_font = self._font(22, bold=True)
-        empty_font = self._font(20)
-        footer_font = self._font(20)
+        # Se não houver itens, garante que caberá pelo menos 1 espaço vazio (com fallback)
+        if max_items_in_a_tier == 0:
+            max_items_in_a_tier = 1
 
-        # ── Largura disponível para cards ───────────────────────
-        # WIDTH - padding*2 - tier_label - row_padding*2
+        # 2. Calcular a Largura Ideal (se a tela fosse infinita)
+        # largura = PADDING_ESQ_DIR + LARGURA_TITULO + PADDING_INTERNO_ROW_ESQ_DIR
+        #           + (QTD_ITENS * LARGURA_ITEM) + (QTD_ITENS - 1 * GAP_ENTRE_ITENS)
+        ideal_width = (
+            self.OUTER_PADDING * 2
+            + self.TIER_LABEL_WIDTH
+            + self.ROW_PADDING_X * 2
+            + (max_items_in_a_tier * self.ITEM_SIZE)
+            + ((max_items_in_a_tier - 1) * self.ITEM_GAP)
+        )
+
+        # 3. Travar no Bounding Box (MIN_WIDTH e MAX_WIDTH)
+        final_width = max(min_width, min(max_width, ideal_width))
+
+        # 4. Calcular quantos cards realmente cabem na linha com a largura fixada
         items_area_w = (
-            self.WIDTH
+            final_width
             - self.OUTER_PADDING * 2
             - self.TIER_LABEL_WIDTH
             - self.ROW_PADDING_X * 2
         )
-
-        # Quantos cards cabem por linha:
-        # floor((area + gap) / (item + gap))
+        
         per_line = max(1, math.floor(
             (items_area_w + self.ITEM_GAP) / (self.ITEM_SIZE + self.ITEM_GAP)
         ))
 
-        # ── Pré-cálculo de altura por tier ──────────────────────
-        row_layouts: list[dict] = []
-
+        # 5. Calcular a quebra (Wrapping) e a altura individual de cada Tier
+        row_layouts = []
         for idx, (tier_name, items) in enumerate(tiers_dict.items()):
             n = len(items)
-            lines = max(1, math.ceil(n / per_line))
+            lines = max(1, math.ceil(n / per_line)) if n > 0 else 1
 
-            # Altura de cada linha (imagem vs texto)
             line_h = [self.TEXT_ITEM_HEIGHT] * lines
             for i, item in enumerate(items):
+                # O sistema de Wrapping (Quebra de linha) não precisa de um loop `while` 
+                # verificando pixels (X/Y) manualmente a cada item porque usamos 
+                # uma malha aritmética baseada em índices (Grid Indexing).
+                # 
+                # Matemática da Quebra:
+                # - item_col = i % per_line -> Determina a coluna (posição X) na linha atual.
+                #   Se per_line for 4 e índice for 4 (5º item), 4 % 4 = 0 (volta para o X inicial).
+                # - item_row = i // per_line -> Determina a linha atual (posição Y).
+                #   Se per_line for 4 e índice for 4, 4 // 4 = 1 (somou no eixo Y, próxima linha).
                 row = i // per_line
                 h = self.ITEM_SIZE if item.image_bytes else self.TEXT_ITEM_HEIGHT
                 line_h[row] = max(line_h[row], h)
@@ -190,11 +212,11 @@ class TierListRenderer:
                 "line_heights": line_h,
             })
 
-        # ── Altura total do canvas ──────────────────────────────
+        # 6. Altura total sem Aspect Ratio
         rows_h = sum(r["row_height"] for r in row_layouts)
         gaps_h = max(0, len(row_layouts) - 1) * self.TIER_GAP
 
-        canvas_h = (
+        raw_canvas_h = (
             self.TITLE_HEIGHT
             + self.OUTER_PADDING
             + rows_h + gaps_h
@@ -202,38 +224,81 @@ class TierListRenderer:
             + self.FOOTER_HEIGHT
         )
 
+        # 7. Aspect Ratio Dinâmico
+        # Vamos manter um limite de achatamento (ex: pelo menos 16:9 vertical - mínimo de altura baseado na largura)
+        # 16:9 = height / width >= 0.5625
+        min_aspect_ratio = 9 / 16
+        min_allowed_height = int(final_width * min_aspect_ratio)
+
+        padding_y_extra = 0
+        if raw_canvas_h < min_allowed_height:
+            padding_y_extra = (min_allowed_height - raw_canvas_h) // 2
+            
+        final_canvas_h = raw_canvas_h + (padding_y_extra * 2)
+
+        return {
+            "canvas_w": final_width,
+            "canvas_h": final_canvas_h,
+            "padding_y_extra": padding_y_extra,
+            "row_layouts": row_layouts,
+        }
+
+    def generate_tierlist_image(
+        self,
+        title: str,
+        tiers_dict: "OrderedDictType[str, list[TierItem]]",
+        *,
+        creator_name: str = "",
+        guild_icon_bytes: bytes | None = None,
+    ) -> io.BytesIO:
+
+        title_font = self._font(48, bold=True)
+        tier_font = self._font(46, bold=True)
+        item_font = self._font(22, bold=True)
+        empty_font = self._font(20)
+        footer_font = self._font(20)
+
+        # -- Análise Matemática Pré-Renderização --
+        layout = self.calculate_tierlist_dimensions(tiers_dict, max_width=1920, min_width=800)
+        
+        canvas_w = layout["canvas_w"]
+        canvas_h = layout["canvas_h"]
+        row_layouts = layout["row_layouts"]
+        padding_y_extra = layout["padding_y_extra"]
+
         # ── Fundo com gradiente vertical sutil ──────────────────
-        image = Image.new("RGBA", (self.WIDTH, canvas_h), self.BG_TOP + (255,))
-        grad = Image.new("RGBA", (self.WIDTH, canvas_h), (0, 0, 0, 0))
+        image = Image.new("RGBA", (canvas_w, canvas_h), self.BG_TOP + (255,))
+        grad = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
         grad_draw = ImageDraw.Draw(grad)
         for y_px in range(canvas_h):
             ratio = y_px / max(1, canvas_h - 1)
             r = int(self.BG_TOP[0] + (self.BG_BOTTOM[0] - self.BG_TOP[0]) * ratio)
             g = int(self.BG_TOP[1] + (self.BG_BOTTOM[1] - self.BG_TOP[1]) * ratio)
             b = int(self.BG_TOP[2] + (self.BG_BOTTOM[2] - self.BG_TOP[2]) * ratio)
-            grad_draw.line([(0, y_px), (self.WIDTH, y_px)], fill=(r, g, b, 255))
+            grad_draw.line([(0, y_px), (canvas_w, y_px)], fill=(r, g, b, 255))
         image = Image.alpha_composite(image, grad)
 
         draw = ImageDraw.Draw(image)
 
         # ── Título ──────────────────────────────────────────────
+        title_y_start = padding_y_extra
         self._draw_centered(
             draw,
-            (self.OUTER_PADDING, 0, self.WIDTH - self.OUTER_PADDING, self.TITLE_HEIGHT),
+            (self.OUTER_PADDING, title_y_start, canvas_w - self.OUTER_PADDING, title_y_start + self.TITLE_HEIGHT),
             title,
             title_font,
             self.TEXT_COLOR,
         )
 
         # ── Fileiras de Tiers ───────────────────────────────────
-        y = self.TITLE_HEIGHT + self.OUTER_PADDING
+        y = title_y_start + self.TITLE_HEIGHT + self.OUTER_PADDING
 
         for row in row_layouts:
             rh = row["row_height"]
             color = row["color"]
             rx1 = self.OUTER_PADDING
             ry1 = y
-            rx2 = self.WIDTH - self.OUTER_PADDING
+            rx2 = canvas_w - self.OUTER_PADDING
             ry2 = y + rh
 
             # Fundo da fileira
@@ -312,11 +377,11 @@ class TierListRenderer:
             y += rh + self.TIER_GAP
 
         # ── Rodapé premium ──────────────────────────────────────
-        footer_y = canvas_h - self.FOOTER_HEIGHT
+        footer_y = canvas_h - padding_y_extra - self.FOOTER_HEIGHT
 
         # Linha divisória
         draw.line(
-            [(self.OUTER_PADDING, footer_y + 10), (self.WIDTH - self.OUTER_PADDING, footer_y + 10)],
+            [(self.OUTER_PADDING, footer_y + 10), (canvas_w - self.OUTER_PADDING, footer_y + 10)],
             fill=self.DIVIDER_COLOR + (255,),
             width=2,
         )
@@ -350,7 +415,7 @@ class TierListRenderer:
         ft_bbox = draw.textbbox((0, 0), footer_text, font=footer_font)
         ft_w = ft_bbox[2] - ft_bbox[0]
         ft_h = ft_bbox[3] - ft_bbox[1]
-        ft_x = self.WIDTH - self.OUTER_PADDING - ft_w - 10
+        ft_x = canvas_w - self.OUTER_PADDING - ft_w - 10
         ft_y = icon_y + (icon_size - ft_h) // 2
 
         draw.text((ft_x, ft_y), footer_text, font=footer_font, fill=self.MUTED_COLOR + (255,))
