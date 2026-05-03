@@ -22,16 +22,16 @@ DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "baphomet_xp.sqlite3"
 
 LEVEL_UP_MESSAGES = [
-    "🔥 Magnífico! {mention} acaba de romper as correntes e alcançar o **Nível {level}**!",
-    "✨ Incrível! {mention} transcendeu a realidade e chegou ao **Nível {level}**!",
-    "⚔️ Que poder absurdo! {mention} upou e agora domina no **Nível {level}**!",
-    "👑 Curvem-se! {mention} provou seu valor e subiu para o **Nível {level}**!",
-    "🎮 GG WP! {mention} farmou XP o suficiente para chegar ao **Nível {level}**!",
-    "🚀 Pra cima! {mention} decolou direto para o **Nível {level}**!",
-    "🔮 As profecias estavam certas... {mention} despertou seu poder no **Nível {level}**!",
-    "🌟 Um novo astro brilha! {mention} iluminou o servidor alcançando o **Nível {level}**!",
-    "🎉 Parabéns, {mention}! Mais um degrau escalado rumo ao topo. Você está no **Nível {level}**!",
-    "⚡ O poder de {mention} ultrapassou os limites! Novo **Nível {level}** desbloqueado!"
+    "Aí sim, {mention}! Você acabou de chegar no **Nível {level}**.",
+    "Parece que alguém andou conversando bastante por aqui... {mention} subiu para o **Nível {level}**! 💬",
+    "Boa, {mention}! Mais um nível pra conta. Agora você está no **Nível {level}**.",
+    "Opa, {mention} upou para o **Nível {level}**. Mandou bem!",
+    "Subindo de fininho... {mention} alcançou o **Nível {level}**.",
+    "{mention} acabou de desbloquear o **Nível {level}**. Continue assim! ✨",
+    "Temos um upgrade! {mention} agora está no **Nível {level}**.",
+    "Justo e merecido. {mention} chegou ao **Nível {level}**! 📈",
+    "Olha só, {mention} bateu a meta e pegou o **Nível {level}**.",
+    "Avançando aos poucos, {mention} garantiu o **Nível {level}**. Parabéns!"
 ]
 
 DIFFICULTY_CHOICES = [
