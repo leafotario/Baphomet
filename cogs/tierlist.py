@@ -741,7 +741,8 @@ class AddItemModal(discord.ui.Modal):
         self.add_item(self.web_search_input)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
-        # Prevenção de Timeouts: Avisa ao Discord que o processamento será longo
+        # Prevenção Absoluta de Timeouts: Avisa ao Discord que o processamento será longo
+        # OBRIGATÓRIO DEFER ANTES DE TUDO
         await interaction.response.defer(ephemeral=True)
 
         session = self.cog.sessions.get(self.owner_id)
@@ -791,11 +792,17 @@ class AddItemModal(discord.ui.Modal):
                 clean_url = None
         # Prioridade 3: Sem URL ou ID, mas com Pesquisa Web solicitada. Busca a imagem online!
         elif web_search_str:
-            async with aiohttp.ClientSession() as http:
+            print(f"[DEBUG] Iniciando busca no DDG pelo termo: '{web_search_str}'")
+            
+            # Conector agressivo para contornar falhas de SSL em sites de imagens antigas
+            connector = aiohttp.TCPConnector(verify_ssl=False)
+            async with aiohttp.ClientSession(connector=connector) as http:
                 fetched_bytes = await self.cog.fetch_image_from_web(http, web_search_str)
                 if fetched_bytes:
                     image_bytes = fetched_bytes
                     clean_url = "(Pesquisa Web Automática)"  # Fallback estético para o log interno
+                else:
+                    print(f"[ERRO] Busca web retornou falha total para '{web_search_str}'. Aplicando fallback para texto.")
 
         item = TierItem(
             name=clean_item,
@@ -1201,10 +1208,10 @@ class TierListCog(
     async def fetch_image_from_web(self, http: aiohttp.ClientSession, query: str) -> bytes | None:
         """
         Pesquisa imagens usando DDGS e baixa a melhor candidata.
-        Tenta iterativamente o top 5 resultados para contornar links quebrados, Timeouts, SSL inválidos e Cloudflare blocks.
+        Opção "Nuclear": Rastreamento extremo e contorno de limites da API.
         """
         if not DDGS:
-            print("DDGS não instalado. Abortando busca web.")
+            print("[ERRO] DDGS não instalado. Abortando busca web.")
             return None
 
         # 2. Bloqueios de CDN e User-Agent
@@ -1221,41 +1228,45 @@ class TierListCog(
         timeout = aiohttp.ClientTimeout(total=3)
 
         try:
+            print(f"[DEBUG] Iniciando busca no DDG pelo termo: '{query}'")
             # 1. Falhas na Biblioteca DuckDuckGo (Isolamento em to_thread com try/except)
             def run_search():
                 try:
                     with DDGS() as ddgs:
                         return list(ddgs.images(query, safesearch='on', max_results=5))
                 except Exception as e:
-                    print(f"Erro no DuckDuckGo Search (Rate Limit/Conexão): {e}")
+                    print(f"[ERRO] Falha interna no DuckDuckGo Search (Rate Limit/Conexão): {e}")
                     return []
 
             results = await asyncio.to_thread(run_search)
             
             if not results:
-                print(f"Pesquisa '{query}' não retornou imagens ou foi bloqueada pelo DDG.")
+                print(f"[ERRO] Pesquisa '{query}' não retornou imagens ou foi bloqueada pelo DDG.")
                 return None
+
+            print(f"[DEBUG] Resultados encontrados pelo DDG: {len(results)}")
 
             for i, img_info in enumerate(results, 1):
                 url = img_info.get("image")
                 
                 # 5. URLs Corrompidas e Base64
-                if not url or not url.startswith('http'):
+                if not url or not (url.startswith('http://') or url.startswith('https://')):
                     preview = url[:30] if url else "None"
-                    print(f"Link {i} falhou: URL Inválida ou Base64 -> {preview}...")
+                    print(f"[ERRO] Falha ao baixar {preview}... | Motivo: URL Inválida ou Base64")
                     continue
                     
+                print(f"[DEBUG] Tentando baixar URL {i}/5: {url}")
                 try:
                     # 3. Falhas de SSL e Redirecionamentos (ssl=False, allow_redirects=True)
-                    async with http.get(url, headers=headers, allow_redirects=True, ssl=False, timeout=timeout) as response:
+                    async with http.get(url, headers=headers, allow_redirects=True, timeout=timeout) as response:
                         if response.status != 200:
-                            print(f"Link {i} falhou: HTTP {response.status} Forbidden/Not Found")
+                            print(f"[ERRO] Falha ao baixar {url} | Motivo: Status HTTP {response.status}")
                             continue
                             
                         # 5. Formatos Inválidos no Header
                         content_type = response.headers.get("Content-Type", "").lower()
                         if "image/" not in content_type or "svg" in content_type:
-                            print(f"Link {i} falhou: Content-Type incompatível ({content_type})")
+                            print(f"[ERRO] Falha ao baixar {url} | Motivo: Content-Type incompatível ({content_type})")
                             continue
                             
                         data = bytearray()
@@ -1265,9 +1276,11 @@ class TierListCog(
                                 break
                                 
                         if len(data) > getattr(self, 'MAX_IMAGE_BYTES', 5 * 1024 * 1024) or not data:
-                            print(f"Link {i} falhou: Imagem excedeu 5MB ou payload vazio")
+                            print(f"[ERRO] Falha ao baixar {url} | Motivo: Imagem excedeu 5MB ou payload vazio")
                             continue
                             
+                        print(f"[DEBUG] Bytes baixados: {len(data)} | Tentando abrir no Pillow...")
+                        
                         # 5. Sanitização final no Pillow (Blindagem de bytes corrompidos)
                         try:
                             # Tenta abrir para validar se os bytes são realmente decodificáveis
@@ -1275,27 +1288,27 @@ class TierListCog(
                             # Força o RGBA como pedido e garante que a imagem sobrevive à conversão
                             img_test.convert('RGBA')
                         except Exception as e:
-                            print(f"Link {i} falhou: Arquivo corrompido, Pillow rejeitou ({e})")
+                            print(f"[ERRO] Pillow recusou o arquivo | Motivo: {type(e).__name__} ({e})")
                             continue
                             
-                        print(f"Link {i} sucesso! Imagem de {len(data)} bytes validada e baixada.")
+                        print(f"[DEBUG] Sucesso! Imagem de {len(data)} bytes validada e pronta para Tier List.")
                         return bytes(data)
                         
                 except asyncio.TimeoutError:
-                    print(f"Link {i} falhou: Timeout (demorou mais de 3 segundos)")
+                    print(f"[ERRO] Falha ao baixar {url} | Motivo: Timeout (demorou mais de 3 segundos)")
                     continue
                 except aiohttp.ClientError as e:
-                    print(f"Link {i} falhou: Erro de Rede / SSL / Cloudflare ({e})")
+                    print(f"[ERRO] Falha ao baixar {url} | Motivo: Erro de Rede / Cloudflare ({e})")
                     continue
                 except Exception as e:
-                    print(f"Link {i} falhou: Exceção Inesperada durante download ({e})")
+                    print(f"[ERRO] Falha ao baixar {url} | Motivo: Exceção Inesperada ({e})")
                     continue
             
-            print(f"Todos os 5 links falharam para a busca: '{query}'. Acionando fallback textual.")
+            print(f"[ERRO] Todos os 5 links falharam para a busca: '{query}'. Acionando fallback textual.")
             return None
 
         except Exception as e:
-            print(f"Erro Crítico no iterador de busca web: {e}")
+            print(f"[ERRO] Erro Crítico no iterador de busca web: {e}")
             return None
 
     @app_commands.command(
