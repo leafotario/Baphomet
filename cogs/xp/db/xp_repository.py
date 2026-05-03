@@ -363,6 +363,31 @@ class XpRepository:
                 await conn.rollback()
                 raise
 
+    async def reset_guild_xp(self, guild_id: int, actor_user_id: int) -> int:
+        now = utc_now_iso()
+        async with self._tx_lock:
+            conn = self.connection
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
+                cur = await conn.execute(
+                    "DELETE FROM xp_profiles WHERE guild_id = ?",
+                    (guild_id,)
+                )
+                deleted_count = cur.rowcount
+                
+                await conn.execute(
+                    """
+                    INSERT INTO xp_adjustments(guild_id, target_user_id, actor_user_id, delta_xp, reason, created_at)
+                    VALUES(?, ?, ?, ?, ?, ?)
+                    """,
+                    (guild_id, 0, actor_user_id, 0, "RESET GLOBAL DE TEMPORADA", now),
+                )
+                await conn.commit()
+                return deleted_count
+            except Exception:
+                await conn.rollback()
+                raise
+
     async def reset_profile(self, guild_id: int, user_id: int, actor_user_id: int | None, reason: str | None) -> tuple[int, int]:
         now = utc_now_iso()
         async with self._tx_lock:

@@ -129,27 +129,58 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
             embed.add_field(name="Motivo", value=reason, inline=False)
         await self._send_audit_log(interaction.guild, embed)
 
-    @app_commands.command(name="remove-xp", description="Remove XP De Um Membro 📉")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def remove_xp(self, interaction: discord.Interaction, member: discord.Member, amount: int, reason: str | None = None) -> None:
-        if amount <= 0:
-            await interaction.response.send_message("⚠️ O valor deve ser maior que zero.", ephemeral=True)
+class ConfirmResetView(discord.ui.View):
+    def __init__(self, runtime: XpRuntime, original_interaction: discord.Interaction):
+        super().__init__(timeout=60)
+        self.runtime = runtime
+        self.original_interaction = original_interaction
+
+    @discord.ui.button(label="Confirmar Reset", style=discord.ButtonStyle.danger, custom_id="xp_reset_confirm")
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.original_interaction.user.id:
+            await interaction.response.send_message("❌ Apenas quem iniciou o comando pode confirmar.", ephemeral=True)
             return
 
-        result = await self.runtime.service.remove_xp(interaction.guild, member, amount, interaction.user.id, reason)
+        # Desabilita botões
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+
+        deleted_count = await self.runtime.service.reset_guild_xp(interaction.guild, interaction.user.id)
+        
+        await interaction.followup.send(f"☠️ O Ritual Foi Reiniciado! **{deleted_count} membros** tiveram o XP completamente zerado no servidor.", ephemeral=True)
+
+        embed = discord.Embed(title="☠️ RESET GLOBAL DE XP", color=discord.Color.red())
+        embed.description = f"O administrador {interaction.user.mention} zerou o XP de absolutamente todos no servidor."
+        embed.add_field(name="Perfis Apagados", value=f"{deleted_count:,}".replace(",", "."), inline=False)
+        
+        config = await self.runtime.service.get_guild_config(interaction.guild.id)
+        if config.log_channel_id:
+            channel = interaction.guild.get_channel(config.log_channel_id)
+            if isinstance(channel, discord.TextChannel):
+                await channel.send(embed=embed)
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary, custom_id="xp_reset_cancel")
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.original_interaction.user.id:
+            await interaction.response.send_message("❌ Apenas quem iniciou o comando pode cancelar.", ephemeral=True)
+            return
+
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="🛑 Ação de Reset Cancelada.", view=self)
+
+
+    @app_commands.command(name="resetar_xp_servidor", description="Zera o XP de TODOS os membros do servidor (Ação Irreversível) ☠️")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def resetar_xp_servidor(self, interaction: discord.Interaction) -> None:
+        view = ConfirmResetView(self.runtime, interaction)
         await interaction.response.send_message(
-            f"📉 Sucesso! Removido **{amount:,} XP** de **{member.display_name}**.".replace(",", "."),
+            "⚠️ **ALERTA MÁXIMO:** Você está prestes a zerar o XP e o Nível de **TODOS** os membros do servidor.\nEssa ação não pode ser desfeita. Tem certeza?",
+            view=view,
             ephemeral=True
         )
-
-        embed = discord.Embed(title="📉 XP Removido", color=discord.Color.orange())
-        embed.add_field(name="Alvo", value=member.mention, inline=True)
-        embed.add_field(name="Administrador", value=interaction.user.mention, inline=True)
-        embed.add_field(name="Quantidade", value=f"{amount:,}".replace(",", "."), inline=True)
-        if reason:
-            embed.add_field(name="Motivo", value=reason, inline=False)
-        await self._send_audit_log(interaction.guild, embed)
 
     @app_commands.command(name="reset", description="Zera O XP De Um Membro ☠️")
     @app_commands.default_permissions(manage_guild=True)
