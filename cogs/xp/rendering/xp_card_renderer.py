@@ -202,7 +202,7 @@ class XpCardRenderer:
         # Elementos de Texto
         guild_text = self._truncate(guild_name, 28).upper()
         user_name = self._truncate(snapshot.display_name, 20)
-        rank_text = f"RANK #{snapshot.position}" if snapshot.position is not None else "SEM RANK"
+        rank_text = f"#{snapshot.position}" if snapshot.position is not None else " "
         progress_text = f"{snapshot.xp_into_level:,} / {snapshot.xp_for_next_level:,} XP"
         
         # Textos Refinados com Tipografia Avançada
