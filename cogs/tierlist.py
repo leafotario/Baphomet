@@ -765,6 +765,50 @@ class ItemTierSelect(discord.ui.Select):
         )
 
 
+class EditTitleModal(discord.ui.Modal, title="Editar Nome da Tier List"):
+    novo_titulo = discord.ui.TextInput(
+        label="Novo Título",
+        style=discord.TextStyle.short,
+        required=True,
+        min_length=1,
+        max_length=100,
+    )
+
+    def __init__(self, current_title: str, view_instance: "TierListControlView") -> None:
+        super().__init__()
+        self.view_instance = view_instance
+        self.novo_titulo.default = current_title
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        # Passo 1: Prevenção de Timeout
+        await interaction.response.defer()
+
+        # Passo 2: Atualização de Estado
+        session = self.view_instance.cog.sessions.get(self.view_instance.owner_id)
+        if not session:
+            await interaction.followup.send("❌ Sessão expirada.", ephemeral=True)
+            return
+
+        old_title = session.title
+        try:
+            # Altera a variável na memória da sessão atual
+            session.title = self.novo_titulo.value.strip()
+
+            # Passo 3: Regeração Visual
+            # Recria o Embed do painel que exibe o novo título na parte superior
+            novo_embed = self.view_instance.cog.build_panel_embed(session)
+
+            # Passo 4: Edição da Mensagem
+            if session.panel_message:
+                await session.panel_message.edit(embed=novo_embed, view=self.view_instance)
+                
+            await interaction.followup.send("✅ Título atualizado com sucesso!", ephemeral=True)
+        except Exception as e:
+            # Reverte em caso de falha visual para proteger os dados da sessão
+            session.title = old_title
+            await interaction.followup.send(f"❌ Falha ao atualizar o título: {e}", ephemeral=True)
+
+
 class ItemTierSelectView(discord.ui.View):
     def __init__(
         self,
@@ -796,48 +840,6 @@ class ItemTierSelectView(discord.ui.View):
             return False
 
         return True
-
-
-class EditTitleModal(discord.ui.Modal):
-    def __init__(self, current_title: str, view_instance: "TierListControlView") -> None:
-        super().__init__(title="Editar Nome da Tier List", timeout=5 * 60)
-        self.view_instance = view_instance
-        self.old_title = current_title
-        
-        self.new_title = discord.ui.TextInput(
-            label="Novo Título",
-            style=discord.TextStyle.short,
-            placeholder="Digite o novo título da Tier List...",
-            default=current_title,  # Injeta o título atual para UX
-            required=True,
-            min_length=1,
-            max_length=100,
-        )
-        self.add_item(self.new_title)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        # Passo 1: Prevenção de Timeout
-        await interaction.response.defer()
-
-        # Passo 2: Atualização de Estado
-        session = self.view_instance.cog.sessions.get(self.view_instance.owner_id)
-        if not session:
-            await interaction.followup.send("❌ Essa sessão expirou.", ephemeral=True)
-            return
-
-        new_val = str(self.new_title.value).strip()
-        session.title = new_val
-
-        # Passo 3 e 4: Regeração Visual e Edição da Mensagem
-        try:
-            # Tenta atualizar o painel principal (isso recria o Embed com o novo título)
-            await self.view_instance.cog.refresh_panel(session)
-            await interaction.followup.send("✅ Título atualizado com sucesso!", ephemeral=True)
-        except Exception as e:
-            # Preservação Absoluta de Dados (Blindagem) em caso de falha visual
-            session.title = self.old_title
-            print(f"[ERRO] Falha ao atualizar título no painel: {e}")
-            await interaction.followup.send("❌ Houve um erro ao atualizar o painel. O título foi revertido.", ephemeral=True)
 
 
 class TierListControlView(discord.ui.View):
@@ -890,7 +892,6 @@ class TierListControlView(discord.ui.View):
         label="Editar Título",
         emoji="✏️",
         style=discord.ButtonStyle.secondary,
-        row=0,
     )
     async def edit_title(
         self,
@@ -898,11 +899,21 @@ class TierListControlView(discord.ui.View):
         button: discord.ui.Button,
     ) -> None:
         session = self.cog.sessions.get(self.owner_id)
-        if not session:
-            await interaction.response.send_message("❌ Essa sessão expirou.", ephemeral=True)
+
+        if session is None:
+            await interaction.response.send_message(
+                "❌ Essa sessão expirou ou foi cancelada.",
+                ephemeral=True,
+            )
             return
-            
-        await interaction.response.send_modal(EditTitleModal(current_title=session.title, view_instance=self))
+
+        # Abre o modal passando o título atual para carregar como default
+        await interaction.response.send_modal(
+            EditTitleModal(
+                current_title=session.title,
+                view_instance=self,
+            )
+        )
 
     @discord.ui.button(
         label="Configurar Tiers",
