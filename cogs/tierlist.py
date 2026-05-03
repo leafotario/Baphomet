@@ -14,7 +14,7 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 try:
     from duckduckgo_search import DDGS
@@ -464,10 +464,17 @@ class TierListRenderer:
         sz = self.ITEM_SIZE
 
         try:
-            raw = Image.open(io.BytesIO(item.image_bytes)).convert("RGBA")
+            # 1. O Problema do Ponteiro de Bytes (BytesIO)
+            # A ordem: OBRIGATÓRIO dar seek(0) ANTES do Image.open para evitar leitura de arquivo vazio
+            bio = io.BytesIO(item.image_bytes)
+            bio.seek(0)
+            
+            # 2. Conversão de Modo de Cor (RGBA e Transparência)
+            # A ordem: OBRIGATÓRIO purificar os canais aplicando convert('RGBA') logo após o open()
+            raw = Image.open(bio).convert("RGBA")
             fitted = ImageOps.fit(raw, (sz, sz), method=Image.Resampling.LANCZOS)
         except Exception:
-            # Fallback para card de texto
+            # Fallback para card de texto (se purificação falhar ou erro corrompido)
             draw.rounded_rectangle(box, radius=self.ITEM_RADIUS, fill=self.CARD_BG + (255,), outline=self.CARD_BORDER + (255,), width=2)
             self._draw_centered_wrap(draw, (x1 + 10, y1 + 6, x2 - 10, y2 - 6), item.name, font, self.TEXT_COLOR)
             return
@@ -478,16 +485,27 @@ class TierListRenderer:
         ImageDraw.Draw(mask).rounded_rectangle((0, 0, ms, ms), radius=self.ITEM_RADIUS * 3, fill=255)
         mask = mask.resize((sz, sz), Image.Resampling.LANCZOS)
 
+        # 3. A Matemática e o Alpha do paste()
+        # A ordem: Criamos uma base totalmente transparente para o item
         card = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
-        card.paste(fitted, (0, 0))
-        card.putalpha(mask)
-        base.paste(card, (x1, y1), card)
+        
+        # Colamos a imagem usando a PRÓPRIA imagem como máscara (isso preserva a transparência nativa de logos da Wikipedia)
+        card.paste(fitted, (0, 0), mask=fitted)
+        
+        # Agora multiplicamos o Alpha que acabou de ser colado com a nossa máscara redonda, aparando as bordas
+        combined_alpha = ImageChops.multiply(card.getchannel('A'), mask)
+        card.putalpha(combined_alpha)
+        
+        # 4. Ordem de Desenho (O Z-Index do Canvas)
+        # O eixo Z do Canvas exige que as colagens de imagens independentes passem sua própria máscara `card`
+        # para a base global. Desenhando EXATAMENTE nas coordenadas (x1, y1).
+        base.paste(card, (x1, y1), mask=card)
 
         # Legenda escura sobre a base da imagem
         cap_h = 32
         overlay = Image.new("RGBA", (sz, cap_h), (0, 0, 0, 175))
         cap_y = y1 + sz - cap_h
-        base.paste(overlay, (x1, cap_y), overlay)
+        base.paste(overlay, (x1, cap_y), mask=overlay)
 
         cap_font = self._font(15, bold=True)
         self._draw_centered(draw, (x1 + 4, cap_y, x2 - 4, cap_y + cap_h), item.name, cap_font, self.TEXT_COLOR)
