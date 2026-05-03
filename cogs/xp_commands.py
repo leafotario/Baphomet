@@ -272,6 +272,53 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
             return
         await interaction.response.send_message(f"🚫 O Cargo Automático Do **Nível {level}** Foi Desfeito.", ephemeral=True)
 
+    @app_commands.command(name="resetar_xp_servidor", description="Zera O XP De TODOS Os Membros Do Servidor (Irreversível) ☠️")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def resetar_xp_servidor(self, interaction: discord.Interaction) -> None:
+        view = _ConfirmResetView(self.service, interaction.user.id)
+        await interaction.response.send_message(
+            "⚠️ **ALERTA:** Você está prestes a zerar o XP e o Nível de **TODOS** os membros do servidor.\n"
+            "Essa ação **não pode ser desfeita**. Tem certeza?",
+            view=view,
+            ephemeral=True,
+        )
+
+
+class _ConfirmResetView(discord.ui.View):
+    """Botões de confirmação para o reset global de XP."""
+
+    def __init__(self, service: XpService, author_id: int) -> None:
+        super().__init__(timeout=60)
+        self.service = service
+        self.author_id = author_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("❌ Apenas quem iniciou o comando pode usar esses botões.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Confirmar Reset", style=discord.ButtonStyle.danger, custom_id="xp_reset_global_confirm")
+    async def confirmar(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+
+        deleted = await self.service.reset_guild_xp(interaction.guild, interaction.user.id)
+        await interaction.followup.send(
+            f"☠️ Reset concluído! **{deleted}** perfis de XP foram apagados neste servidor.",
+            ephemeral=True,
+        )
+        self.stop()
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary, custom_id="xp_reset_global_cancel")
+    async def cancelar(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="🛑 Operação cancelada.", view=self)
+        self.stop()
+
 
 async def setup(bot: commands.Bot) -> None:
     await ensure_xp_runtime(bot)
