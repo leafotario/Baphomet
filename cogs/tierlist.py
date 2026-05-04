@@ -18,7 +18,7 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from cogs.tierlist_wikipedia.wikipedia import (
     WIKIPEDIA_SOURCE_TYPE,
@@ -49,6 +49,20 @@ LOGGER = logging.getLogger("baphomet.tierlist")
 Image.MAX_IMAGE_PIXELS = 25_000_000
 
 
+def normalize_caption(value: object, *, max_length: int | None = None) -> str | None:
+    if value is None:
+        return None
+    text = value if isinstance(value, str) else str(value)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return None
+    if text.casefold() in {"none", "null"}:
+        return None
+    if max_length is not None:
+        text = text[:max_length].strip()
+    return text or None
+
+
 # ============================================================
 # MODELOS DE DADOS
 # ============================================================
@@ -67,7 +81,7 @@ class TierItem:
     image_bytes:
         Bytes baixados da imagem.
         Esse campo é preenchido apenas na hora de gerar a imagem final.
-        Se for None, o renderer usa fallback de texto.
+        Se for None, o renderer só desenha texto quando houver render_caption.
     """
 
     name: str
@@ -77,6 +91,7 @@ class TierItem:
     caption: str | None = None
     user_caption: str | None = None
     render_caption: str | None = None
+    has_visible_caption: bool = False
     internal_title: str | None = None
     source_query: str | None = None
     image_cache_key: str | None = None
@@ -620,12 +635,15 @@ class TierListRenderer:
         Metadados resolvidos de Spotify/Wikipedia ficam fora daqui de proposito:
         so texto digitado pelo usuario deve aparecer como legenda renderizada.
         """
-        raw_name = getattr(item, "render_caption", None)
-        if raw_name is None:
-            raw_name = getattr(item, "caption", None)
-        if raw_name is None and not self._item_has_visual_source(item):
-            raw_name = getattr(item, "name", "")
-        return re.sub(r"\s+", " ", str(raw_name).strip())
+        if self._item_has_visual_source(item):
+            if not getattr(item, "has_visible_caption", False):
+                return ""
+            return normalize_caption(getattr(item, "render_caption", None)) or ""
+
+        return normalize_caption(getattr(item, "render_caption", None)) or normalize_caption(getattr(item, "name", None)) or ""
+
+    def _item_has_visible_caption(self, item: "TierItem") -> bool:
+        return bool(getattr(item, "has_visible_caption", False) and self._item_display_name(item))
 
     def _item_has_visual_source(self, item: "TierItem") -> bool:
         return bool(
@@ -634,6 +652,54 @@ class TierListRenderer:
             or self._is_spotify_item(item)
             or self._is_wikipedia_item(item)
         )
+
+    def _image_caption_height(self, item: "TierItem") -> int:
+        if not self._item_has_visible_caption(item):
+            return 0
+        if self._is_spotify_item(item):
+            return self.SPOTIFY_CAPTION_HEIGHT
+        if self._is_wikipedia_item(item):
+            return self.WIKIPEDIA_CAPTION_HEIGHT
+        return self.IMAGE_CAPTION_HEIGHT
+
+    def _image_item_height(self, item: "TierItem") -> int:
+        return self.IMAGE_ITEM_SIZE + self._image_caption_height(item)
+
+    def _fit_image_cover(self, image: Image.Image, target_size: tuple[int, int]) -> Image.Image:
+        target_w, target_h = target_size
+        if target_w <= 0 or target_h <= 0:
+            raise ValueError("target de imagem inválido")
+
+        source = image.convert("RGBA")
+        src_w, src_h = source.size
+        if src_w <= 0 or src_h <= 0:
+            raise ValueError("imagem sem dimensões válidas")
+
+        scale = max(target_w / src_w, target_h / src_h)
+        resized_w = max(target_w, math.ceil(src_w * scale))
+        resized_h = max(target_h, math.ceil(src_h * scale))
+        resized = source.resize((resized_w, resized_h), Image.Resampling.LANCZOS)
+
+        left = max(0, (resized_w - target_w) // 2)
+        top = max(0, (resized_h - target_h) // 2)
+        return resized.crop((left, top, left + target_w, top + target_h))
+
+    def _apply_rounded_alpha(self, image: Image.Image, radius: int) -> Image.Image:
+        rounded = image.convert("RGBA")
+        mask = self._rounded_mask(rounded.size, radius)
+        alpha = rounded.getchannel("A")
+        rounded.putalpha(ImageChops.multiply(alpha, mask))
+        return rounded
+
+    def _paste_cover_image(
+        self,
+        card: Image.Image,
+        raw: Image.Image,
+        box: tuple[int, int, int, int],
+    ) -> None:
+        x1, y1, x2, y2 = box
+        fitted = self._fit_image_cover(raw, (x2 - x1, y2 - y1))
+        card.paste(fitted, (x1, y1), mask=fitted)
 
     def _coerce_rgb_color(
         self,
@@ -790,17 +856,12 @@ class TierListRenderer:
 
         try:
             raw = self._safe_open_image(item.image_bytes, item.name)
-            fitted = ImageOps.fit(
-                raw,
-                (self.ITEM_THUMB_SIZE, self.ITEM_THUMB_SIZE),
-                method=Image.Resampling.LANCZOS,
-            )
+            fitted = self._fit_image_cover(raw, (self.ITEM_THUMB_SIZE, self.ITEM_THUMB_SIZE))
         except Exception as exc:
             print(f"[ERRO] Fallback visual para item '{item.name}': {exc}")
             return False
 
-        mask = self._rounded_mask((self.ITEM_THUMB_SIZE, self.ITEM_THUMB_SIZE), 9)
-        fitted.putalpha(mask)
+        fitted = self._apply_rounded_alpha(fitted, 9)
         chip.paste(fitted, (image_x, image_y), mask=fitted)
         return True
 
@@ -812,33 +873,26 @@ class TierListRenderer:
         *,
         font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
     ) -> None:
-        """Desenha item com imagem como card quadrado, com legenda opcional."""
+        """Desenha item com imagem em dois layouts reais: image-only ou imagem + legenda."""
         x1, y1, x2, y2 = box
         width = x2 - x1
         height = y2 - y1
-        mask = self._rounded_mask((width, height), self.IMAGE_ITEM_RADIUS)
+        caption = self._item_display_name(item)
+        footer_h = self._image_caption_height(item)
+        image_h = max(1, height - footer_h)
+        image_box = (0, 0, width, image_h)
+        card = Image.new("RGBA", (width, height), self.ITEM_BG)
+        draw = ImageDraw.Draw(card, "RGBA")
 
         try:
             raw = self._safe_open_image(item.image_bytes, self._item_display_name(item) or "item com imagem")
-            card = ImageOps.fit(raw, (width, height), method=Image.Resampling.LANCZOS)
-            card = card.convert("RGBA")
+            self._paste_cover_image(card, raw, image_box)
         except Exception as exc:
             print(f"[ERRO] Fallback visual para item '{self._item_display_name(item)}': {exc}")
-            card = Image.new("RGBA", (width, height), self.ITEM_BG)
 
-        card.putalpha(mask)
-        draw = ImageDraw.Draw(card, "RGBA")
-        draw.rounded_rectangle(
-            (0, 0, width - 1, height - 1),
-            radius=self.IMAGE_ITEM_RADIUS,
-            outline=self.ITEM_OUTLINE,
-            width=1,
-        )
-
-        caption = self._item_display_name(item)
         if caption:
-            caption_box = (0, height - self.IMAGE_CAPTION_HEIGHT, width, height)
-            draw.rectangle(caption_box, fill=(8, 13, 15, 178))
+            caption_box = (0, image_h, width, height)
+            draw.rectangle(caption_box, fill=(29, 29, 37, 255))
             caption_font = self._fit_font(
                 draw,
                 caption,
@@ -851,6 +905,14 @@ class TierListRenderer:
             tx, ty = self._center_text_position(draw, caption_box, clipped, caption_font)
             self._draw_text(draw, clipped, (tx, ty), caption_font, self.TEXT, shadow_alpha=120)
 
+        card = self._apply_rounded_alpha(card, self.IMAGE_ITEM_RADIUS)
+        draw = ImageDraw.Draw(card, "RGBA")
+        draw.rounded_rectangle(
+            (0, 0, width - 1, height - 1),
+            radius=self.IMAGE_ITEM_RADIUS,
+            outline=self.ITEM_OUTLINE,
+            width=1,
+        )
         base.paste(card, (x1, y1), mask=card)
 
     def _draw_spotify_square_item(
@@ -861,78 +923,8 @@ class TierListRenderer:
         *,
         font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
     ) -> None:
-        """
-        Desenha capa Spotify preservada: contain, sem crop e com texto fora da arte.
-        """
-        x1, y1, x2, y2 = box
-        width = x2 - x1
-        height = y2 - y1
-        card = Image.new("RGBA", (width, height), self.ITEM_BG)
-        card.putalpha(self._rounded_mask((width, height), self.IMAGE_ITEM_RADIUS))
-        draw = ImageDraw.Draw(card, "RGBA")
-        draw.rounded_rectangle(
-            (0, 0, width - 1, height - 1),
-            radius=self.IMAGE_ITEM_RADIUS,
-            outline=self.ITEM_OUTLINE,
-            width=1,
-        )
-
-        art_padding = self.SPOTIFY_ART_PADDING
-        art_size = max(1, min(width - art_padding * 2, self.IMAGE_ITEM_SIZE - art_padding * 2))
-        art_x = (width - art_size) // 2
-        art_y = art_padding
-        art_bg = (22, 26, 35, 255)
-        draw.rectangle((art_x, art_y, art_x + art_size, art_y + art_size), fill=art_bg)
-
-        try:
-            raw = self._safe_open_image(item.image_bytes, self._item_display_name(item) or "capa Spotify")
-            fitted = ImageOps.contain(
-                raw,
-                (art_size, art_size),
-                method=Image.Resampling.LANCZOS,
-            ).convert("RGBA")
-            paste_x = art_x + (art_size - fitted.width) // 2
-            paste_y = art_y + (art_size - fitted.height) // 2
-            card.paste(fitted, (paste_x, paste_y), mask=fitted)
-        except Exception as exc:
-            print(f"[ERRO] Fallback visual para item Spotify '{self._item_display_name(item)}': {exc}")
-
-        caption = self._item_display_name(item)
-        if caption:
-            caption_box = (
-                art_padding,
-                self.IMAGE_ITEM_SIZE + 4,
-                width - art_padding,
-                height - art_padding,
-            )
-            caption_font = self._font(14, bold=True)
-            max_caption_width = max(1, caption_box[2] - caption_box[0])
-            lines = self._wrap_text_lines(draw, caption, caption_font, max_caption_width) or [caption]
-            lines = lines[:2]
-            if lines:
-                lines[-1] = self._clip_text(draw, lines[-1], caption_font, max_caption_width)
-            multiline_text = "\n".join(lines)
-            left, top, right, bottom = draw.multiline_textbbox(
-                (0, 0),
-                multiline_text,
-                font=caption_font,
-                spacing=2,
-                align="center",
-            )
-            text_w = right - left
-            text_h = bottom - top
-            tx = caption_box[0] + ((caption_box[2] - caption_box[0]) - text_w) / 2 - left
-            ty = caption_box[1] + ((caption_box[3] - caption_box[1]) - text_h) / 2 - top
-            draw.multiline_text(
-                (tx, ty),
-                multiline_text,
-                font=caption_font,
-                fill=self.TEXT,
-                spacing=2,
-                align="center",
-            )
-
-        base.paste(card, (x1, y1), mask=card)
+        """Desenha capa Spotify usando o mesmo layout/crop dos demais cards de imagem."""
+        self._draw_image_square_item(base, item, box, font=font)
 
     def _draw_wikipedia_square_item(
         self,
@@ -942,80 +934,8 @@ class TierListRenderer:
         *,
         font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
     ) -> None:
-        """
-        Desenha imagem Wikipedia preservando proporcao.
-
-        Diferente do fluxo generico de URL, a imagem ja foi validada antes de
-        entrar na sessao. Aqui fazemos apenas composicao visual, sem rede/API.
-        """
-        x1, y1, x2, y2 = box
-        width = x2 - x1
-        height = y2 - y1
-        card = Image.new("RGBA", (width, height), self.ITEM_BG)
-        card.putalpha(self._rounded_mask((width, height), self.IMAGE_ITEM_RADIUS))
-        draw = ImageDraw.Draw(card, "RGBA")
-        draw.rounded_rectangle(
-            (0, 0, width - 1, height - 1),
-            radius=self.IMAGE_ITEM_RADIUS,
-            outline=self.ITEM_OUTLINE,
-            width=1,
-        )
-
-        art_padding = self.WIKIPEDIA_ART_PADDING
-        art_size = max(1, min(width - art_padding * 2, self.IMAGE_ITEM_SIZE - art_padding * 2))
-        art_x = (width - art_size) // 2
-        art_y = art_padding
-        draw.rectangle((art_x, art_y, art_x + art_size, art_y + art_size), fill=(22, 26, 35, 255))
-
-        try:
-            raw = self._safe_open_image(item.image_bytes, self._item_display_name(item) or "imagem Wikipedia")
-            fitted = ImageOps.contain(
-                raw,
-                (art_size, art_size),
-                method=Image.Resampling.LANCZOS,
-            ).convert("RGBA")
-            paste_x = art_x + (art_size - fitted.width) // 2
-            paste_y = art_y + (art_size - fitted.height) // 2
-            card.paste(fitted, (paste_x, paste_y), mask=fitted)
-        except Exception as exc:
-            print(f"[ERRO] Fallback visual para item Wikipedia '{self._item_display_name(item)}': {exc}")
-
-        caption = self._item_display_name(item)
-        if caption:
-            caption_box = (
-                art_padding,
-                self.IMAGE_ITEM_SIZE + 4,
-                width - art_padding,
-                height - art_padding,
-            )
-            caption_font = self._font(14, bold=True)
-            max_caption_width = max(1, caption_box[2] - caption_box[0])
-            lines = self._wrap_text_lines(draw, caption, caption_font, max_caption_width) or [caption]
-            lines = lines[:2]
-            if lines:
-                lines[-1] = self._clip_text(draw, lines[-1], caption_font, max_caption_width)
-            multiline_text = "\n".join(lines)
-            left, top, right, bottom = draw.multiline_textbbox(
-                (0, 0),
-                multiline_text,
-                font=caption_font,
-                spacing=2,
-                align="center",
-            )
-            text_w = right - left
-            text_h = bottom - top
-            tx = caption_box[0] + ((caption_box[2] - caption_box[0]) - text_w) / 2 - left
-            ty = caption_box[1] + ((caption_box[3] - caption_box[1]) - text_h) / 2 - top
-            draw.multiline_text(
-                (tx, ty),
-                multiline_text,
-                font=caption_font,
-                fill=self.TEXT,
-                spacing=2,
-                align="center",
-            )
-
-        base.paste(card, (x1, y1), mask=card)
+        """Desenha imagem Wikipedia aprovada usando cover crop, sem padding/letterbox."""
+        self._draw_image_square_item(base, item, box, font=font)
 
     def _draw_item_chip(
         self,
@@ -1271,12 +1191,7 @@ class TierListRenderer:
             for item in items:
                 if self._item_has_image(item):
                     item_w = self.IMAGE_ITEM_SIZE
-                    if self._is_spotify_item(item):
-                        item_h = self.SPOTIFY_ITEM_HEIGHT if self._item_display_name(item) else self.IMAGE_ITEM_SIZE
-                    elif self._is_wikipedia_item(item):
-                        item_h = self.WIKIPEDIA_ITEM_HEIGHT if self._item_display_name(item) else self.IMAGE_ITEM_SIZE
-                    else:
-                        item_h = self.IMAGE_ITEM_SIZE
+                    item_h = self._image_item_height(item)
                 else:
                     measurement = self._measure_text_item(
                         scratch_draw,
@@ -1791,6 +1706,7 @@ class AddItemModal(discord.ui.Modal):
                 caption=render_caption,
                 user_caption=render_caption,
                 render_caption=render_caption,
+                has_visible_caption=render_caption is not None,
                 internal_title="Imagem por URL",
                 source_query=clean_url,
             )
@@ -1820,6 +1736,7 @@ class AddItemModal(discord.ui.Modal):
                 caption=render_caption,
                 user_caption=render_caption,
                 render_caption=render_caption,
+                has_visible_caption=render_caption is not None,
                 internal_title=f"Avatar de usuário {user_id}",
                 source_query=user_id_str,
             )
@@ -1840,6 +1757,7 @@ class AddItemModal(discord.ui.Modal):
             caption=render_caption,
             user_caption=render_caption,
             render_caption=render_caption,
+            has_visible_caption=render_caption is not None,
         )
         await self.cog.send_tier_choice_for_item(
             interaction,
@@ -2516,22 +2434,27 @@ class EditItemModal(discord.ui.Modal):
                 current_item.caption = new_caption
                 current_item.user_caption = new_caption
                 current_item.render_caption = new_caption
+                current_item.has_visible_caption = new_caption is not None
             elif current_item.source_type == WIKIPEDIA_SOURCE_TYPE and new_url == old_valid_url:
                 current_item.name = new_name
                 current_item.caption = new_caption
                 current_item.user_caption = new_caption
                 current_item.render_caption = new_caption
+                current_item.has_visible_caption = new_caption is not None
             else:
                 current_item.name = new_name
                 current_item.caption = new_caption
                 current_item.user_caption = new_caption
                 current_item.render_caption = new_caption
+                current_item.has_visible_caption = new_caption is not None
             current_item.image_url = new_url
             if new_url != old_valid_url:
                 current_item.image_bytes = None
                 self.main_view.cog.clear_spotify_metadata(current_item)
                 self.main_view.cog.clear_wikipedia_metadata(current_item)
                 current_item.source_type = "image_url" if new_url else "text"
+                current_item.internal_title = "Imagem por URL" if new_url else None
+                current_item.source_query = new_url or None
 
             if new_tier != old_tier:
                 moved_item = session.items[old_tier].pop(self.item_index)
@@ -3284,6 +3207,7 @@ class TierListCog(
             caption=caption,
             user_caption=caption,
             render_caption=caption,
+            has_visible_caption=caption is not None,
             internal_title=resolved.display_name,
             source_query=source_query,
             image_cache_key=resolved.cache_key,
@@ -3343,6 +3267,7 @@ class TierListCog(
             caption=caption,
             user_caption=caption,
             render_caption=caption,
+            has_visible_caption=caption is not None,
             internal_title=resolved.wikipedia_title or resolved.display_name,
             source_query=source_query,
             image_cache_key=resolved.image_cache_key,
@@ -3712,7 +3637,7 @@ class TierListCog(
         - aiohttp roda de forma assíncrona;
         - renderização Pillow roda depois em thread separada;
         - imagem inválida vira None;
-        - None é fallback para card de texto.
+        - sem imagem, o renderer só desenha texto se houver render_caption.
         """
 
         timeout = aiohttp.ClientTimeout(total=self.IMAGE_DOWNLOAD_TIMEOUT)
@@ -3816,8 +3741,7 @@ class TierListCog(
         return text[:max_length].strip()
 
     def render_caption_from_user(self, raw_caption: str, *, max_length: int = 80) -> str | None:
-        caption = self.clean_text(raw_caption, max_length=max_length)
-        return caption or None
+        return normalize_caption(raw_caption, max_length=max_length)
 
     def get_filled_image_sources(
         self,
