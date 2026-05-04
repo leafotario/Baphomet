@@ -7,6 +7,7 @@ import pathlib
 import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import OrderedDict as OrderedDictType
 from urllib.parse import urlparse
 
@@ -14,7 +15,7 @@ import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 try:
     from duckduckgo_search import DDGS
@@ -82,404 +83,664 @@ class TierListSession:
 
 class TierListRenderer:
     """
-    Motor de renderização Premium/AAA Skeuomórfico para Tier Lists.
-    Design UI/UX Avançado com Efeitos 3D, Iluminação, Sombras e Layout Dinâmico.
+    Motor visual Sleek Modern Minimalist para Tier Lists do Baphomet.
+
+    Esta classe trata exclusivamente do canvas Pillow: layout, mascaras,
+    sombras suaves e desenho final. A ingestao de imagens por URL, Discord ID
+    ou Wikipedia continua fora daqui e chega como `TierItem.image_bytes`.
     """
 
-    # ── Canvas e Layout ─────────────────────────────────────────
-    OUTER_PADDING = 50
-    TITLE_HEIGHT = 140
-    FOOTER_HEIGHT = 80
+    # Canvas em dark mode premium: grafite fosco, nunca preto puro.
+    CANVAS_BG = (20, 20, 20, 255)       # #141414
+    ROW_BG = (36, 36, 36, 255)          # #242424
+    ITEM_BG = (47, 47, 47, 255)         # #2F2F2F
+    TEXT = (244, 244, 244, 255)
+    TEXT_MUTED = (160, 160, 160, 255)
+    TEXT_SUBTLE = (118, 118, 118, 255)
+    OUTLINE = (54, 54, 54, 255)
 
-    # ── Tiers ───────────────────────────────────────────────────
-    TIER_LABEL_WIDTH = 180
-    TIER_GAP = 20
-    ROW_PADDING_X = 25
-    ROW_PADDING_Y = 25
-
-    # ── Itens ───────────────────────────────────────────────────
-    ITEM_SIZE = 160          
-    TEXT_ITEM_HEIGHT = 80    
-    ITEM_GAP = 15
-    ITEM_RADIUS = 20         
-
-    # ── Cores Modernizadas (Vibrantes) ──────────────────────────
-    TEXT_COLOR = (255, 255, 255)
-    SHADOW_COLOR = (0, 0, 0, 180)
-    CARD_BG = (45, 48, 56)
-    CARD_BORDER = (80, 85, 100)
-    
+    # Cores de tier dessaturadas: funcionam como sinalizacao, nao como neon.
     TIER_COLORS = [
-        (255, 60, 80),    # S  - Neon Red
-        (255, 145, 0),    # A  - Vibrant Orange
-        (250, 215, 30),   # B  - Bright Yellow
-        (46, 213, 115),   # C  - Toxic Green
-        (30, 144, 255),   # D  - Electric Blue
-        (156, 95, 255),   # E  - Neon Purple
-        (255, 71, 156),   # F  - Hot Pink
-        (0, 210, 211),    # G  - Cyan
-        (1, 235, 180),    # H  - Mint
-        (200, 150, 255),  # I  - Lavender
+        (143, 57, 71),    # S - carmesim/vinho sobrio.
+        (169, 105, 62),   # A - laranja queimado.
+        (177, 151, 82),   # B - ocre/dourado fosco.
+        (103, 134, 111),  # C - verde salvia.
+        (78, 108, 144),   # D - azul aco.
+        (116, 98, 143),   # Extra - ameixa dessaturado.
+        (145, 89, 121),   # Extra - malva fechado.
+        (87, 133, 137),   # Extra - teal sobrio.
     ]
+
+    # Medidas base. O layout recalcula quebras de linha e altura final antes
+    # de criar a imagem, entao listas grandes expandem verticalmente.
+    OUTER_PADDING = 56
+    TITLE_HEIGHT = 116
+    FOOTER_HEIGHT = 78
+    ROW_GAP = 18
+    ROW_PADDING_X = 18
+    ROW_PADDING_Y = 20
+    LABEL_COLUMN_WIDTH = 138
+    LABEL_WIDTH = 108
+    LABEL_HEIGHT = 76
+    LABEL_TO_ITEMS_GAP = 18
+    ITEM_WIDTH = 178
+    ITEM_HEIGHT = 76
+    ITEM_GAP_X = 14
+    ITEM_GAP_Y = 14
+    ITEM_IMAGE_SIZE = 54
 
     def __init__(self, font_path: str | None = None) -> None:
         self.font_path = font_path
+        self._font_cache: dict[tuple[int, bool], ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
+        self._mask_cache: dict[tuple[str, int, int], Image.Image] = {}
+        self._warned_font_fallback = False
 
-    # ════════════════════════════════════════════════════════════
-    #  MÉTODOS AUXILIARES: FONTES E CORES
-    # ════════════════════════════════════════════════════════════
+    # ============================================================
+    #  FONTES E MEDIDAS DE TEXTO
+    # ============================================================
 
     def _font(self, size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-        """Carrega fontes Premium externas ou fallback seguro."""
-        candidates = []
+        """
+        Carrega uma fonte sem serifa moderna via ImageFont.truetype().
+
+        O cache evita reabrir arquivos TTF em cada card. Se as fontes do projeto
+        nao existirem no host, a renderizacao continua com fallback do Pillow e
+        emite um aviso unico no terminal.
+        """
+        cache_key = (size, bold)
+        cached = self._font_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        repo_root = pathlib.Path(__file__).resolve().parents[1]
+        font_dir = repo_root / "assets" / "fonts"
+        candidates: list[str] = []
+
         if self.font_path:
             candidates.append(self.font_path)
-            
-        # Tentativas de fontes premium locais/padrão (Linux/Windows)
-        candidates.extend([
-            "assets/fonts/Impact.ttf",
-            "assets/fonts/Poppins-Black.ttf",
-            "assets/fonts/Montserrat-ExtraBold.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "arialbd.ttf"
-        ])
-        
-        for p in candidates:
+
+        if bold:
+            candidates.extend([
+                str(font_dir / "Montserrat-Black.ttf"),
+                str(font_dir / "Poppins-Bold.ttf"),
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "arialbd.ttf",
+            ])
+        else:
+            candidates.extend([
+                str(font_dir / "Poppins-Regular.ttf"),
+                str(font_dir / "Poppins-Bold.ttf"),
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "arial.ttf",
+            ])
+
+        for candidate in candidates:
             try:
-                if pathlib.Path(p).exists() or p == "arialbd.ttf":
-                    return ImageFont.truetype(p, size)
+                font = ImageFont.truetype(candidate, size)
+                self._font_cache[cache_key] = font
+                return font
             except Exception:
                 continue
-                
-        # Fallback extremo caso nenhuma fonte exista
-        print("[AVISO] Nenhuma fonte premium encontrada. Usando fallback padrão do Pillow.")
-        return ImageFont.load_default()
 
-    def _darken_color(self, color: tuple, factor: float = 0.7) -> tuple:
-        return tuple(int(c * factor) for c in color[:3])
+        if not self._warned_font_fallback:
+            print("[AVISO] Fonte premium nao encontrada. Usando fallback padrao do Pillow.")
+            self._warned_font_fallback = True
 
-    def _lighten_color(self, color: tuple, factor: float = 1.3) -> tuple:
-        return tuple(min(255, int(c * factor)) for c in color[:3])
+        font = ImageFont.load_default()
+        self._font_cache[cache_key] = font
+        return font
 
-    # ════════════════════════════════════════════════════════════
-    #  RENDERIZAÇÃO: SKEUOMORFISMO E 3D
-    # ════════════════════════════════════════════════════════════
+    def _text_bbox(
+        self,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    ) -> tuple[int, int, int, int]:
+        return draw.textbbox((0, 0), text, font=font)
 
-    def _draw_skeuomorphic_background(self, w: int, h: int) -> Image.Image:
-        """
-        1. O Canvas e o Fundo (Background Skeuomórfico)
-        Cria um gradiente radial escuro simulando iluminação central
-        e uma borda metálica luxuosa ao redor do canvas.
-        """
-        bg = Image.new("RGBA", (w, h), (15, 15, 18, 255))
-        draw = ImageDraw.Draw(bg)
-        
-        # Gradiente Radial
-        cx, cy = w // 2, h // 2
-        max_dist = math.hypot(cx, cy)
-        center_color = (40, 42, 50)
-        edge_color = (5, 5, 8)
-        
-        # Otimização: desenhar faixas horizontais simulando gradiente ou 
-        # criar um radial suave. Radial real pixel-a-pixel é caro. 
-        # Simulação via anéis ou overlay linear:
-        grad = Image.new("RGBA", (w, h), (0,0,0,0))
-        g_draw = ImageDraw.Draw(grad)
-        for y in range(h):
-            ratio = abs(y - cy) / cy
-            r = int(center_color[0] * (1 - ratio) + edge_color[0] * ratio)
-            g = int(center_color[1] * (1 - ratio) + edge_color[1] * ratio)
-            b = int(center_color[2] * (1 - ratio) + edge_color[2] * ratio)
-            g_draw.line([(0, y), (w, y)], fill=(r, g, b, 255))
-            
-        bg = Image.alpha_composite(bg, grad)
-        
-        # Borda de Quadro (Moldura metálica)
-        b_draw = ImageDraw.Draw(bg)
-        border_box = (10, 10, w - 10, h - 10)
-        b_draw.rounded_rectangle(border_box, radius=20, outline=(85, 85, 95, 255), width=3)
-        b_draw.rounded_rectangle((12, 12, w - 12, h - 12), radius=18, outline=(20, 20, 25, 255), width=1)
-        
-        return bg
+    def _text_size(
+        self,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    ) -> tuple[int, int]:
+        left, top, right, bottom = self._text_bbox(draw, text, font)
+        return right - left, bottom - top
 
-    def _draw_3d_tier_label(self, draw: ImageDraw.ImageDraw, box: tuple, text: str, font: ImageFont.ImageFont, base_color: tuple) -> None:
-        """
-        2. Labels das Tiers (Efeito 3D e Brilho)
-        Desenha o bloco esquerdo da Tier com chanfro e iluminação acrílica.
-        """
+    def _center_text_position(
+        self,
+        draw: ImageDraw.ImageDraw,
+        box: tuple[int, int, int, int],
+        text: str,
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    ) -> tuple[int, int]:
+        """Centraliza texto compensando bearings reais medidos por textbbox()."""
         x1, y1, x2, y2 = box
-        dark_color = self._darken_color(base_color, 0.6)
-        light_color = self._lighten_color(base_color, 1.4)
-        
-        # Fundo Base (Sombra Inferior)
-        draw.rounded_rectangle((x1, y1, x2, y2), radius=15, fill=dark_color)
-        draw.rectangle((x2 - 15, y1, x2, y2), fill=dark_color) # Cortar arredondamento direito
-        
-        # Chanfro Interno (Bevel)
-        draw.rounded_rectangle((x1 + 4, y1 + 4, x2, y2 - 6), radius=12, fill=base_color)
-        draw.rectangle((x2 - 12, y1 + 4, x2, y2 - 6), fill=base_color)
-        
-        # Inner Glow (Luz Superior)
-        draw.line([(x1 + 10, y1 + 5), (x2, y1 + 5)], fill=light_color, width=2)
-        
-        # Texto Centralizado com Drop Shadow absoluto
-        bb = draw.textbbox((0, 0), text, font=font)
-        tw = bb[2] - bb[0]
-        th = bb[3] - bb[1]
-        
-        tx = x1 + (x2 - x1 - tw) // 2 - bb[0]
-        ty = y1 + (y2 - y1 - th) // 2 - bb[1]
-        
-        self._draw_text_with_shadow(draw, text, (int(tx), int(ty)), font, (255, 255, 255))
+        left, top, right, bottom = self._text_bbox(draw, text, font)
+        text_w = right - left
+        text_h = bottom - top
+        x = x1 + ((x2 - x1) - text_w) / 2 - left
+        y = y1 + ((y2 - y1) - text_h) / 2 - top
+        return int(x), int(y)
 
-    def _draw_text_with_shadow(self, draw: ImageDraw.ImageDraw, text: str, pos: tuple, font: ImageFont.ImageFont, fill: tuple) -> None:
-        """
-        3. Tipografia Premium (Sombra e Contorno)
-        """
+    def _fit_font(
+        self,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        *,
+        start_size: int,
+        max_width: int,
+        min_size: int,
+        bold: bool,
+    ) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+        """Diminui a fonte ate o texto caber na largura disponivel."""
+        for size in range(start_size, min_size - 1, -1):
+            font = self._font(size, bold=bold)
+            if self._text_size(draw, text, font)[0] <= max_width:
+                return font
+        return self._font(min_size, bold=bold)
+
+    def _clip_text(
+        self,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+        max_width: int,
+    ) -> str:
+        """Corta textos longos com reticencias ASCII sem quebrar o chip."""
+        value = re.sub(r"\s+", " ", (text or "Item").strip()) or "Item"
+        if self._text_size(draw, value, font)[0] <= max_width:
+            return value
+
+        suffix = "..."
+        while value and self._text_size(draw, value + suffix, font)[0] > max_width:
+            value = value[:-1]
+        return value + suffix if value else suffix
+
+    def _draw_text(
+        self,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        pos: tuple[int, int],
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+        fill: tuple[int, int, int, int],
+        *,
+        shadow_alpha: int = 80,
+    ) -> None:
+        """Texto flat com uma sombra minima para legibilidade em dark mode."""
         x, y = pos
-        # Contorno / Stroke pesado para contraste
-        stroke_color = (10, 10, 15)
-        for dx, dy in [(-2,0), (2,0), (0,-2), (0,2), (-1,-1), (1,1), (-1,1), (1,-1)]:
-            draw.text((x + dx, y + dy), text, font=font, fill=stroke_color)
-            
-        # Sombra principal (+4, +4)
-        draw.text((x + 4, y + 4), text, font=font, fill=self.SHADOW_COLOR)
-        
-        # Texto Final
-        draw.text(pos, text, font=font, fill=fill)
+        if shadow_alpha > 0:
+            draw.text((x, y + 2), text, font=font, fill=(0, 0, 0, shadow_alpha))
+        draw.text((x, y), text, font=font, fill=fill)
 
-    # ════════════════════════════════════════════════════════════
-    #  CARDS E ITENS
-    # ════════════════════════════════════════════════════════════
+    # ============================================================
+    #  MASCARAS PILL-SHAPED E SOMBRAS DIFUSAS
+    # ============================================================
 
-    def _draw_image_card(self, base: Image.Image, draw: ImageDraw.ImageDraw, item: "TierItem", box: tuple, font: ImageFont.ImageFont) -> None:
+    def _pill_mask(self, size: tuple[int, int]) -> Image.Image:
         """
-        4. Os Cards dos Itens (As imagens baixadas)
-        Mascara a imagem, adiciona borda de "Trading Card" e aplica Drop Shadow brutal.
+        Cria mascara de pilula perfeita.
+
+        Regra geometrica: radius = height / 2. A mascara e desenhada em 3x e
+        reduzida com LANCZOS; isso deixa as laterais semicirculares sem serrilha.
+        """
+        width, height = size
+        key = ("pill", width, height)
+        cached = self._mask_cache.get(key)
+        if cached is not None:
+            return cached.copy()
+
+        scale = 3
+        hi_w, hi_h = width * scale, height * scale
+        radius = hi_h // 2
+        mask_hi = Image.new("L", (hi_w, hi_h), 0)
+        ImageDraw.Draw(mask_hi).rounded_rectangle(
+            (0, 0, hi_w - 1, hi_h - 1),
+            radius=radius,
+            fill=255,
+        )
+        mask = mask_hi.resize((width, height), Image.Resampling.LANCZOS)
+        self._mask_cache[key] = mask
+        return mask.copy()
+
+    def _circle_mask(self, diameter: int) -> Image.Image:
+        """Mascara circular perfeita para avatares/imagens dentro dos chips."""
+        key = ("circle", diameter, diameter)
+        cached = self._mask_cache.get(key)
+        if cached is not None:
+            return cached.copy()
+
+        scale = 3
+        hi = diameter * scale
+        mask_hi = Image.new("L", (hi, hi), 0)
+        ImageDraw.Draw(mask_hi).ellipse((0, 0, hi - 1, hi - 1), fill=255)
+        mask = mask_hi.resize((diameter, diameter), Image.Resampling.LANCZOS)
+        self._mask_cache[key] = mask
+        return mask.copy()
+
+    def _draw_soft_shadow(
+        self,
+        base: Image.Image,
+        box: tuple[int, int, int, int],
+        *,
+        radius: int,
+        offset: tuple[int, int] = (0, 10),
+        blur: int = 28,
+        opacity: int = 54,
+    ) -> None:
+        """
+        Sombra moderna: alta dispersao, baixa opacidade.
+
+        A profundidade do layout vem daqui. A sombra e renderizada em layer
+        propria, borrada com GaussianBlur e composta antes do elemento principal.
         """
         x1, y1, x2, y2 = box
-        sz = self.ITEM_SIZE
+        width = x2 - x1
+        height = y2 - y1
+        local_w = width + blur * 2 + abs(offset[0])
+        local_h = height + blur * 2 + abs(offset[1])
+        layer = Image.new("RGBA", (local_w, local_h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(layer, "RGBA")
+        sx = blur + max(0, -offset[0])
+        sy = blur + max(0, -offset[1])
+        draw.rounded_rectangle(
+            (sx, sy, sx + width, sy + height),
+            radius=radius,
+            fill=(0, 0, 0, opacity),
+        )
+        layer = layer.filter(ImageFilter.GaussianBlur(blur))
+        base.alpha_composite(
+            layer,
+            (x1 + offset[0] - blur - max(0, -offset[0]), y1 + offset[1] - blur - max(0, -offset[1])),
+        )
+
+    def _paste_pill(
+        self,
+        base: Image.Image,
+        box: tuple[int, int, int, int],
+        fill: tuple[int, int, int, int],
+        *,
+        outline: tuple[int, int, int, int] | None = None,
+        outline_width: int = 1,
+    ) -> None:
+        """Desenha uma pilula flat usando mascara alpha de radius = height / 2."""
+        x1, y1, x2, y2 = box
+        width = x2 - x1
+        height = y2 - y1
+        layer = Image.new("RGBA", (width, height), fill)
+        mask = self._pill_mask((width, height))
+        layer.putalpha(mask)
+
+        if outline is not None and outline_width > 0:
+            draw = ImageDraw.Draw(layer, "RGBA")
+            draw.rounded_rectangle(
+                (outline_width // 2, outline_width // 2, width - 1 - outline_width // 2, height - 1 - outline_width // 2),
+                radius=height // 2,
+                outline=outline,
+                width=outline_width,
+            )
+
+        base.paste(layer, (x1, y1), mask=layer)
+
+    # ============================================================
+    #  IMAGENS E CHIPS DE ITENS
+    # ============================================================
+
+    def _safe_open_image(self, image_bytes: bytes | None, item_name: str) -> Image.Image:
+        """
+        Abre bytes em RGBA com tolerancia a formatos e ponteiros internos.
+
+        BytesIO.seek(0), raw.seek(0) e convert("RGBA") preservam o conserto de
+        fotos parcialmente lidas, GIF/WebP no frame errado e imagens sem alpha.
+        """
+        if not image_bytes:
+            raise ValueError("item sem bytes de imagem")
+
+        buffer = io.BytesIO(image_bytes)
+        buffer.seek(0)
+        try:
+            with Image.open(buffer) as raw:
+                try:
+                    raw.seek(0)
+                except Exception:
+                    pass
+                return raw.convert("RGBA")
+        except Exception as exc:
+            raise ValueError(f"imagem corrompida/ilegivel para {item_name}: {exc}") from exc
+
+    def _draw_image_inside_chip(
+        self,
+        chip: Image.Image,
+        item: "TierItem",
+        *,
+        tier_color: tuple[int, int, int],
+    ) -> bool:
+        """Recorta imagem em circulo e cola dentro do chip. Retorna False em falha."""
+        image_x = 11
+        image_y = (self.ITEM_HEIGHT - self.ITEM_IMAGE_SIZE) // 2
 
         try:
-            # Proteção Absoluta de ponteiro e canais (conforme corrigido anteriormente)
-            bio = io.BytesIO(item.image_bytes)
-            bio.seek(0)
-            raw = Image.open(bio).convert("RGBA")
-            fitted = ImageOps.fit(raw, (sz, sz), method=Image.Resampling.LANCZOS)
-        except Exception as e:
-            print(f"[ERRO] Fallback visual para card {item.name}: {e}")
-            self._draw_text_card(base, draw, item, box, font)
-            return
+            raw = self._safe_open_image(item.image_bytes, item.name)
+            fitted = ImageOps.fit(
+                raw,
+                (self.ITEM_IMAGE_SIZE, self.ITEM_IMAGE_SIZE),
+                method=Image.Resampling.LANCZOS,
+            )
+        except Exception as exc:
+            print(f"[ERRO] Fallback visual para item '{item.name}': {exc}")
+            return False
 
-        # Máscara de cantos arredondados Anti-Aliased
-        ms = sz * 3
-        mask_hq = Image.new("L", (ms, ms), 0)
-        ImageDraw.Draw(mask_hq).rounded_rectangle((0, 0, ms, ms), radius=self.ITEM_RADIUS * 3, fill=255)
-        mask = mask_hq.resize((sz, sz), Image.Resampling.LANCZOS)
+        mask = self._circle_mask(self.ITEM_IMAGE_SIZE)
+        fitted.putalpha(mask)
+        chip.paste(fitted, (image_x, image_y), mask=fitted)
 
-        # 4. Simulação de Drop Shadow no Item
-        # Desenhamos uma base preta na coordenada X+6, Y+6 usando a mesma máscara
-        shadow_card = Image.new("RGBA", (sz, sz), (0, 0, 0, 150))
-        shadow_card.putalpha(mask) # Transparência nativa + cantos redondos
-        base.paste(shadow_card, (x1 + 6, y1 + 6), mask=shadow_card)
+        draw = ImageDraw.Draw(chip, "RGBA")
+        draw.ellipse(
+            (image_x, image_y, image_x + self.ITEM_IMAGE_SIZE - 1, image_y + self.ITEM_IMAGE_SIZE - 1),
+            outline=(*tier_color, 185),
+            width=2,
+        )
+        return True
 
-        # Montagem do Card Original
-        card = Image.new("RGBA", (sz, sz), (0, 0, 0, 0))
-        card.paste(fitted, (0, 0), mask=fitted) # Respeita Alpha nativo
-        
-        # Borda Branca/Prateada ("Trading Card")
-        c_draw = ImageDraw.Draw(card)
-        c_draw.rounded_rectangle((0, 0, sz - 1, sz - 1), radius=self.ITEM_RADIUS, outline=(240, 240, 240, 255), width=2)
-        
-        # Multiplicamos o Alpha final com a máscara arredondada
-        card.putalpha(ImageChops.multiply(card.getchannel('A'), mask))
-        
-        # Colagem Final no Z-Index superior ao da sombra
-        base.paste(card, (x1, y1), mask=card)
-
-        # Legenda do Item com sobreposição escura suave
-        cap_h = 35
-        overlay = Image.new("RGBA", (sz, cap_h), (0, 0, 0, 200))
-        cap_y = y1 + sz - cap_h
-        base.paste(overlay, (x1, cap_y), mask=overlay)
-        
-        # Usa Draw da Base para renderizar o texto
-        cap_font = self._font(16, bold=True)
-        bb = draw.textbbox((0, 0), item.name, font=cap_font)
-        cx = x1 + (sz - (bb[2] - bb[0])) // 2 - bb[0]
-        cy = cap_y + (cap_h - (bb[3] - bb[1])) // 2 - bb[1]
-        self._draw_text_with_shadow(draw, item.name, (int(cx), int(cy)), cap_font, self.TEXT_COLOR)
-
-    def _draw_text_card(self, base: Image.Image, draw: ImageDraw.ImageDraw, item: "TierItem", box: tuple, font: ImageFont.ImageFont) -> None:
-        """Fallback ou Item exclusivo de texto."""
+    def _draw_item_chip(
+        self,
+        base: Image.Image,
+        item: "TierItem",
+        box: tuple[int, int, int, int],
+        *,
+        tier_color: tuple[int, int, int],
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    ) -> None:
+        """Desenha um item como chip pill-shaped com sombra difusa subjacente."""
         x1, y1, x2, y2 = box
-        
-        # Sombra Projetada
-        s_box = (x1 + 6, y1 + 6, x2 + 6, y2 + 6)
-        draw.rounded_rectangle(s_box, radius=self.ITEM_RADIUS, fill=(0, 0, 0, 150))
-        
-        # Card
-        draw.rounded_rectangle(box, radius=self.ITEM_RADIUS, fill=self.CARD_BG + (255,), outline=self.CARD_BORDER + (255,), width=2)
-        
-        # Quebra de texto simplificada
-        words = item.name.split()
-        lines, cur = [], ""
-        for w in words:
-            cand = w if not cur else f"{cur} {w}"
-            if draw.textbbox((0, 0), cand, font=font)[2] <= (x2 - x1 - 20):
-                cur = cand
-            else:
-                if cur: lines.append(cur)
-                cur = w
-        if cur: lines.append(cur)
-        lines = lines[:2]
-        
-        lh = draw.textbbox((0, 0), "Ag", font=font)[3] - draw.textbbox((0, 0), "Ag", font=font)[1]
-        total_h = len(lines) * lh + max(0, len(lines) - 1) * 3
-        cy = y1 + ((y2 - y1) - total_h) // 2
-        
-        for line in lines:
-            bb = draw.textbbox((0, 0), line, font=font)
-            lx = x1 + (x2 - x1 - bb[2]) // 2
-            self._draw_text_with_shadow(draw, line, (int(lx), int(cy - bb[1])), font, self.TEXT_COLOR)
-            cy += lh + 3
+        width = x2 - x1
+        height = y2 - y1
+        radius = height // 2
 
-    # ════════════════════════════════════════════════════════════
-    #  MOTOR PRINCIPAL E LAYOUT MATEMÁTICO
-    # ════════════════════════════════════════════════════════════
+        self._draw_soft_shadow(
+            base,
+            box,
+            radius=radius,
+            offset=(0, 8),
+            blur=20,
+            opacity=58,
+        )
 
-    def calculate_tierlist_dimensions(self, tiers_dict: dict, min_width: int = 800, max_width: int = 1920) -> dict:
+        chip = Image.new("RGBA", (width, height), self.ITEM_BG)
+        chip.putalpha(self._pill_mask((width, height)))
+        draw = ImageDraw.Draw(chip, "RGBA")
+        draw.rounded_rectangle(
+            (0, 0, width - 1, height - 1),
+            radius=radius,
+            outline=self.OUTLINE,
+            width=1,
+        )
+
+        has_image = bool(item.image_bytes) and self._draw_image_inside_chip(chip, item, tier_color=tier_color)
+
+        if has_image:
+            text_x1 = 76
+            text_x2 = width - 16
+        else:
+            # Para itens de texto, uma barra-pilula discreta usa a cor da tier
+            # sem transformar o chip em botao chamativo.
+            accent_h = 38
+            accent_y = (height - accent_h) // 2
+            draw.rounded_rectangle(
+                (13, accent_y, 19, accent_y + accent_h),
+                radius=3,
+                fill=(*tier_color, 220),
+            )
+            text_x1 = 30
+            text_x2 = width - 18
+
+        clipped = self._clip_text(draw, item.name, font, max(20, text_x2 - text_x1))
+        tx, ty = self._center_text_position(draw, (text_x1, 0, text_x2, height), clipped, font)
+        self._draw_text(draw, clipped, (tx, ty), font, self.TEXT, shadow_alpha=70)
+        base.paste(chip, (x1, y1), mask=chip)
+
+    # ============================================================
+    #  LINHAS, LABELS E RODAPE
+    # ============================================================
+
+    def _draw_row_container(
+        self,
+        base: Image.Image,
+        box: tuple[int, int, int, int],
+    ) -> None:
+        """Desenha o container da tier como uma pilula gigante."""
+        x1, y1, x2, y2 = box
+        radius = (y2 - y1) // 2
+        self._draw_soft_shadow(
+            base,
+            box,
+            radius=radius,
+            offset=(0, 12),
+            blur=34,
+            opacity=46,
+        )
+        self._paste_pill(base, box, self.ROW_BG, outline=(48, 48, 48, 255), outline_width=1)
+
+    def _draw_tier_label(
+        self,
+        base: Image.Image,
+        row_box: tuple[int, int, int, int],
+        tier_name: str,
+        tier_color: tuple[int, int, int],
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    ) -> None:
+        """Label da tier em formato de pilula, ancorada no lado esquerdo."""
+        row_x1, row_y1, _, row_y2 = row_box
+        row_h = row_y2 - row_y1
+        label_h = min(self.LABEL_HEIGHT, row_h - self.ROW_PADDING_Y * 2)
+        label_w = self.LABEL_WIDTH
+        label_x1 = row_x1 + self.ROW_PADDING_X
+        label_y1 = row_y1 + (row_h - label_h) // 2
+        label_box = (label_x1, label_y1, label_x1 + label_w, label_y1 + label_h)
+
+        self._paste_pill(base, label_box, (*tier_color, 255))
+
+        draw = ImageDraw.Draw(base, "RGBA")
+        label_text = re.sub(r"\s+", "", (tier_name or "?").strip())[:5] or "?"
+        label_font = font
+        while self._text_size(draw, label_text, label_font)[0] > label_w - 24 and getattr(label_font, "size", 18) > 18:
+            label_font = self._font(getattr(label_font, "size", 42) - 2, bold=True)
+
+        tx, ty = self._center_text_position(draw, label_box, label_text, label_font)
+        self._draw_text(draw, label_text, (tx, ty), label_font, self.TEXT, shadow_alpha=95)
+
+    def _draw_empty_state(
+        self,
+        base: Image.Image,
+        box: tuple[int, int, int, int],
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    ) -> None:
+        draw = ImageDraw.Draw(base, "RGBA")
+        text = "Sem itens"
+        tx, ty = self._center_text_position(draw, box, text, font)
+        self._draw_text(draw, text, (tx, ty), font, self.TEXT_SUBTLE, shadow_alpha=35)
+
+    def _resolve_author_name(self, author: object | None, creator_name: str) -> str:
+        """Extrai exatamente o nome de usuario da interacao quando disponivel."""
+        raw_name = ""
+        if author is not None:
+            raw_name = str(getattr(author, "name", "") or "")
+        if not raw_name:
+            raw_name = str(creator_name or "usuario")
+        raw_name = raw_name.strip().lstrip("@") or "usuario"
+        return re.sub(r"\s+", "_", raw_name)[:40]
+
+    def _draw_footer(
+        self,
+        base: Image.Image,
+        *,
+        usuario_autor: str,
+    ) -> None:
+        """Bloco inviolavel do branding permitido no canvas."""
+        draw = ImageDraw.Draw(base, "RGBA")
+        data_atual = datetime.now().strftime("%d/%m/%Y")
+        footer_text = f"Criado com Baphomet | Feito por @{usuario_autor} | {data_atual}"
+        footer_box = (
+            self.OUTER_PADDING,
+            base.height - self.OUTER_PADDING - self.FOOTER_HEIGHT,
+            base.width - self.OUTER_PADDING,
+            base.height - self.OUTER_PADDING,
+        )
+        footer_font = self._fit_font(
+            draw,
+            footer_text,
+            start_size=18,
+            max_width=footer_box[2] - footer_box[0],
+            min_size=11,
+            bold=False,
+        )
+        tx, ty = self._center_text_position(draw, footer_box, footer_text, footer_font)
+        self._draw_text(draw, footer_text, (tx, ty), footer_font, self.TEXT_MUTED, shadow_alpha=25)
+
+    # ============================================================
+    #  LAYOUT RESPONSIVO E RENDERIZACAO FINAL
+    # ============================================================
+
+    def calculate_tierlist_dimensions(
+        self,
+        tiers_dict: dict,
+        min_width: int = 900,
+        max_width: int = 1920,
+    ) -> dict:
         """
-        5. Matemática de Layout Dinâmico e "Z-Index"
-        Calcula o height perfeito antes de alocar a imagem em memória.
+        Calcula a matriz visual antes de instanciar Image.new().
+
+        1. Estima uma largura ideal com ate 8 itens por linha.
+        2. Calcula quantos chips cabem na area real de itens.
+        3. Para cada tier, calcula o numero de linhas necessarias.
+        4. Soma altura de rows + gaps + titulo + rodape + padding global.
         """
         max_items = max((len(items) for items in tiers_dict.values()), default=1)
-        max_items = max(1, max_items)
-
+        target_per_line = max(1, min(8, max_items))
         ideal_width = (
             self.OUTER_PADDING * 2
-            + self.TIER_LABEL_WIDTH
             + self.ROW_PADDING_X * 2
-            + (max_items * self.ITEM_SIZE)
-            + ((max_items - 1) * self.ITEM_GAP)
+            + self.LABEL_COLUMN_WIDTH
+            + self.LABEL_TO_ITEMS_GAP
+            + target_per_line * self.ITEM_WIDTH
+            + (target_per_line - 1) * self.ITEM_GAP_X
         )
-        final_width = max(min_width, min(max_width, ideal_width))
+        canvas_w = max(min_width, min(max_width, ideal_width))
 
-        items_area_w = final_width - (self.OUTER_PADDING * 2) - self.TIER_LABEL_WIDTH - (self.ROW_PADDING_X * 2)
-        per_line = max(1, math.floor((items_area_w + self.ITEM_GAP) / (self.ITEM_SIZE + self.ITEM_GAP)))
+        items_area_w = (
+            canvas_w
+            - self.OUTER_PADDING * 2
+            - self.ROW_PADDING_X * 2
+            - self.LABEL_COLUMN_WIDTH
+            - self.LABEL_TO_ITEMS_GAP
+        )
+        per_line = max(1, math.floor((items_area_w + self.ITEM_GAP_X) / (self.ITEM_WIDTH + self.ITEM_GAP_X)))
 
-        row_layouts = []
-        accumulated_h = 0
-
-        for idx, (tier_name, items) in enumerate(tiers_dict.items()):
-            color = self.TIER_COLORS[idx % len(self.TIER_COLORS)]
-            lines_data = []
-            
-            if not items:
-                lines_data.append(self.TEXT_ITEM_HEIGHT)
-            else:
-                for i in range(0, len(items), per_line):
-                    chunk = items[i : i + per_line]
-                    # Se há alguma imagem na linha, a altura é ITEM_SIZE, senão TEXT_ITEM_HEIGHT
-                    line_h = self.ITEM_SIZE if any(it.image_bytes for it in chunk) else self.TEXT_ITEM_HEIGHT
-                    lines_data.append(line_h)
-
-            row_h = self.ROW_PADDING_Y * 2 + sum(lines_data) + (len(lines_data) - 1) * self.ITEM_GAP
+        row_layouts: list[dict] = []
+        for index, (tier_name, items) in enumerate(tiers_dict.items()):
+            item_count = len(items)
+            line_count = max(1, math.ceil(item_count / per_line))
+            row_h = self.ROW_PADDING_Y * 2 + line_count * self.ITEM_HEIGHT + (line_count - 1) * self.ITEM_GAP_Y
             row_layouts.append({
                 "tier": tier_name,
-                "color": color,
                 "items": items,
-                "per_line": per_line,
-                "line_heights": lines_data,
+                "color": self.TIER_COLORS[index % len(self.TIER_COLORS)],
+                "line_count": line_count,
                 "row_height": row_h,
+                "per_line": per_line,
             })
-            accumulated_h += row_h + self.TIER_GAP
 
-        padding_y_extra = self.OUTER_PADDING
-        final_height = padding_y_extra + self.TITLE_HEIGHT + accumulated_h + self.FOOTER_HEIGHT + padding_y_extra
+        rows_h = sum(row["row_height"] for row in row_layouts)
+        gaps_h = max(0, len(row_layouts) - 1) * self.ROW_GAP
+        canvas_h = self.OUTER_PADDING + self.TITLE_HEIGHT + rows_h + gaps_h + self.FOOTER_HEIGHT + self.OUTER_PADDING
 
         return {
-            "canvas_w": final_width,
-            "canvas_h": final_height,
+            "canvas_w": int(canvas_w),
+            "canvas_h": int(canvas_h),
             "row_layouts": row_layouts,
-            "padding_y_extra": padding_y_extra,
+            "per_line": per_line,
         }
 
-    def generate_tierlist_image(self, title: str, tiers_dict: dict, *, creator_name: str = "", guild_icon_bytes: bytes | None = None) -> io.BytesIO:
-        """Fluxo Principal: Ordena o Z-Index do esqueleto da imagem."""
-        title_font = self._font(65, bold=True)
-        tier_font = self._font(55, bold=True)
-        item_font = self._font(24, bold=True)
-        footer_font = self._font(22, bold=False)
+    def generate_tierlist_image(
+        self,
+        title: str,
+        tiers_dict: dict,
+        *,
+        author: object | None = None,
+        creator_name: str = "",
+        guild_icon_bytes: bytes | None = None,
+    ) -> io.BytesIO:
+        """
+        Gera a imagem final em PNG.
 
-        # Pré-Cálculo
+        `guild_icon_bytes` permanece na assinatura apenas por compatibilidade
+        com chamadas antigas; o novo canvas nao renderiza logos externas.
+        """
+        _ = guild_icon_bytes
+        usuario_autor = self._resolve_author_name(author, creator_name)
         layout = self.calculate_tierlist_dimensions(tiers_dict)
-        cw, ch = layout["canvas_w"], layout["canvas_h"]
-        
-        # 1º Fundo global com textura
-        image = self._draw_skeuomorphic_background(cw, ch)
-        draw = ImageDraw.Draw(image)
+        canvas_w = layout["canvas_w"]
+        canvas_h = layout["canvas_h"]
 
-        # ── TÍTULO PREMIUM ──
-        ty = layout["padding_y_extra"]
-        bb = draw.textbbox((0, 0), title, font=title_font)
-        tx = (cw - (bb[2] - bb[0])) // 2 - bb[0]
-        self._draw_text_with_shadow(draw, title, (int(tx), int(ty)), title_font, self.TEXT_COLOR)
+        image = Image.new("RGBA", (canvas_w, canvas_h), self.CANVAS_BG)
+        draw = ImageDraw.Draw(image, "RGBA")
 
-        # ── RENDERIZAÇÃO DAS TIERS (Z-Index) ──
-        y = ty + self.TITLE_HEIGHT + 20
+        title_text = re.sub(r"\s+", " ", (title or "Tier List").strip()) or "Tier List"
+        title_box = (
+            self.OUTER_PADDING,
+            self.OUTER_PADDING,
+            canvas_w - self.OUTER_PADDING,
+            self.OUTER_PADDING + self.TITLE_HEIGHT - 28,
+        )
+        title_font = self._fit_font(
+            draw,
+            title_text,
+            start_size=48,
+            max_width=title_box[2] - title_box[0],
+            min_size=26,
+            bold=True,
+        )
+        tx, ty = self._center_text_position(draw, title_box, title_text, title_font)
+        self._draw_text(draw, title_text, (tx, ty), title_font, self.TEXT, shadow_alpha=95)
 
+        tier_font = self._font(42, bold=True)
+        item_font = self._font(18, bold=True)
+        empty_font = self._font(18, bold=False)
+
+        y = self.OUTER_PADDING + self.TITLE_HEIGHT
         for row in layout["row_layouts"]:
-            rh = row["row_height"]
-            color = row["color"]
-            rx1, ry1 = self.OUTER_PADDING, y
-            rx2, ry2 = cw - self.OUTER_PADDING, y + rh
+            row_h = row["row_height"]
+            row_box = (self.OUTER_PADDING, y, canvas_w - self.OUTER_PADDING, y + row_h)
+            self._draw_row_container(image, row_box)
+            self._draw_tier_label(image, row_box, row["tier"], row["color"], tier_font)
 
-            # 3º Sombras de fundo e Fundo da Fileira
-            draw.rounded_rectangle((rx1 + 8, ry1 + 8, rx2 + 8, ry2 + 8), radius=22, fill=(0,0,0, 100))
-            draw.rounded_rectangle((rx1, ry1, rx2, ry2), radius=20, fill=(35, 38, 45, 255))
-            
-            # Divisória escura do conteúdo da fileira (profundidade)
-            draw.rounded_rectangle((rx1 + self.TIER_LABEL_WIDTH + 10, ry1 + 10, rx2 - 10, ry2 - 10), radius=15, fill=(28, 30, 36, 255))
+            items_x = row_box[0] + self.ROW_PADDING_X + self.LABEL_COLUMN_WIDTH + self.LABEL_TO_ITEMS_GAP
+            items_y = row_box[1] + self.ROW_PADDING_Y
+            items_right = row_box[2] - self.ROW_PADDING_X
 
-            # 4º As caixas das Tiers (labels) com efeito 3D
-            lx1, ly1 = rx1, ry1
-            lx2, ly2 = rx1 + self.TIER_LABEL_WIDTH, ry2
-            self._draw_3d_tier_label(draw, (lx1, ly1, lx2, ly2), row["tier"], tier_font, color)
-
-            # 5º e 6º Itens e Sombras de Cards
-            ix_start = lx2 + self.ROW_PADDING_X
-            iy_start = ry1 + self.ROW_PADDING_Y
-            
             if not row["items"]:
-                self._draw_text_with_shadow(draw, "Área Vazia", (ix_start + 20, iy_start), item_font, (120, 120, 130))
+                self._draw_empty_state(
+                    image,
+                    (items_x, items_y, items_right, row_box[3] - self.ROW_PADDING_Y),
+                    empty_font,
+                )
             else:
-                for ii, item in enumerate(row["items"]):
-                    r_idx = ii // row["per_line"]
-                    c_idx = ii % row["per_line"]
+                for item_index, item in enumerate(row["items"]):
+                    line = item_index // row["per_line"]
+                    col = item_index % row["per_line"]
+                    item_x = items_x + col * (self.ITEM_WIDTH + self.ITEM_GAP_X)
+                    item_y = items_y + line * (self.ITEM_HEIGHT + self.ITEM_GAP_Y)
+                    self._draw_item_chip(
+                        image,
+                        item,
+                        (item_x, item_y, item_x + self.ITEM_WIDTH, item_y + self.ITEM_HEIGHT),
+                        tier_color=row["color"],
+                        font=item_font,
+                    )
 
-                    offset_y = sum(row["line_heights"][:r_idx]) + r_idx * self.ITEM_GAP
-                    item_h = self.ITEM_SIZE if item.image_bytes else self.TEXT_ITEM_HEIGHT
+            y += row_h + self.ROW_GAP
 
-                    cx1 = ix_start + c_idx * (self.ITEM_SIZE + self.ITEM_GAP)
-                    cy1 = iy_start + offset_y
-                    cx2 = cx1 + self.ITEM_SIZE
-                    cy2 = cy1 + item_h
-
-                    if item.image_bytes:
-                        self._draw_image_card(image, draw, item, (cx1, cy1, cx2, cy2), item_font)
-                    else:
-                        self._draw_text_card(image, draw, item, (cx1, cy1, cx2, cy2), item_font)
-
-            y += rh + self.TIER_GAP
-
-        # 6. Marca D'água / Rodapé Estilizado
-        fw = "Gerado por Baphomet • Motor Skeuomórfico"
-        f_bb = draw.textbbox((0,0), fw, font=footer_font)
-        fx = (cw - (f_bb[2] - f_bb[0])) // 2 - f_bb[0]
-        fy = ch - self.FOOTER_HEIGHT - 10
-        # Texto com 50% de opacidade (Simulado através da cor base do fundo)
-        self._draw_text_with_shadow(draw, fw, (int(fx), int(fy)), footer_font, (150, 150, 160))
+        self._draw_footer(image, usuario_autor=usuario_autor)
 
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
@@ -1019,22 +1280,12 @@ class TierListControlView(discord.ui.View):
             # Download assíncrono das URLs.
             hydrated_snapshot = await self.cog.hydrate_tier_images(tiers_snapshot)
 
-            # Dados do rodapé premium
-            creator_name = interaction.user.display_name
-            guild_icon_bytes = None
-            if interaction.guild and interaction.guild.icon:
-                try:
-                    guild_icon_bytes = await interaction.guild.icon.read()
-                except Exception:
-                    pass
-
             # Pillow fora do event loop.
             image_buffer = await asyncio.to_thread(
                 self.cog.renderer.generate_tierlist_image,
                 title_snapshot,
                 hydrated_snapshot,
-                creator_name=creator_name,
-                guild_icon_bytes=guild_icon_bytes,
+                author=interaction.user,
             )
 
         except Exception:
