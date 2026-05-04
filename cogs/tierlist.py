@@ -1397,98 +1397,161 @@ class TierListCog(
 
     async def fetch_wikipedia_image(self, http: aiohttp.ClientSession, query: str) -> bytes | None:
         """
-        Pesquisa o artigo na Wikipedia e extrai a imagem principal (thumbnail), garantindo alta estabilidade e sem Rate Limits.
+        Pesquisa uma imagem principal na Wikipedia com fallback silencioso.
+
+        Contrato inviolavel:
+        - retorna bytes PNG normalizados em RGBA quando a imagem for segura;
+        - retorna None para qualquer falha de busca, rede, JSON, SVG ou Pillow;
+        - nunca levanta excecao para o fluxo principal do Discord.
         """
-        # Header Obrigatório pela Wikimedia Foundation
         headers = {
-            "User-Agent": "BaphometTierList/1.0",
-            "Accept": "application/json"
+            "User-Agent": "TierListBot/2.0 (Bot Privado de Discord; Contato via Discord)",
+            "Accept": "application/json",
         }
-        
+
         base_url = "https://pt.wikipedia.org/w/api.php"
-        timeout = aiohttp.ClientTimeout(total=5)
+        timeout = aiohttp.ClientTimeout(total=4, connect=2)
+        clean_query = (query or "").strip()
+
+        def reject_wiki_asset(url: str) -> bool:
+            """
+            Bloqueia imagens que o Pillow nao decodifica ou que quase sempre sao
+            artefatos internos da Wikimedia, nao imagem real do item pesquisado.
+            """
+            normalized = (url or "").strip().lower()
+            parsed_path = urlparse(normalized).path
+            return (
+                not normalized
+                or normalized.endswith(".svg")
+                or parsed_path.endswith(".svg")
+                or ".svg.png" in normalized
+                or "ambox" in normalized
+                or "wikimedia-button" in normalized
+                or "disambig" in normalized
+                or "question_book" in normalized
+            )
+
+        if not clean_query:
+            print("[WIKI API] Busca vazia recebida; fallback para texto.")
+            return None
 
         try:
-            print(f"[DEBUG] Buscando artigo na Wikipedia para: '{query}'")
-            # Passo 1: Resolução do Título
+            print(f"[WIKI API] Buscando artigo para: {clean_query}")
+
+            # Passo 1: busca textual estrita. A Wikipedia pode retornar uma
+            # pagina de redirecionamento como primeiro resultado; por isso esta
+            # etapa apenas descobre o melhor titulo candidato.
             search_params = {
                 "action": "query",
                 "list": "search",
-                "srsearch": query,
-                "format": "json"
+                "srsearch": clean_query,
+                "format": "json",
             }
-            
-            async with http.get(base_url, params=search_params, headers=headers, timeout=timeout) as resp:
-                if resp.status != 200:
-                    return None
-                data = await resp.json()
-                
-            search_results = data.get("query", {}).get("search", [])
-            if not search_results:
-                print(f"[ERRO] Wikipedia: Nenhum artigo encontrado para '{query}'.")
-                return None
-                
-            titulo_artigo = search_results[0].get("title")
-            if not titulo_artigo:
-                return None
-                
-            print(f"[DEBUG] Artigo encontrado: '{titulo_artigo}'. Buscando thumbnail...")
 
-            # Passo 2: Extração da Thumbnail
+            async with http.get(base_url, params=search_params, headers=headers, timeout=timeout) as response:
+                if response.status != 200:
+                    print(f"[WIKI API] Erro ao buscar '{clean_query}': HTTP {response.status}")
+                    return None
+                search_data = await response.json(content_type=None)
+
+            search_results = search_data.get("query", {}).get("search", [])
+            if not search_results:
+                print(f"[WIKI API] Erro ao processar '{clean_query}': busca sem resultados.")
+                return None
+
+            resolved_title = search_results[0].get("title")
+            if not resolved_title:
+                print(f"[WIKI API] Erro ao processar '{clean_query}': resultado sem title.")
+                return None
+
+            # Passo 2: extracao da imagem com redirects=1. A estrutura de pages
+            # usa IDs numericos imprevisiveis; nunca acessamos uma chave fixa.
             image_params = {
                 "action": "query",
                 "prop": "pageimages",
-                "titles": titulo_artigo,
+                "titles": resolved_title,
                 "pithumbsize": 500,
-                "format": "json"
+                "redirects": 1,
+                "format": "json",
             }
-            
-            async with http.get(base_url, params=image_params, headers=headers, timeout=timeout) as resp:
-                if resp.status != 200:
+
+            async with http.get(base_url, params=image_params, headers=headers, timeout=timeout) as response:
+                if response.status != 200:
+                    print(f"[WIKI API] Erro ao buscar thumbnail de '{resolved_title}': HTTP {response.status}")
                     return None
-                data = await resp.json()
-                
-            pages = data.get("query", {}).get("pages", {})
+                image_data_json = await response.json(content_type=None)
+
+            pages = image_data_json.get("query", {}).get("pages", {})
             if not pages:
+                print(f"[WIKI API] Erro ao processar '{resolved_title}': sem dicionario pages.")
                 return None
-                
-            # Extrai o primeiro resultado do dicionário de páginas
-            page_info = next(iter(pages.values()), {})
+
+            page_ids = list(pages.keys())
+            if not page_ids:
+                print(f"[WIKI API] Erro ao processar '{resolved_title}': pages sem IDs.")
+                return None
+
+            first_page_id = page_ids[0]
+            page_info = pages.get(first_page_id, {})
+            if not isinstance(page_info, dict):
+                print(f"[WIKI API] Erro ao processar '{resolved_title}': page_info invalido.")
+                return None
+
             image_url = page_info.get("thumbnail", {}).get("source")
-            
             if not image_url:
-                print(f"[ERRO] Wikipedia: O artigo '{titulo_artigo}' não possui imagem principal.")
-                return None
-                
-            # Filtro de Extensão Restrita
-            if image_url.lower().endswith(".svg") or "ambox" in image_url.lower():
-                print(f"[ERRO] Wikipedia: Imagem rejeitada (SVG / Ícone de Sistema) -> {image_url}")
+                print(f"[WIKI API] Erro ao processar '{resolved_title}': sem chave thumbnail.source.")
                 return None
 
-            print(f"[DEBUG] Fazendo download da imagem oficial: {image_url}")
-            
-            # Passo 3: Download da Imagem e Sanitização no Pillow
-            async with http.get(image_url, headers=headers, timeout=timeout) as resp:
-                if resp.status != 200:
-                    return None
-                    
-                image_data = await resp.read()
-                
-                try:
-                    # Tenta abrir para validar se os bytes são realmente decodificáveis
-                    img_test = Image.open(io.BytesIO(bytes(image_data)))
-                    # Força o RGBA como pedido e garante que a imagem sobrevive à conversão
-                    # (A conversão real para o fluxo principal ocorre no TierListRenderer._draw_image_card)
-                    img_test.convert('RGBA')
-                except Exception as e:
-                    print(f"[ERRO] Pillow recusou o arquivo da Wikipedia | Motivo: {e}")
-                    return None
-                    
-                print(f"[DEBUG] Sucesso! Imagem da Wikipedia de {len(image_data)} bytes pronta.")
-                return bytes(image_data)
+            # Passo 3: bloqueio preventivo de SVG e assets internos da Wiki.
+            if reject_wiki_asset(image_url):
+                print(f"[WIKI API] Imagem rejeitada para '{resolved_title}': asset SVG/sistema -> {image_url}")
+                return None
 
-        except Exception as e:
-            print(f"[ERRO] Falha silenciosa no motor da Wikipedia: {e}")
+            # Passo 4: download da imagem. Status nao-200 nunca e lido como
+            # imagem; HTML de erro 404/503 nao deve chegar ao Pillow.
+            async with http.get(image_url, headers=headers, timeout=timeout) as response:
+                if response.status != 200:
+                    print(f"[WIKI API] Erro ao baixar imagem de '{resolved_title}': HTTP {response.status}")
+                    return None
+                image_bytes = await response.read()
+
+            if not image_bytes:
+                print(f"[WIKI API] Erro ao processar '{resolved_title}': imagem vazia.")
+                return None
+
+            if len(image_bytes) > self.MAX_IMAGE_BYTES:
+                print(f"[WIKI API] Erro ao processar '{resolved_title}': imagem maior que {self.MAX_IMAGE_BYTES} bytes.")
+                return None
+
+            # Passo 5: rito de passagem do byte. O seek(0) antes do Image.open
+            # evita ponteiro perdido; convert('RGBA') normaliza paleta, alpha e
+            # perfis estranhos antes do renderer receber os bytes.
+            try:
+                buffer = io.BytesIO(image_bytes)
+                buffer.seek(0)
+                with Image.open(buffer) as raw_image:
+                    try:
+                        raw_image.seek(0)
+                    except Exception:
+                        pass
+                    purified_image = raw_image.convert("RGBA")
+
+                output = io.BytesIO()
+                purified_image.save(output, format="PNG")
+                output.seek(0)
+                normalized_bytes = output.getvalue()
+            except Exception as exc:
+                print(f"[WIKI API] Pillow recusou '{resolved_title}': {exc}")
+                return None
+
+            print(f"[WIKI API] Sucesso para '{clean_query}' -> '{resolved_title}' ({len(normalized_bytes)} bytes PNG RGBA).")
+            return normalized_bytes
+
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            print(f"[WIKI API] Erro de rede/timeout ao processar '{clean_query}': {exc}")
+            return None
+        except Exception as exc:
+            print(f"[WIKI API] Erro inesperado ao processar '{clean_query}': {exc}")
             return None
 
     @app_commands.command(
