@@ -130,6 +130,9 @@ class TierListRenderer:
     ITEM_GAP_X = 12
     ITEM_GAP_Y = 12
     ITEM_THUMB_SIZE = 48
+    TEXT_ITEM_PADDING_X = 48
+    TEXT_ITEM_PADDING_Y = 18
+    TEXT_ITEM_LINE_GAP = 4
     IMAGE_ITEM_SIZE = 160
     IMAGE_ITEM_RADIUS = 18
     IMAGE_CAPTION_HEIGHT = 46
@@ -543,6 +546,88 @@ class TierListRenderer:
         """Nome opcional: retorna string vazia quando o item nao tiver legenda."""
         return re.sub(r"\s+", " ", str(getattr(item, "name", "") or "").strip())
 
+    def _wrap_text_lines(
+        self,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+        max_width: int,
+    ) -> list[str]:
+        """
+        Quebra texto sem reduzir fonte e sem cortar conteudo.
+
+        O algoritmo tenta preservar palavras; se uma palavra isolada for maior
+        que a largura util, ela e quebrada em caracteres para permanecer dentro
+        do card e do trilho.
+        """
+        words = text.split()
+        if not words:
+            return []
+
+        lines: list[str] = []
+        current = ""
+
+        for word in words:
+            candidate = f"{current} {word}".strip()
+            if self._text_size(draw, candidate, font)[0] <= max_width:
+                current = candidate
+                continue
+
+            if current:
+                lines.append(current)
+                current = ""
+
+            if self._text_size(draw, word, font)[0] <= max_width:
+                current = word
+                continue
+
+            chunk = ""
+            for char in word:
+                candidate = chunk + char
+                if chunk and self._text_size(draw, candidate, font)[0] > max_width:
+                    lines.append(chunk)
+                    chunk = char
+                else:
+                    chunk = candidate
+            current = chunk
+
+        if current:
+            lines.append(current)
+
+        return lines
+
+    def _measure_text_item(
+        self,
+        draw: ImageDraw.ImageDraw,
+        item: "TierItem",
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+        *,
+        max_width: int,
+    ) -> dict:
+        """
+        Mede um item textual antes do desenho.
+
+        A largura cresce ate o texto caber inteiro. Quando o texto ultrapassa a
+        largura util restante do trilho, ele quebra linhas e aumenta a altura
+        do card, sem reduzir fonte e sem reticencias.
+        """
+        display_name = self._item_display_name(item)
+        if not display_name:
+            return {"width": 0, "height": 0, "lines": []}
+
+        text_max_w = max(24, max_width - self.TEXT_ITEM_PADDING_X * 2)
+        lines = self._wrap_text_lines(draw, display_name, font, text_max_w)
+        line_widths = [self._text_size(draw, line, font)[0] for line in lines] or [0]
+        line_heights = [self._text_size(draw, line, font)[1] for line in lines] or [0]
+
+        text_w = max(line_widths)
+        text_h = sum(line_heights) + max(0, len(lines) - 1) * self.TEXT_ITEM_LINE_GAP
+
+        width = min(max_width, max(self.ITEM_WIDTH, text_w + self.TEXT_ITEM_PADDING_X * 2))
+        height = max(self.ITEM_HEIGHT, text_h + self.TEXT_ITEM_PADDING_Y * 2)
+
+        return {"width": int(width), "height": int(height), "lines": lines}
+
     def _draw_image_inside_chip(
         self,
         chip: Image.Image,
@@ -651,12 +736,21 @@ class TierListRenderer:
             width=1,
         )
 
-        text_x1 = 14
-        text_x2 = width - 14
+        lines = self._wrap_text_lines(
+            draw,
+            display_name,
+            font,
+            max(24, width - self.TEXT_ITEM_PADDING_X * 2),
+        )
+        line_sizes = [self._text_size(draw, line, font) for line in lines]
+        text_block_h = sum(line_h for _, line_h in line_sizes) + max(0, len(lines) - 1) * self.TEXT_ITEM_LINE_GAP
+        line_y = (height - text_block_h) // 2
 
-        clipped = self._clip_text(draw, display_name, font, max(20, text_x2 - text_x1))
-        tx, ty = self._center_text_position(draw, (text_x1, 0, text_x2, height), clipped, font)
-        self._draw_text(draw, clipped, (tx, ty), font, self.TEXT, shadow_alpha=0)
+        for line, (line_w, line_h) in zip(lines, line_sizes):
+            tx = (width - line_w) // 2
+            self._draw_text(draw, line, (tx, line_y), font, self.TEXT, shadow_alpha=0)
+            line_y += line_h + self.TEXT_ITEM_LINE_GAP
+
         base.paste(chip, (x1, y1), mask=chip)
 
     # ============================================================
@@ -681,10 +775,7 @@ class TierListRenderer:
     ) -> None:
         """Label colorido com cantos esquerdos arredondados e direita reta."""
         row_x1, row_y1, _, row_y2 = row_box
-        row_h = row_y2 - row_y1
-        label_h = min(self.ROW_HEIGHT_BASE, row_h)
-        label_y1 = row_y1 + (row_h - label_h) // 2
-        label_box = (row_x1, label_y1, row_x1 + self.LABEL_WIDTH, label_y1 + label_h)
+        label_box = (row_x1, row_y1, row_x1 + self.LABEL_WIDTH, row_y2)
         self._paste_left_round_rect(base, label_box, (*tier_color, 255), radius=self.ROW_RADIUS)
 
         draw = ImageDraw.Draw(base, "RGBA")
@@ -809,29 +900,64 @@ class TierListRenderer:
         items_x = self.GRID_X + self.LABEL_WIDTH + self.LABEL_TO_ITEMS_GAP
         items_right = self.GRID_RIGHT - 22
         items_area_w = max(1, items_right - items_x)
-        capacity_by_width = max(
-            1,
-            math.floor((items_area_w + self.ITEM_GAP_X) / (self.ITEM_WIDTH + self.ITEM_GAP_X)),
-        )
-        items_per_row = max(1, min(self.MAX_ITEMS_PER_ROW, capacity_by_width))
+        scratch = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+        scratch_draw = ImageDraw.Draw(scratch, "RGBA")
+        item_font = self._font(22, bold=True)
 
         row_layouts: list[dict] = []
         current_y = self.ROWS_TOP
         for index, (tier_name, items) in enumerate(tiers_dict.items()):
-            item_count = len(items)
-            line_count = max(1, math.ceil(item_count / items_per_row))
-
-            # Cada linha da matriz pode ter altura propria:
-            # - se houver qualquer item com imagem naquela linha, a linha vira quadrada;
-            # - se todos forem texto, conserva o card horizontal original.
+            item_layouts: list[dict] = []
             line_heights: list[int] = []
-            for line_index in range(line_count):
-                line_start = line_index * items_per_row
-                line_end = line_start + items_per_row
-                line_items = items[line_start:line_end]
-                has_image = any(self._item_has_image(item) for item in line_items)
-                line_heights.append(self.IMAGE_ITEM_SIZE if has_image else self.ITEM_HEIGHT)
+            current_line = 0
+            cursor_x = 0
 
+            for item in items:
+                if self._item_has_image(item):
+                    item_w = self.IMAGE_ITEM_SIZE
+                    item_h = self.IMAGE_ITEM_SIZE
+                else:
+                    measurement = self._measure_text_item(
+                        scratch_draw,
+                        item,
+                        item_font,
+                        max_width=items_area_w,
+                    )
+                    item_w = measurement["width"]
+                    item_h = measurement["height"]
+
+                if item_w <= 0 or item_h <= 0:
+                    continue
+
+                # Packing horizontal responsivo:
+                # se o proximo item nao couber na linha atual, inicia outra
+                # linha. A largura do texto nao e comprimida nem cortada.
+                projected_x = cursor_x + (self.ITEM_GAP_X if cursor_x else 0) + item_w
+                if cursor_x and projected_x > items_area_w:
+                    current_line += 1
+                    cursor_x = 0
+
+                item_x_offset = cursor_x
+                if len(line_heights) <= current_line:
+                    line_heights.append(item_h)
+                else:
+                    line_heights[current_line] = max(line_heights[current_line], item_h)
+
+                item_layouts.append(
+                    {
+                        "item": item,
+                        "line": current_line,
+                        "x_offset": item_x_offset,
+                        "width": item_w,
+                        "height": item_h,
+                    }
+                )
+                cursor_x += item_w + self.ITEM_GAP_X
+
+            if not line_heights:
+                line_heights = [self.ITEM_HEIGHT]
+
+            line_count = len(line_heights)
             line_offsets: list[int] = []
             accumulated_y = 0
             for line_height in line_heights:
@@ -839,24 +965,27 @@ class TierListRenderer:
                 accumulated_y += line_height + self.ITEM_GAP_Y
 
             dynamic_items_h = sum(line_heights) + max(0, line_count - 1) * self.ITEM_GAP_Y
-            row_h = max(
-                self.ROW_HEIGHT_BASE,
-                self.ROW_PADDING_TOP
-                + dynamic_items_h
-                + self.ROW_PADDING_BOTTOM,
-            )
+
+            # A tier agora responde diretamente a altura do conteudo:
+            # - texto puro fica na altura base do layout;
+            # - imagens quadradas removem o padding vertical artificial;
+            # - multiplas linhas somam apenas conteudo + gaps reais.
+            row_h = max(self.ROW_HEIGHT_BASE, dynamic_items_h)
+            content_y_offset = (row_h - dynamic_items_h) // 2
+
             row_box = (self.GRID_X, current_y, self.GRID_RIGHT, current_y + row_h)
             row_layouts.append({
                 "tier": tier_name,
                 "items": items,
+                "item_layouts": item_layouts,
                 "color": self.TIER_COLORS[index % len(self.TIER_COLORS)],
                 "line_count": line_count,
                 "line_heights": line_heights,
                 "line_offsets": line_offsets,
+                "content_y_offset": content_y_offset,
                 "row_height": row_h,
                 "row_y": current_y,
                 "row_box": row_box,
-                "items_per_row": items_per_row,
             })
             current_y += row_h + self.ROW_GAP
 
@@ -868,7 +997,6 @@ class TierListRenderer:
             "canvas_w": int(canvas_w),
             "canvas_h": int(canvas_h),
             "row_layouts": row_layouts,
-            "items_per_row": items_per_row,
             "items_x": items_x,
             "items_right": items_right,
         }
@@ -924,34 +1052,27 @@ class TierListRenderer:
             self._draw_tier_label(image, row_box, row["tier"], row["color"], tier_font)
 
             items_x = layout["items_x"]
-            items_y = row_box[1] + self.ROW_PADDING_TOP
+            items_y = row_box[1] + row["content_y_offset"]
 
-            if not row["items"]:
+            if not row["item_layouts"]:
                 self._draw_empty_state(
                     image,
                     (items_x, row_box[1], row_box[2], row_box[3]),
                     empty_font,
                 )
             else:
-                for item_index, item in enumerate(row["items"]):
-                    # Coluna = resto da divisao pelo limite da linha.
-                    # Ex.: item 9 em uma matriz de 3 colunas volta para col 0.
-                    col = item_index % row["items_per_row"]
-
-                    # Linha = divisao inteira pelo limite da linha.
-                    # Ex.: item 9 em uma matriz de 3 colunas cai na linha 3.
-                    line = item_index // row["items_per_row"]
-
-                    # Offset X/Y bidimensional: origem da area de itens +
-                    # salto de slot, onde X usa largura fixa e Y soma as alturas
-                    # reais das linhas anteriores para suportar cards quadrados.
-                    item_x = items_x + col * (self.ITEM_WIDTH + self.ITEM_GAP_X)
-                    item_y = items_y + row["line_offsets"][line]
-                    item_h = self.IMAGE_ITEM_SIZE if self._item_has_image(item) else self.ITEM_HEIGHT
+                for item_layout in row["item_layouts"]:
+                    item = item_layout["item"]
+                    line = item_layout["line"]
+                    item_x = items_x + item_layout["x_offset"]
+                    item_w = item_layout["width"]
+                    item_h = item_layout["height"]
+                    line_h = row["line_heights"][line]
+                    item_y = items_y + row["line_offsets"][line] + (line_h - item_h) // 2
                     self._draw_item_chip(
                         image,
                         item,
-                        (item_x, item_y, item_x + self.ITEM_WIDTH, item_y + item_h),
+                        (item_x, item_y, item_x + item_w, item_y + item_h),
                         tier_color=row["color"],
                         font=item_font,
                     )
