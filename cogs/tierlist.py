@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import math
+import os
 import pathlib
 import re
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import OrderedDict as OrderedDictType
 from urllib.parse import urlparse
 
@@ -74,6 +77,7 @@ class TierListSession:
             }
         )
     )
+    tier_colors: dict[str, tuple[int, int, int]] = field(default_factory=dict)
     panel_message: discord.Message | None = None
 
 
@@ -134,6 +138,7 @@ class TierListRenderer:
     TEXT_ITEM_PADDING_Y = 18
     TEXT_ITEM_LINE_GAP = 4
     IMAGE_ITEM_SIZE = 160
+    TEXT_ITEM_HEIGHT = IMAGE_ITEM_SIZE
     IMAGE_ITEM_RADIUS = 18
     IMAGE_CAPTION_HEIGHT = 46
     FOOTER_TOP_GAP = 50
@@ -607,26 +612,21 @@ class TierListRenderer:
         """
         Mede um item textual antes do desenho.
 
-        A largura cresce ate o texto caber inteiro. Quando o texto ultrapassa a
-        largura util restante do trilho, ele quebra linhas e aumenta a altura
-        do card, sem reduzir fonte e sem reticencias.
+        A altura e congelada no mesmo tamanho do item de imagem. A largura
+        cresce para a direita ate acomodar o texto inteiro, sem reduzir fonte,
+        sem reticencias e sem quebrar linha.
         """
         display_name = self._item_display_name(item)
         if not display_name:
             return {"width": 0, "height": 0, "lines": []}
 
-        text_max_w = max(24, max_width - self.TEXT_ITEM_PADDING_X * 2)
-        lines = self._wrap_text_lines(draw, display_name, font, text_max_w)
-        line_widths = [self._text_size(draw, line, font)[0] for line in lines] or [0]
-        line_heights = [self._text_size(draw, line, font)[1] for line in lines] or [0]
+        try:
+            text_w = int(math.ceil(draw.textlength(display_name, font=font)))
+        except Exception:
+            text_w = self._text_size(draw, display_name, font)[0]
 
-        text_w = max(line_widths)
-        text_h = sum(line_heights) + max(0, len(lines) - 1) * self.TEXT_ITEM_LINE_GAP
-
-        width = min(max_width, max(self.ITEM_WIDTH, text_w + self.TEXT_ITEM_PADDING_X * 2))
-        height = max(self.ITEM_HEIGHT, text_h + self.TEXT_ITEM_PADDING_Y * 2)
-
-        return {"width": int(width), "height": int(height), "lines": lines}
+        width = max(self.TEXT_ITEM_HEIGHT, text_w + self.TEXT_ITEM_PADDING_X * 2)
+        return {"width": int(width), "height": self.TEXT_ITEM_HEIGHT, "lines": [display_name]}
 
     def _draw_image_inside_chip(
         self,
@@ -736,20 +736,8 @@ class TierListRenderer:
             width=1,
         )
 
-        lines = self._wrap_text_lines(
-            draw,
-            display_name,
-            font,
-            max(24, width - self.TEXT_ITEM_PADDING_X * 2),
-        )
-        line_sizes = [self._text_size(draw, line, font) for line in lines]
-        text_block_h = sum(line_h for _, line_h in line_sizes) + max(0, len(lines) - 1) * self.TEXT_ITEM_LINE_GAP
-        line_y = (height - text_block_h) // 2
-
-        for line, (line_w, line_h) in zip(lines, line_sizes):
-            tx = (width - line_w) // 2
-            self._draw_text(draw, line, (tx, line_y), font, self.TEXT, shadow_alpha=0)
-            line_y += line_h + self.TEXT_ITEM_LINE_GAP
+        tx, ty = self._center_text_position(draw, (0, 0, width, height), display_name, font)
+        self._draw_text(draw, display_name, (tx, ty), font, self.TEXT, shadow_alpha=0)
 
         base.paste(chip, (x1, y1), mask=chip)
 
@@ -815,19 +803,21 @@ class TierListRenderer:
     ) -> None:
         """Desenha o footer do mock: linha, avatar circular e assinatura."""
         draw = ImageDraw.Draw(base, "RGBA")
-        data_atual = datetime.now().strftime("%d/%m/%Y %H:%M")
+        brt_tz = timezone(timedelta(hours=-3))
+        data_atual = datetime.now(brt_tz).strftime("%d/%m/%Y às %H:%M")
         footer_text = f"Gerado por Baphomet  •  Criado por @{usuario_autor}  •  {data_atual}"
         line_y = base.height - self.FOOTER_BOTTOM - self.FOOTER_AVATAR_SIZE - self.FOOTER_AVATAR_TOP_GAP
         avatar_y = line_y + self.FOOTER_AVATAR_TOP_GAP
         avatar_box = (self.GRID_X, avatar_y, self.GRID_X + self.FOOTER_AVATAR_SIZE, avatar_y + self.FOOTER_AVATAR_SIZE)
 
-        draw.line((self.GRID_X, line_y, self.GRID_RIGHT, line_y), fill=self.FOOTER_LINE, width=2)
+        content_right = base.width - self.GRID_X
+        draw.line((self.GRID_X, line_y, content_right, line_y), fill=self.FOOTER_LINE, width=2)
         self._draw_footer_avatar(base, avatar_box, avatar_bytes=avatar_bytes, usuario_autor=usuario_autor)
 
         footer_box = (
             self.FOOTER_TEXT_X,
             avatar_y,
-            self.GRID_RIGHT,
+            content_right,
             avatar_y + self.FOOTER_AVATAR_SIZE,
         )
         footer_font = self._fit_font(
@@ -883,8 +873,9 @@ class TierListRenderer:
     def calculate_tierlist_dimensions(
         self,
         tiers_dict: dict,
+        tier_colors: dict[str, tuple[int, int, int]] | None = None,
         min_width: int = 800,
-        max_width: int = 800,
+        max_width: int = 2400,
     ) -> dict:
         """
         Calcula a matriz visual antes de instanciar Image.new().
@@ -896,13 +887,36 @@ class TierListRenderer:
         4. Expande cada tier por line_count = ceil(total_itens / itens_por_linha).
         5. Acumula Y sequencialmente: row_y_atual += row_height + row_gap.
         """
+        tier_colors = tier_colors or {}
         canvas_w = max(min_width, min(max_width, self.CANVAS_WIDTH))
         items_x = self.GRID_X + self.LABEL_WIDTH + self.LABEL_TO_ITEMS_GAP
-        items_right = self.GRID_RIGHT - 22
-        items_area_w = max(1, items_right - items_x)
         scratch = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
         scratch_draw = ImageDraw.Draw(scratch, "RGBA")
         item_font = self._font(22, bold=True)
+
+        # Primeira passada: mede a maior caixa textual sem comprimir. Se uma
+        # palavra/texto precisar de mais largura que o canvas base, o canvas
+        # cresce antes do packing para garantir que nada seja cortado.
+        max_single_item_w = self.IMAGE_ITEM_SIZE
+        preliminary_area_w = max(1, (canvas_w - self.GRID_X - 22) - items_x)
+        for items in tiers_dict.values():
+            for item in items:
+                if self._item_has_image(item):
+                    max_single_item_w = max(max_single_item_w, self.IMAGE_ITEM_SIZE)
+                else:
+                    measurement = self._measure_text_item(
+                        scratch_draw,
+                        item,
+                        item_font,
+                        max_width=preliminary_area_w,
+                    )
+                    max_single_item_w = max(max_single_item_w, measurement["width"])
+
+        required_canvas_w = items_x + max(preliminary_area_w, max_single_item_w) + 22 + self.GRID_X
+        canvas_w = max(min_width, min(max_width, required_canvas_w))
+        grid_right = canvas_w - self.GRID_X
+        items_right = grid_right - 22
+        items_area_w = max(1, items_right - items_x)
 
         row_layouts: list[dict] = []
         current_y = self.ROWS_TOP
@@ -973,12 +987,12 @@ class TierListRenderer:
             row_h = max(self.ROW_HEIGHT_BASE, dynamic_items_h)
             content_y_offset = (row_h - dynamic_items_h) // 2
 
-            row_box = (self.GRID_X, current_y, self.GRID_RIGHT, current_y + row_h)
+            row_box = (self.GRID_X, current_y, grid_right, current_y + row_h)
             row_layouts.append({
                 "tier": tier_name,
                 "items": items,
                 "item_layouts": item_layouts,
-                "color": self.TIER_COLORS[index % len(self.TIER_COLORS)],
+                "color": tier_colors.get(tier_name, self.TIER_COLORS[index % len(self.TIER_COLORS)]),
                 "line_count": line_count,
                 "line_heights": line_heights,
                 "line_offsets": line_offsets,
@@ -997,6 +1011,7 @@ class TierListRenderer:
             "canvas_w": int(canvas_w),
             "canvas_h": int(canvas_h),
             "row_layouts": row_layouts,
+            "grid_right": grid_right,
             "items_x": items_x,
             "items_right": items_right,
         }
@@ -1009,6 +1024,7 @@ class TierListRenderer:
         author: object | None = None,
         creator_name: str = "",
         guild_icon_bytes: bytes | None = None,
+        tier_colors: dict[str, tuple[int, int, int]] | None = None,
     ) -> io.BytesIO:
         """
         Gera a imagem final em PNG.
@@ -1017,9 +1033,10 @@ class TierListRenderer:
         circular do footer. Nenhum download e feito aqui.
         """
         usuario_autor = self._resolve_author_name(author, creator_name)
-        layout = self.calculate_tierlist_dimensions(tiers_dict)
+        layout = self.calculate_tierlist_dimensions(tiers_dict, tier_colors=tier_colors)
         canvas_w = layout["canvas_w"]
         canvas_h = layout["canvas_h"]
+        grid_right = layout["grid_right"]
 
         image = self._create_background(canvas_w, canvas_h)
         draw = ImageDraw.Draw(image, "RGBA")
@@ -1028,7 +1045,7 @@ class TierListRenderer:
         title_box = (
             self.GRID_X,
             self.TITLE_TOP,
-            self.GRID_RIGHT,
+            grid_right,
             self.ROWS_TOP - 58,
         )
         title_font = self._fit_font(
@@ -1155,6 +1172,11 @@ class ConfigureTiersModal(discord.ui.Modal):
 
         session.tiers = parsed
         session.items = new_items
+        session.tier_colors = {
+            tier: session.tier_colors[tier]
+            for tier in parsed
+            if tier in session.tier_colors
+        }
 
         await self.cog.refresh_panel(session)
 
@@ -1202,11 +1224,19 @@ class AddItemModal(discord.ui.Modal):
             max_length=50,
             required=False,
         )
+        self.spotify_album_input = discord.ui.TextInput(
+            label="Capa de Álbum (Spotify)",
+            placeholder="Exemplo: Blonde Frank Ocean",
+            min_length=0,
+            max_length=100,
+            required=False,
+        )
 
         self.add_item(self.item_name)
         self.add_item(self.image_url)
         self.add_item(self.user_id_input)
         self.add_item(self.web_search_input)
+        self.add_item(self.spotify_album_input)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         # Prevenção Absoluta de Timeouts: Avisa ao Discord que o processamento será longo
@@ -1242,24 +1272,36 @@ class AddItemModal(discord.ui.Modal):
         clean_url = str(self.image_url.value).strip() or None
         user_id_str = str(self.user_id_input.value).strip()
         web_search_str = str(self.web_search_input.value).strip()
+        spotify_album_str = str(self.spotify_album_input.value).strip()
         
         image_bytes = None
 
         # Hierarquia Estrita de Prioridade
         # Prioridade 1: Usa a URL informada
-        if clean_url:
-            if not self.cog.looks_like_url(clean_url):
-                clean_url = None
+        if clean_url and not self.cog.looks_like_url(clean_url):
+            clean_url = None
+
         # Prioridade 2: Sem URL, mas com ID informado. Tenta baixar avatar via Discord API
-        elif user_id_str:
+        if not clean_url and user_id_str:
             try:
                 user_id = int(user_id_str)
                 user = await interaction.client.fetch_user(user_id)
                 clean_url = user.display_avatar.replace(format='png', size=256).url
             except (ValueError, discord.NotFound, discord.HTTPException):
                 clean_url = None
-        # Prioridade 3: Sem URL ou ID, mas com Pesquisa Web solicitada. Busca a imagem oficial da Wikipedia!
-        elif web_search_str:
+
+        # Prioridade 3: Capa de álbum via API oficial do Spotify.
+        # Retorna uma URL CDN limpa, que segue pelo downloader assíncrono
+        # existente no fluxo de hidratação/renderização.
+        if not clean_url and spotify_album_str:
+            spotify_cover_url = await self.cog.fetch_spotify_album_cover(spotify_album_str)
+            if spotify_cover_url:
+                clean_url = spotify_cover_url
+                if not clean_item:
+                    clean_item = self.cog.clean_text(spotify_album_str, max_length=25)
+
+        # Prioridade 4: Sem URL/Spotify, mas com Pesquisa Web solicitada. Busca a imagem oficial da Wikipedia!
+        if not clean_url and not image_bytes and web_search_str:
             print(f"[DEBUG] Iniciando busca na Wikipedia pelo termo: '{web_search_str}'")
             
             async with aiohttp.ClientSession() as http:
@@ -1269,6 +1311,9 @@ class AddItemModal(discord.ui.Modal):
                     clean_url = "(Pesquisa Wikipedia Automática)"  # Fallback estético para o log interno
                 else:
                     print(f"[ERRO] Wikipedia retornou falha total para '{web_search_str}'. Aplicando fallback para texto.")
+
+        if spotify_album_str and not clean_item:
+            clean_item = self.cog.clean_text(spotify_album_str, max_length=25)
 
         if not clean_item and not clean_url and not image_bytes:
             await interaction.followup.send(
@@ -1726,12 +1771,206 @@ class EditItemModal(discord.ui.Modal):
             await interaction.followup.send("❌ Falha ao editar o item.", ephemeral=True)
 
 
+class TierColorSelect(discord.ui.Select):
+    """Select de tiers que abre um modal de cor para a tier escolhida."""
+
+    def __init__(self, view_instance: "TierColorSelectionView") -> None:
+        self.view_instance = view_instance
+        session = view_instance.cog.sessions.get(view_instance.owner_id)
+        tiers = session.tiers if session else []
+
+        options = [
+            discord.SelectOption(
+                label=tier[:100],
+                value=tier,
+                description="Editar cor desta tier",
+                emoji="🎨",
+            )
+            for tier in tiers[:25]
+        ]
+
+        super().__init__(
+            placeholder="Selecione a tier para editar a cor",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        tier_name = self.values[0]
+        session = self.view_instance.cog.sessions.get(self.view_instance.owner_id)
+
+        if not session or tier_name not in session.items:
+            await interaction.response.edit_message(
+                content="❌ Essa tier não existe mais na sessão atual.",
+                view=None,
+            )
+            return
+
+        current_color = session.tier_colors.get(
+            tier_name,
+            self.view_instance.main_view.default_color_for_tier(session, tier_name),
+        )
+
+        await interaction.response.send_modal(
+            EditTierColorModal(
+                main_view=self.view_instance.main_view,
+                tier_name=tier_name,
+                current_color=current_color,
+            )
+        )
+
+
+class TierColorSelectionView(discord.ui.View):
+    """View efemera que lista as tiers atuais para customizacao de cor."""
+
+    def __init__(self, main_view: "TierListControlView") -> None:
+        super().__init__(timeout=120)
+        self.main_view = main_view
+        self.cog = main_view.cog
+        self.owner_id = main_view.owner_id
+        self.add_item(TierColorSelect(self))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "❌ Só quem criou a tier list pode usar esse menu.",
+                ephemeral=True,
+            )
+            return False
+
+        if self.owner_id not in self.cog.sessions:
+            await interaction.response.send_message(
+                "❌ Essa sessão expirou ou foi cancelada.",
+                ephemeral=True,
+            )
+            return False
+
+        return True
+
+
+class EditTierColorModal(discord.ui.Modal):
+    """Modal de validacao hexadecimal e injecao de cor no estado da sessao."""
+
+    def __init__(
+        self,
+        *,
+        main_view: "TierListControlView",
+        tier_name: str,
+        current_color: tuple[int, int, int],
+    ) -> None:
+        super().__init__(title=f"Editar Cor: {tier_name}")
+        self.main_view = main_view
+        self.tier_name = tier_name
+        self.hex_color = discord.ui.TextInput(
+            label="Cor hexadecimal",
+            placeholder="#FF0000",
+            default=main_view.cog.color_to_hex(current_color),
+            min_length=6,
+            max_length=7,
+            required=True,
+        )
+        self.add_item(self.hex_color)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        session = self.main_view.cog.sessions.get(self.main_view.owner_id)
+        if not session:
+            await interaction.followup.send("❌ Sessão expirada.", ephemeral=True)
+            return
+
+        if self.tier_name not in session.items:
+            await interaction.followup.send("❌ Essa tier não existe na sessão atual.", ephemeral=True)
+            return
+
+        parsed_color = self.main_view.cog.parse_hex_color(str(self.hex_color.value))
+        if parsed_color is None:
+            await interaction.followup.send("❌ Informe uma cor hexadecimal válida. Exemplo: #FF0000.", ephemeral=True)
+            return
+
+        old_color = session.tier_colors.get(self.tier_name)
+
+        try:
+            session.tier_colors[self.tier_name] = parsed_color
+            await self.main_view.refresh_after_item_edit(interaction, session)
+            await interaction.followup.send("✅ Cor da tier atualizada.", ephemeral=True)
+
+        except Exception:
+            if old_color is None:
+                session.tier_colors.pop(self.tier_name, None)
+            else:
+                session.tier_colors[self.tier_name] = old_color
+            await interaction.followup.send("❌ Falha ao editar a cor da tier.", ephemeral=True)
+
+
+class PostGenerationView(discord.ui.View):
+    """View anexada a imagem final para reabrir a sessao sem perder estado."""
+
+    def __init__(self, cog: "TierListCog", owner_id: int) -> None:
+        super().__init__(timeout=30 * 60)
+        self.cog = cog
+        self.owner_id = owner_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "❌ Essa tier list não é sua para editar.",
+                ephemeral=True,
+            )
+            return False
+
+        if self.owner_id not in self.cog.sessions:
+            await interaction.response.send_message(
+                "❌ O estado dessa tier list não está mais disponível em memória.",
+                ephemeral=True,
+            )
+            return False
+
+        return True
+
+    @discord.ui.button(label="Editar Tier List", emoji="⚙️", style=discord.ButtonStyle.secondary)
+    async def reopen_session(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        session = self.cog.sessions.get(self.owner_id)
+        if not session:
+            await interaction.response.send_message(
+                "❌ O estado dessa tier list não está mais disponível em memória.",
+                ephemeral=True,
+            )
+            return
+
+        active_view = TierListControlView(self.cog, self.owner_id)
+        session.panel_message = interaction.message
+
+        await interaction.response.edit_message(
+            content=None,
+            embed=self.cog.build_panel_embed(session),
+            attachments=[],
+            view=active_view,
+        )
+
+
 class TierListControlView(discord.ui.View):
     def __init__(self, cog: TierListCog, owner_id: int) -> None:
         super().__init__(timeout=15 * 60)
 
         self.cog = cog
         self.owner_id = owner_id
+
+    def default_color_for_tier(
+        self,
+        session: TierListSession,
+        tier_name: str,
+    ) -> tuple[int, int, int]:
+        try:
+            tier_index = session.tiers.index(tier_name)
+        except ValueError:
+            tier_index = 0
+        return self.cog.renderer.TIER_COLORS[tier_index % len(self.cog.renderer.TIER_COLORS)]
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
@@ -1817,6 +2056,7 @@ class TierListControlView(discord.ui.View):
             hydrated_snapshot,
             author=interaction.user,
             guild_icon_bytes=guild_icon_bytes,
+            tier_colors=session.tier_colors,
         )
 
         preview_file = discord.File(image_buffer, filename="tierlist_preview.png")
@@ -1938,6 +2178,38 @@ class TierListControlView(discord.ui.View):
         )
 
     @discord.ui.button(
+        label="Editar Cores",
+        emoji="🎨",
+        style=discord.ButtonStyle.secondary,
+    )
+    async def edit_colors(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        session = self.cog.sessions.get(self.owner_id)
+
+        if session is None:
+            await interaction.response.send_message(
+                "❌ Essa sessão expirou ou foi cancelada.",
+                ephemeral=True,
+            )
+            return
+
+        if not session.tiers:
+            await interaction.response.send_message(
+                "⚠️ Não há tiers para editar.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.send_message(
+            "🎨 Selecione a tier que receberá uma nova cor.",
+            view=TierColorSelectionView(self),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
         label="Gerar Imagem",
         emoji="🖼️",
         style=discord.ButtonStyle.secondary,
@@ -2005,6 +2277,7 @@ class TierListControlView(discord.ui.View):
                 hydrated_snapshot,
                 author=interaction.user,
                 guild_icon_bytes=guild_icon_bytes,
+                tier_colors=session.tier_colors,
             )
 
         except Exception:
@@ -2019,9 +2292,6 @@ class TierListControlView(discord.ui.View):
             filename="tierlist.png",
         )
 
-        # Limpa a sessão da memória.
-        self.cog.sessions.pop(self.owner_id, None)
-
         for child in self.children:
             child.disabled = True
 
@@ -2029,20 +2299,23 @@ class TierListControlView(discord.ui.View):
             if session.panel_message:
                 done_embed = discord.Embed(
                     title="✅ Tier List Gerada",
-                    description="A imagem final foi criada e a sessão foi encerrada.",
+                    description="A imagem final foi criada. Você ainda pode reabrir a edição pela mensagem final.",
                     color=discord.Color.green(),
                 )
 
-                await session.panel_message.edit(embed=done_embed, view=self)
+                await session.panel_message.edit(embed=done_embed, view=None)
         except discord.HTTPException:
             pass
 
         self.stop()
 
-        await interaction.followup.send(
+        final_message = await interaction.followup.send(
             content=f"🖼️ **{discord.utils.escape_markdown(title_snapshot)}**",
             file=file,
+            view=PostGenerationView(self.cog, self.owner_id),
+            wait=True,
         )
+        session.panel_message = final_message
 
     @discord.ui.button(
         label="Cancelar",
@@ -2113,6 +2386,147 @@ class TierListCog(
         self.sessions: dict[int, TierListSession] = {}
 
         self.renderer = TierListRenderer()
+
+        # Spotify Client Credentials cache:
+        # - token fica em RAM;
+        # - expires_at usa monotonic para não depender do relógio do host;
+        # - lock evita corrida quando vários usuários adicionam álbuns juntos.
+        self.spotify_client_id = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
+        self.spotify_client_secret = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
+        self._spotify_access_token: str | None = None
+        self._spotify_token_expires_at = 0.0
+        self._spotify_token_lock = asyncio.Lock()
+
+    async def get_spotify_access_token(self) -> str | None:
+        """
+        Obtém Bearer Token do Spotify via Client Credentials Flow.
+
+        O token expira normalmente em 3600s. Reusamos o token até 60s antes
+        do vencimento para evitar autenticação repetida e rate limit no endpoint
+        accounts.spotify.com.
+        """
+        now = time.monotonic()
+        if self._spotify_access_token and now < self._spotify_token_expires_at - 60:
+            return self._spotify_access_token
+
+        if not self.spotify_client_id or not self.spotify_client_secret:
+            print("[SPOTIFY API] Credenciais ausentes no ambiente.")
+            return None
+
+        async with self._spotify_token_lock:
+            now = time.monotonic()
+            if self._spotify_access_token and now < self._spotify_token_expires_at - 60:
+                return self._spotify_access_token
+
+            auth_raw = f"{self.spotify_client_id}:{self.spotify_client_secret}".encode("utf-8")
+            auth_b64 = base64.b64encode(auth_raw).decode("ascii")
+
+            headers = {
+                "Authorization": f"Basic {auth_b64}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            }
+            data = {"grant_type": "client_credentials"}
+            timeout = aiohttp.ClientTimeout(total=8, connect=3)
+
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as http:
+                    async with http.post(
+                        "https://accounts.spotify.com/api/token",
+                        headers=headers,
+                        data=data,
+                    ) as response:
+                        if response.status != 200:
+                            print(f"[SPOTIFY API] Auth falhou: HTTP {response.status}")
+                            return None
+
+                        payload = await response.json(content_type=None)
+
+                token = payload.get("access_token")
+                expires_in = int(payload.get("expires_in", 3600))
+
+                if not token:
+                    print("[SPOTIFY API] Auth sem access_token.")
+                    return None
+
+                self._spotify_access_token = str(token)
+                self._spotify_token_expires_at = time.monotonic() + max(60, expires_in)
+                return self._spotify_access_token
+
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                print(f"[SPOTIFY API] Auth com erro de rede/timeout: {exc}")
+                return None
+            except Exception as exc:
+                print(f"[SPOTIFY API] Auth com erro inesperado: {exc}")
+                return None
+
+    async def fetch_spotify_album_cover(self, query: str) -> str | None:
+        """
+        Busca a capa de álbum mais relevante no Spotify.
+
+        Retorna somente a URL da maior imagem (`images[0].url`). A URL segue
+        para o downloader seguro existente, preservando o pipeline Pillow atual.
+        """
+        clean_query = re.sub(r"\s+", " ", (query or "").strip())
+        if not clean_query:
+            return None
+
+        token = await self.get_spotify_access_token()
+        if not token:
+            return None
+
+        headers = {"Authorization": f"Bearer {token}"}
+        params = {
+            "q": clean_query,
+            "type": "album",
+            "limit": "1",
+        }
+        timeout = aiohttp.ClientTimeout(total=8, connect=3)
+
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as http:
+                async with http.get(
+                    "https://api.spotify.com/v1/search",
+                    headers=headers,
+                    params=params,
+                ) as response:
+                    if response.status == 401:
+                        # Token pode ter sido revogado antes do tempo previsto.
+                        self._spotify_access_token = None
+                        self._spotify_token_expires_at = 0.0
+                        print("[SPOTIFY API] Search recebeu 401; token invalidado.")
+                        return None
+
+                    if response.status != 200:
+                        print(f"[SPOTIFY API] Search falhou para '{clean_query}': HTTP {response.status}")
+                        return None
+
+                    payload = await response.json(content_type=None)
+
+            albums = payload.get("albums", {})
+            items = albums.get("items", []) if isinstance(albums, dict) else []
+            if not items:
+                print(f"[SPOTIFY API] Nenhum álbum encontrado para '{clean_query}'.")
+                return None
+
+            first_album = items[0] if isinstance(items[0], dict) else {}
+            images = first_album.get("images", [])
+            if not images:
+                print(f"[SPOTIFY API] Álbum sem imagens para '{clean_query}'.")
+                return None
+
+            best_image = images[0] if isinstance(images[0], dict) else {}
+            image_url = str(best_image.get("url") or "").strip()
+            if not self.looks_like_url(image_url):
+                return None
+
+            return image_url
+
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            print(f"[SPOTIFY API] Search com erro de rede/timeout para '{clean_query}': {exc}")
+            return None
+        except Exception as exc:
+            print(f"[SPOTIFY API] Search com erro inesperado para '{clean_query}': {exc}")
+            return None
 
     async def fetch_wikipedia_image(self, http: aiohttp.ClientSession, query: str) -> bytes | None:
         """
@@ -2469,6 +2883,28 @@ class TierListCog(
 
         text = re.sub(r"\s+", " ", text).strip()
         return text[:max_length].strip()
+
+    def parse_hex_color(self, raw: str) -> tuple[int, int, int] | None:
+        """Valida e converte #RRGGBB/RRGGBB para tupla RGB."""
+        value = (raw or "").strip()
+        match = re.fullmatch(r"#?([0-9a-fA-F]{6})", value)
+        if not match:
+            return None
+
+        hex_value = match.group(1)
+        try:
+            return (
+                int(hex_value[0:2], 16),
+                int(hex_value[2:4], 16),
+                int(hex_value[4:6], 16),
+            )
+        except ValueError:
+            return None
+
+    def color_to_hex(self, color: tuple[int, int, int]) -> str:
+        """Formata RGB em #RRGGBB para preencher modais."""
+        r, g, b = color
+        return f"#{r:02X}{g:02X}{b:02X}"
 
     def looks_like_url(self, url: str) -> bool:
         parsed = urlparse(url)
