@@ -7,6 +7,7 @@ import math
 import os
 import pathlib
 import re
+import textwrap
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -137,6 +138,8 @@ class TierListRenderer:
     TEXT_ITEM_PADDING_X = 48
     TEXT_ITEM_PADDING_Y = 18
     TEXT_ITEM_LINE_GAP = 4
+    MAX_TEXT_ITEM_WIDTH = 250
+    TEXT_WRAP_CHARS = 25
     IMAGE_ITEM_SIZE = 160
     TEXT_ITEM_HEIGHT = IMAGE_ITEM_SIZE
     IMAGE_ITEM_RADIUS = 18
@@ -551,6 +554,32 @@ class TierListRenderer:
         """Nome opcional: retorna string vazia quando o item nao tiver legenda."""
         return re.sub(r"\s+", " ", str(getattr(item, "name", "") or "").strip())
 
+    def _coerce_rgb_color(
+        self,
+        color: object,
+        fallback: tuple[int, int, int],
+    ) -> tuple[int, int, int]:
+        """
+        Normaliza cores vindas do estado da sessão antes do ImageDraw.
+
+        A UI valida hexadecimal, mas esta camada defensiva impede que um estado
+        antigo/malformado gere ValueError no Pillow. Qualquer entrada que nao
+        tenha tres canais inteiros no intervalo 0..255 cai para a cor padrao da
+        tier, preservando a entrega da imagem final.
+        """
+        try:
+            channels = tuple(int(channel) for channel in color[:3])  # type: ignore[index]
+        except Exception:
+            return fallback
+
+        if len(channels) != 3:
+            return fallback
+
+        if any(channel < 0 or channel > 255 for channel in channels):
+            return fallback
+
+        return channels
+
     def _wrap_text_lines(
         self,
         draw: ImageDraw.ImageDraw,
@@ -559,45 +588,57 @@ class TierListRenderer:
         max_width: int,
     ) -> list[str]:
         """
-        Quebra texto sem reduzir fonte e sem cortar conteudo.
+        Quebra texto textual por caracteres e por pixels, nessa ordem.
 
-        O algoritmo tenta preservar palavras; se uma palavra isolada for maior
-        que a largura util, ela e quebrada em caracteres para permanecer dentro
-        do card e do trilho.
+        `textwrap.wrap()` faz a primeira interceptacao tipografica com limite de
+        caracteres, evitando frases infinitas em uma unica linha. Em seguida,
+        cada linha candidata e validada com a largura real em pixels medida pelo
+        Pillow; se uma palavra ou trecho ainda ultrapassar a largura util, o
+        fallback quebra em caracteres para preservar 100% do conteudo dentro do
+        limite visual do card.
         """
-        words = text.split()
-        if not words:
+        value = re.sub(r"\s+", " ", (text or "").strip())
+        if not value:
             return []
 
         lines: list[str] = []
-        current = ""
+        wrapped_candidates = textwrap.wrap(
+            value,
+            width=self.TEXT_WRAP_CHARS,
+            break_long_words=False,
+            break_on_hyphens=False,
+        ) or [value]
 
-        for word in words:
-            candidate = f"{current} {word}".strip()
-            if self._text_size(draw, candidate, font)[0] <= max_width:
-                current = candidate
-                continue
+        for candidate_line in wrapped_candidates:
+            words = candidate_line.split()
+            current = ""
+
+            for word in words:
+                candidate = f"{current} {word}".strip()
+                if self._text_size(draw, candidate, font)[0] <= max_width:
+                    current = candidate
+                    continue
+
+                if current:
+                    lines.append(current)
+                    current = ""
+
+                if self._text_size(draw, word, font)[0] <= max_width:
+                    current = word
+                    continue
+
+                chunk = ""
+                for char in word:
+                    candidate = chunk + char
+                    if chunk and self._text_size(draw, candidate, font)[0] > max_width:
+                        lines.append(chunk)
+                        chunk = char
+                    else:
+                        chunk = candidate
+                current = chunk
 
             if current:
                 lines.append(current)
-                current = ""
-
-            if self._text_size(draw, word, font)[0] <= max_width:
-                current = word
-                continue
-
-            chunk = ""
-            for char in word:
-                candidate = chunk + char
-                if chunk and self._text_size(draw, candidate, font)[0] > max_width:
-                    lines.append(chunk)
-                    chunk = char
-                else:
-                    chunk = candidate
-            current = chunk
-
-        if current:
-            lines.append(current)
 
         return lines
 
@@ -610,23 +651,50 @@ class TierListRenderer:
         max_width: int,
     ) -> dict:
         """
-        Mede um item textual antes do desenho.
+        Mede um item textual antes do desenho real.
 
-        A altura e congelada no mesmo tamanho do item de imagem. A largura
-        cresce para a direita ate acomodar o texto inteiro, sem reduzir fonte,
-        sem reticencias e sem quebrar linha.
+        A largura nunca ultrapassa `MAX_TEXT_ITEM_WIDTH`; o conteudo excedente
+        vira texto multilinha. A altura do card nasce no tamanho de uma imagem
+        para manter alinhamento com cards quadrados, mas cresce quando o bloco
+        multilinha + padding vertical exige mais espaco. O raio do desenho sera
+        recalculado no paint como `height // 2`, preservando a geometria de
+        pilula mesmo quando a caixa fica mais alta.
         """
         display_name = self._item_display_name(item)
         if not display_name:
-            return {"width": 0, "height": 0, "lines": []}
+            return {"width": 0, "height": 0, "lines": [], "text": ""}
 
-        try:
-            text_w = int(math.ceil(draw.textlength(display_name, font=font)))
-        except Exception:
-            text_w = self._text_size(draw, display_name, font)[0]
+        box_max_w = max(
+            self.TEXT_ITEM_HEIGHT,
+            min(self.MAX_TEXT_ITEM_WIDTH, max_width),
+        )
+        text_max_w = max(1, box_max_w - self.TEXT_ITEM_PADDING_X * 2)
+        lines = self._wrap_text_lines(draw, display_name, font, text_max_w) or [display_name]
+        multiline_text = "\n".join(lines)
+        left, top, right, bottom = draw.multiline_textbbox(
+            (0, 0),
+            multiline_text,
+            font=font,
+            spacing=self.TEXT_ITEM_LINE_GAP,
+            align="center",
+        )
+        text_w = right - left
+        text_h = bottom - top
 
-        width = max(self.TEXT_ITEM_HEIGHT, text_w + self.TEXT_ITEM_PADDING_X * 2)
-        return {"width": int(width), "height": self.TEXT_ITEM_HEIGHT, "lines": [display_name]}
+        width = min(
+            box_max_w,
+            max(self.TEXT_ITEM_HEIGHT, text_w + self.TEXT_ITEM_PADDING_X * 2),
+        )
+        height = max(
+            self.TEXT_ITEM_HEIGHT,
+            text_h + self.TEXT_ITEM_PADDING_Y * 2,
+        )
+        return {
+            "width": int(width),
+            "height": int(height),
+            "lines": lines,
+            "text": multiline_text,
+        }
 
     def _draw_image_inside_chip(
         self,
@@ -726,18 +794,41 @@ class TierListRenderer:
         if not display_name:
             return
 
+        measure_draw = ImageDraw.Draw(base, "RGBA")
+        text_max_w = max(1, width - self.TEXT_ITEM_PADDING_X * 2)
+        lines = self._wrap_text_lines(measure_draw, display_name, font, text_max_w) or [display_name]
+        multiline_text = "\n".join(lines)
+        left, top, right, bottom = measure_draw.multiline_textbbox(
+            (0, 0),
+            multiline_text,
+            font=font,
+            spacing=self.TEXT_ITEM_LINE_GAP,
+            align="center",
+        )
+        text_w = right - left
+        text_h = bottom - top
+        radius = max(1, height // 2)
+
         chip = Image.new("RGBA", (width, height), self.ITEM_BG)
-        chip.putalpha(self._rounded_mask((width, height), self.ITEM_RADIUS))
+        chip.putalpha(self._rounded_mask((width, height), radius))
         draw = ImageDraw.Draw(chip, "RGBA")
         draw.rounded_rectangle(
             (0, 0, width - 1, height - 1),
-            radius=self.ITEM_RADIUS,
+            radius=radius,
             outline=self.ITEM_OUTLINE,
             width=1,
         )
 
-        tx, ty = self._center_text_position(draw, (0, 0, width, height), display_name, font)
-        self._draw_text(draw, display_name, (tx, ty), font, self.TEXT, shadow_alpha=0)
+        tx = (width - text_w) / 2 - left
+        ty = (height - text_h) / 2 - top
+        draw.multiline_text(
+            (tx, ty),
+            multiline_text,
+            font=font,
+            fill=self.TEXT,
+            spacing=self.TEXT_ITEM_LINE_GAP,
+            align="center",
+        )
 
         base.paste(chip, (x1, y1), mask=chip)
 
@@ -894,9 +985,9 @@ class TierListRenderer:
         scratch_draw = ImageDraw.Draw(scratch, "RGBA")
         item_font = self._font(22, bold=True)
 
-        # Primeira passada: mede a maior caixa textual sem comprimir. Se uma
-        # palavra/texto precisar de mais largura que o canvas base, o canvas
-        # cresce antes do packing para garantir que nada seja cortado.
+        # Primeira passada: mede cards de texto ja com Word Wrap aplicado.
+        # A largura textual e limitada por MAX_TEXT_ITEM_WIDTH; portanto frases
+        # longas aumentam a altura do card, nao a largura infinita do canvas.
         max_single_item_w = self.IMAGE_ITEM_SIZE
         preliminary_area_w = max(1, (canvas_w - self.GRID_X - 22) - items_x)
         for items in tiers_dict.values():
@@ -944,8 +1035,10 @@ class TierListRenderer:
                     continue
 
                 # Packing horizontal responsivo:
-                # se o proximo item nao couber na linha atual, inicia outra
-                # linha. A largura do texto nao e comprimida nem cortada.
+                # - X usa o acumulador da linha atual;
+                # - se o proximo card ultrapassar a area util, ocorre wrap;
+                # - line_heights guarda o maior item da linha para centralizar
+                #   imagens e textos multilinha no mesmo eixo vertical.
                 projected_x = cursor_x + (self.ITEM_GAP_X if cursor_x else 0) + item_w
                 if cursor_x and projected_x > items_area_w:
                     current_line += 1
@@ -987,12 +1080,14 @@ class TierListRenderer:
             row_h = max(self.ROW_HEIGHT_BASE, dynamic_items_h)
             content_y_offset = (row_h - dynamic_items_h) // 2
 
+            default_color = self.TIER_COLORS[index % len(self.TIER_COLORS)]
+            row_color = self._coerce_rgb_color(tier_colors.get(tier_name), default_color)
             row_box = (self.GRID_X, current_y, grid_right, current_y + row_h)
             row_layouts.append({
                 "tier": tier_name,
                 "items": items,
                 "item_layouts": item_layouts,
-                "color": tier_colors.get(tier_name, self.TIER_COLORS[index % len(self.TIER_COLORS)]),
+                "color": row_color,
                 "line_count": line_count,
                 "line_heights": line_heights,
                 "line_offsets": line_offsets,
@@ -1241,7 +1336,7 @@ class AddItemModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction) -> None:
         # Prevenção Absoluta de Timeouts: Avisa ao Discord que o processamento será longo
         # OBRIGATÓRIO DEFER ANTES DE TUDO
-        await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True, thinking=True)
 
         session = self.cog.sessions.get(self.owner_id)
 
@@ -1299,12 +1394,31 @@ class AddItemModal(discord.ui.Modal):
                 clean_url = spotify_cover_url
                 if not clean_item:
                     clean_item = self.cog.clean_text(spotify_album_str, max_length=25)
+                try:
+                    timeout = aiohttp.ClientTimeout(total=self.cog.IMAGE_DOWNLOAD_TIMEOUT)
+                    async with aiohttp.ClientSession(timeout=timeout) as http:
+                        spotify_bytes = await self.cog.fetch_image_safely(http, spotify_cover_url)
+
+                    if spotify_bytes:
+                        image_bytes = spotify_bytes
+                        album_label = self.cog.clean_text(spotify_album_str, max_length=80)
+                        await interaction.followup.send(
+                            (
+                                f"🎵 Álbum \"{discord.utils.escape_markdown(album_label)}\" "
+                                "reconhecido pelo Spotify com sucesso! "
+                                "Processando capa em alta resolução..."
+                            ),
+                            ephemeral=True,
+                        )
+                except Exception as exc:
+                    print(f"[SPOTIFY API] Falha ao pré-hidratar capa de '{spotify_album_str}': {exc}")
 
         # Prioridade 4: Sem URL/Spotify, mas com Pesquisa Web solicitada. Busca a imagem oficial da Wikipedia!
         if not clean_url and not image_bytes and web_search_str:
             print(f"[DEBUG] Iniciando busca na Wikipedia pelo termo: '{web_search_str}'")
             
-            async with aiohttp.ClientSession() as http:
+            timeout = aiohttp.ClientTimeout(total=self.cog.IMAGE_DOWNLOAD_TIMEOUT)
+            async with aiohttp.ClientSession(timeout=timeout) as http:
                 fetched_bytes = await self.cog.fetch_wikipedia_image(http, web_search_str)
                 if fetched_bytes:
                     image_bytes = fetched_bytes
@@ -1885,16 +1999,27 @@ class EditTierColorModal(discord.ui.Modal):
             return
 
         parsed_color = self.main_view.cog.parse_hex_color(str(self.hex_color.value))
-        if parsed_color is None:
-            await interaction.followup.send("❌ Informe uma cor hexadecimal válida. Exemplo: #FF0000.", ephemeral=True)
-            return
-
         old_color = session.tier_colors.get(self.tier_name)
+        used_default = False
+
+        if parsed_color is None:
+            used_default = True
+            parsed_color = self.main_view.default_color_for_tier(session, self.tier_name)
 
         try:
-            session.tier_colors[self.tier_name] = parsed_color
+            if used_default:
+                session.tier_colors.pop(self.tier_name, None)
+            else:
+                session.tier_colors[self.tier_name] = parsed_color
+
             await self.main_view.refresh_after_item_edit(interaction, session)
-            await interaction.followup.send("✅ Cor da tier atualizada.", ephemeral=True)
+            if used_default:
+                await interaction.followup.send(
+                    "⚠️ Cor inválida. Mantive a cor padrão dessa tier sem quebrar a imagem.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send("✅ Cor da tier atualizada.", ephemeral=True)
 
         except Exception:
             if old_color is None:
@@ -2251,7 +2376,7 @@ class TierListControlView(discord.ui.View):
                     TierItem(
                         name=item.name,
                         image_url=item.image_url,
-                        image_bytes=None,
+                        image_bytes=item.image_bytes,
                     )
                     for item in session.items.get(tier, [])
                 ],
@@ -2259,17 +2384,23 @@ class TierListControlView(discord.ui.View):
             for tier in session.tiers
         )
 
+        # Download assíncrono das URLs. hydrate_tier_images e defensivo, mas
+        # mantemos um fallback local para garantir que rede quebrada nunca mate
+        # a entrega da imagem final.
         try:
-            # Download assíncrono das URLs.
             hydrated_snapshot = await self.cog.hydrate_tier_images(tiers_snapshot)
+        except Exception as exc:
+            print(f"[TIERLIST GENERATE] Hidratação falhou; renderizando snapshot sem novos downloads: {exc}")
+            hydrated_snapshot = tiers_snapshot
 
-            guild_icon_bytes = None
-            if interaction.guild and interaction.guild.icon:
-                try:
-                    guild_icon_bytes = await interaction.guild.icon.replace(format="png", size=128).read()
-                except (discord.HTTPException, ValueError, TypeError):
-                    guild_icon_bytes = None
+        guild_icon_bytes = None
+        if interaction.guild and interaction.guild.icon:
+            try:
+                guild_icon_bytes = await interaction.guild.icon.replace(format="png", size=128).read()
+            except (discord.HTTPException, ValueError, TypeError):
+                guild_icon_bytes = None
 
+        try:
             # Pillow fora do event loop.
             image_buffer = await asyncio.to_thread(
                 self.cog.renderer.generate_tierlist_image,
@@ -2280,12 +2411,39 @@ class TierListControlView(discord.ui.View):
                 tier_colors=session.tier_colors,
             )
 
-        except Exception:
-            await interaction.followup.send(
-                "❌ Não consegui gerar a imagem final dessa vez.",
-                ephemeral=True,
+        except Exception as exc:
+            print(f"[TIERLIST GENERATE] Render principal falhou; tentando fallback textual: {exc}")
+            fallback_snapshot: OrderedDictType[str, list[TierItem]] = OrderedDict(
+                (
+                    tier,
+                    [
+                        TierItem(
+                            name=item.name or "item com imagem",
+                            image_url=None,
+                            image_bytes=None,
+                        )
+                        for item in hydrated_snapshot.get(tier, [])
+                    ],
+                )
+                for tier in session.tiers
             )
-            return
+
+            try:
+                image_buffer = await asyncio.to_thread(
+                    self.cog.renderer.generate_tierlist_image,
+                    title_snapshot,
+                    fallback_snapshot,
+                    author=interaction.user,
+                    guild_icon_bytes=guild_icon_bytes,
+                    tier_colors={},
+                )
+            except Exception as fallback_exc:
+                print(f"[TIERLIST GENERATE] Fallback textual também falhou: {fallback_exc}")
+                await interaction.followup.send(
+                    "❌ Não consegui gerar a imagem final dessa vez.",
+                    ephemeral=True,
+                )
+                return
 
         file = discord.File(
             image_buffer,
@@ -2426,7 +2584,7 @@ class TierListCog(
                 "Content-Type": "application/x-www-form-urlencoded",
             }
             data = {"grant_type": "client_credentials"}
-            timeout = aiohttp.ClientTimeout(total=8, connect=3)
+            timeout = aiohttp.ClientTimeout(total=5, connect=2)
 
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as http:
@@ -2470,63 +2628,72 @@ class TierListCog(
         if not clean_query:
             return None
 
-        token = await self.get_spotify_access_token()
-        if not token:
-            return None
-
-        headers = {"Authorization": f"Bearer {token}"}
         params = {
             "q": clean_query,
             "type": "album",
             "limit": "1",
         }
-        timeout = aiohttp.ClientTimeout(total=8, connect=3)
+        timeout = aiohttp.ClientTimeout(total=5, connect=2)
 
-        try:
-            async with aiohttp.ClientSession(timeout=timeout) as http:
-                async with http.get(
-                    "https://api.spotify.com/v1/search",
-                    headers=headers,
-                    params=params,
-                ) as response:
-                    if response.status == 401:
-                        # Token pode ter sido revogado antes do tempo previsto.
-                        self._spotify_access_token = None
-                        self._spotify_token_expires_at = 0.0
-                        print("[SPOTIFY API] Search recebeu 401; token invalidado.")
-                        return None
-
-                    if response.status != 200:
-                        print(f"[SPOTIFY API] Search falhou para '{clean_query}': HTTP {response.status}")
-                        return None
-
-                    payload = await response.json(content_type=None)
-
-            albums = payload.get("albums", {})
-            items = albums.get("items", []) if isinstance(albums, dict) else []
-            if not items:
-                print(f"[SPOTIFY API] Nenhum álbum encontrado para '{clean_query}'.")
+        for attempt in range(2):
+            token = await self.get_spotify_access_token()
+            if not token:
                 return None
 
-            first_album = items[0] if isinstance(items[0], dict) else {}
-            images = first_album.get("images", [])
-            if not images:
-                print(f"[SPOTIFY API] Álbum sem imagens para '{clean_query}'.")
+            headers = {"Authorization": f"Bearer {token}"}
+
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as http:
+                    async with http.get(
+                        "https://api.spotify.com/v1/search",
+                        headers=headers,
+                        params=params,
+                    ) as response:
+                        if response.status == 401 and attempt == 0:
+                            # Token pode ter sido revogado antes do vencimento
+                            # previsto. Invalida cache e tenta autenticar UMA vez.
+                            self._spotify_access_token = None
+                            self._spotify_token_expires_at = 0.0
+                            print("[SPOTIFY API] Search recebeu 401; reautenticando uma vez.")
+                            continue
+
+                        if response.status == 401:
+                            print("[SPOTIFY API] Search recebeu 401 apos reauth; fallback para texto.")
+                            return None
+
+                        if response.status != 200:
+                            print(f"[SPOTIFY API] Search falhou para '{clean_query}': HTTP {response.status}")
+                            return None
+
+                        payload = await response.json(content_type=None)
+
+                albums = payload.get("albums", {})
+                items = albums.get("items", []) if isinstance(albums, dict) else []
+                if not items:
+                    print(f"[SPOTIFY API] Nenhum álbum encontrado para '{clean_query}'.")
+                    return None
+
+                first_album = items[0] if isinstance(items[0], dict) else {}
+                images = first_album.get("images", [])
+                if not images:
+                    print(f"[SPOTIFY API] Álbum sem imagens para '{clean_query}'.")
+                    return None
+
+                best_image = images[0] if isinstance(images[0], dict) else {}
+                image_url = str(best_image.get("url") or "").strip()
+                if not self.looks_like_url(image_url):
+                    return None
+
+                return image_url
+
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                print(f"[SPOTIFY API] Search com erro de rede/timeout para '{clean_query}': {exc}")
+                return None
+            except Exception as exc:
+                print(f"[SPOTIFY API] Search com erro inesperado para '{clean_query}': {exc}")
                 return None
 
-            best_image = images[0] if isinstance(images[0], dict) else {}
-            image_url = str(best_image.get("url") or "").strip()
-            if not self.looks_like_url(image_url):
-                return None
-
-            return image_url
-
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            print(f"[SPOTIFY API] Search com erro de rede/timeout para '{clean_query}': {exc}")
-            return None
-        except Exception as exc:
-            print(f"[SPOTIFY API] Search com erro inesperado para '{clean_query}': {exc}")
-            return None
+        return None
 
     async def fetch_wikipedia_image(self, http: aiohttp.ClientSession, query: str) -> bytes | None:
         """
@@ -2543,7 +2710,7 @@ class TierListCog(
         }
 
         base_url = "https://pt.wikipedia.org/w/api.php"
-        timeout = aiohttp.ClientTimeout(total=4, connect=2)
+        timeout = aiohttp.ClientTimeout(total=5, connect=2)
         clean_query = (query or "").strip()
 
         def reject_wiki_asset(url: str) -> bool:
@@ -2787,8 +2954,29 @@ class TierListCog(
                 if not data:
                     return None
 
-                # Retorno seguro em bytes brutos, que será instanciado em io.BytesIO() no Pillow
-                return bytes(data)
+                # Rito anti-"imagem fantasma":
+                # Bytes baixados viram BytesIO, o ponteiro volta para 0 antes
+                # do Image.open(), e o frame decodificado e purificado em RGBA.
+                # O renderer ainda repetira essa defesa, mas salvar PNG RGBA
+                # aqui impede capas de CDN (Spotify/Discord/etc.) de chegarem
+                # vazias, paletizadas ou com alpha estranho na linha de chegada.
+                try:
+                    buffer = io.BytesIO(bytes(data))
+                    buffer.seek(0)
+                    with Image.open(buffer) as raw_image:
+                        try:
+                            raw_image.seek(0)
+                        except Exception:
+                            pass
+                        purified_image = raw_image.convert("RGBA")
+
+                    output = io.BytesIO()
+                    purified_image.save(output, format="PNG")
+                    output.seek(0)
+                    return output.getvalue()
+                except Exception as exc:
+                    print(f"[IMAGE FETCH] Pillow recusou imagem de '{url}': {exc}")
+                    return None
 
         # Tratamento cirúrgico de quebras de rede (Timeout e Falha de HTTP)
         except (aiohttp.ClientError, asyncio.TimeoutError):
@@ -2813,24 +3001,31 @@ class TierListCog(
         timeout = aiohttp.ClientTimeout(total=self.IMAGE_DOWNLOAD_TIMEOUT)
         semaphore = asyncio.Semaphore(self.IMAGE_DOWNLOAD_CONCURRENCY)
 
-        async with aiohttp.ClientSession(timeout=timeout) as http:
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as http:
 
-            async def hydrate_one(item: TierItem) -> None:
-                if not item.image_url:
-                    return
+                async def hydrate_one(item: TierItem) -> None:
+                    if item.image_bytes:
+                        return
 
-                async with semaphore:
-                    item.image_bytes = await self.fetch_image_safely(http, item.image_url)
+                    if not item.image_url:
+                        return
 
-            tasks: list[asyncio.Task[None]] = []
+                    async with semaphore:
+                        item.image_bytes = await self.fetch_image_safely(http, item.image_url)
 
-            for items in tiers_snapshot.values():
-                for item in items:
-                    if item.image_url:
-                        tasks.append(asyncio.create_task(hydrate_one(item)))
+                tasks: list[asyncio.Task[None]] = []
 
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+                for items in tiers_snapshot.values():
+                    for item in items:
+                        if item.image_url:
+                            tasks.append(asyncio.create_task(hydrate_one(item)))
+
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
+        except Exception as exc:
+            print(f"[IMAGE HYDRATION] Falha global na hidratação; renderizando fallback textual/imagens já salvas: {exc}")
 
         return tiers_snapshot
 
