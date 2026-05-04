@@ -123,6 +123,7 @@ class TierListRenderer:
     ROW_PADDING_BOTTOM = 20
     LABEL_WIDTH = 162
     LABEL_TO_ITEMS_GAP = 18
+    MAX_ITEMS_PER_ROW = 8
     ITEM_WIDTH = 160
     ITEM_HEIGHT = 70
     ITEM_RADIUS = 12
@@ -618,7 +619,10 @@ class TierListRenderer:
     ) -> None:
         """Label colorido com cantos esquerdos arredondados e direita reta."""
         row_x1, row_y1, _, row_y2 = row_box
-        label_box = (row_x1, row_y1, row_x1 + self.LABEL_WIDTH, row_y2)
+        row_h = row_y2 - row_y1
+        label_h = min(self.ROW_HEIGHT_BASE, row_h)
+        label_y1 = row_y1 + (row_h - label_h) // 2
+        label_box = (row_x1, label_y1, row_x1 + self.LABEL_WIDTH, label_y1 + label_h)
         self._paste_left_round_rect(base, label_box, (*tier_color, 255), radius=self.ROW_RADIUS)
 
         draw = ImageDraw.Draw(base, "RGBA")
@@ -735,38 +739,48 @@ class TierListRenderer:
         Calcula a matriz visual antes de instanciar Image.new().
 
         1. Mantem largura 800px, igual ao mock anexado.
-        2. Calcula quantos cards 160x70 cabem no trilho util.
-        3. Expande cada tier verticalmente quando os cards quebram linha.
-        4. Soma grid + footer para preservar a proporcao 1:1 quando ha 5 tiers.
+        2. Calcula a capacidade real da matriz de itens:
+           floor((largura_util + gap_x) / (item_w + gap_x)).
+        3. Limita a capacidade por MAX_ITEMS_PER_ROW, mantendo controle do wrap.
+        4. Expande cada tier por line_count = ceil(total_itens / itens_por_linha).
+        5. Acumula Y sequencialmente: row_y_atual += row_height + row_gap.
         """
         canvas_w = max(min_width, min(max_width, self.CANVAS_WIDTH))
         items_x = self.GRID_X + self.LABEL_WIDTH + self.LABEL_TO_ITEMS_GAP
         items_right = self.GRID_RIGHT - 22
         items_area_w = max(1, items_right - items_x)
-        per_line = max(1, math.floor((items_area_w + self.ITEM_GAP_X) / (self.ITEM_WIDTH + self.ITEM_GAP_X)))
+        capacity_by_width = max(
+            1,
+            math.floor((items_area_w + self.ITEM_GAP_X) / (self.ITEM_WIDTH + self.ITEM_GAP_X)),
+        )
+        items_per_row = max(1, min(self.MAX_ITEMS_PER_ROW, capacity_by_width))
 
         row_layouts: list[dict] = []
+        current_y = self.ROWS_TOP
         for index, (tier_name, items) in enumerate(tiers_dict.items()):
             item_count = len(items)
-            line_count = max(1, math.ceil(item_count / per_line))
-            row_h = (
+            line_count = max(1, math.ceil(item_count / items_per_row))
+            dynamic_items_h = line_count * self.ITEM_HEIGHT + (line_count - 1) * self.ITEM_GAP_Y
+            row_h = max(
+                self.ROW_HEIGHT_BASE,
                 self.ROW_PADDING_TOP
-                + line_count * self.ITEM_HEIGHT
-                + (line_count - 1) * self.ITEM_GAP_Y
-                + self.ROW_PADDING_BOTTOM
+                + dynamic_items_h
+                + self.ROW_PADDING_BOTTOM,
             )
+            row_box = (self.GRID_X, current_y, self.GRID_RIGHT, current_y + row_h)
             row_layouts.append({
                 "tier": tier_name,
                 "items": items,
                 "color": self.TIER_COLORS[index % len(self.TIER_COLORS)],
                 "line_count": line_count,
                 "row_height": row_h,
-                "per_line": per_line,
+                "row_y": current_y,
+                "row_box": row_box,
+                "items_per_row": items_per_row,
             })
+            current_y += row_h + self.ROW_GAP
 
-        rows_h = sum(row["row_height"] for row in row_layouts)
-        gaps_h = max(0, len(row_layouts) - 1) * self.ROW_GAP
-        rows_end = self.ROWS_TOP + rows_h + gaps_h
+        rows_end = current_y - self.ROW_GAP if row_layouts else self.ROWS_TOP
         footer_line_y = rows_end + self.FOOTER_TOP_GAP
         canvas_h = footer_line_y + self.FOOTER_AVATAR_TOP_GAP + self.FOOTER_AVATAR_SIZE + self.FOOTER_BOTTOM
 
@@ -774,7 +788,7 @@ class TierListRenderer:
             "canvas_w": int(canvas_w),
             "canvas_h": int(canvas_h),
             "row_layouts": row_layouts,
-            "per_line": per_line,
+            "items_per_row": items_per_row,
             "items_x": items_x,
             "items_right": items_right,
         }
@@ -824,16 +838,13 @@ class TierListRenderer:
         item_font = self._font(22, bold=True)
         empty_font = self._font(21, bold=True)
 
-        y = self.ROWS_TOP
         for row in layout["row_layouts"]:
-            row_h = row["row_height"]
-            row_box = (self.GRID_X, y, self.GRID_RIGHT, y + row_h)
+            row_box = row["row_box"]
             self._draw_row_container(image, row_box)
             self._draw_tier_label(image, row_box, row["tier"], row["color"], tier_font)
 
             items_x = layout["items_x"]
             items_y = row_box[1] + self.ROW_PADDING_TOP
-            items_right = layout["items_right"]
 
             if not row["items"]:
                 self._draw_empty_state(
@@ -843,8 +854,16 @@ class TierListRenderer:
                 )
             else:
                 for item_index, item in enumerate(row["items"]):
-                    line = item_index // row["per_line"]
-                    col = item_index % row["per_line"]
+                    # Coluna = resto da divisao pelo limite da linha.
+                    # Ex.: item 9 em uma matriz de 3 colunas volta para col 0.
+                    col = item_index % row["items_per_row"]
+
+                    # Linha = divisao inteira pelo limite da linha.
+                    # Ex.: item 9 em uma matriz de 3 colunas cai na linha 3.
+                    line = item_index // row["items_per_row"]
+
+                    # Offset X/Y bidimensional: origem da area de itens +
+                    # salto de slot, onde slot = tamanho do item + gap.
                     item_x = items_x + col * (self.ITEM_WIDTH + self.ITEM_GAP_X)
                     item_y = items_y + line * (self.ITEM_HEIGHT + self.ITEM_GAP_Y)
                     self._draw_item_chip(
@@ -854,8 +873,6 @@ class TierListRenderer:
                         tier_color=row["color"],
                         font=item_font,
                     )
-
-            y += row_h + self.ROW_GAP
 
         self._draw_footer(image, usuario_autor=usuario_autor, avatar_bytes=guild_icon_bytes)
 
