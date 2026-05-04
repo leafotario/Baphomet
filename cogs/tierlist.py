@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import io
+import logging
 import math
-import os
 import pathlib
 import re
 import textwrap
-import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import OrderedDict as OrderedDictType
 from urllib.parse import urlparse
@@ -21,10 +19,23 @@ from discord import app_commands
 from discord.ext import commands
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
+from cogs.tierlist_spotify.spotify import (
+    SpotifyImageDownloader,
+    SpotifyImageError,
+    SpotifyImageProcessor,
+    SpotifyInputResolver,
+    SpotifyResolution,
+    SpotifyResolvedItem,
+    SpotifyService,
+    SpotifyUserError,
+)
+
 try:
     from duckduckgo_search import DDGS
 except ImportError:
     DDGS = None
+
+LOGGER = logging.getLogger("baphomet.tierlist")
 
 
 # Evita que imagens absurdamente gigantes tentem explodir a memória do bot.
@@ -55,6 +66,18 @@ class TierItem:
     name: str
     image_url: str | None = None
     image_bytes: bytes | None = None
+    source_type: str = "text"
+    caption: str | None = None
+    image_cache_key: str | None = None
+    spotify_type: str | None = None
+    spotify_id: str | None = None
+    spotify_url: str | None = None
+    spotify_name: str | None = None
+    spotify_artists: tuple[str, ...] = field(default_factory=tuple)
+    album_name: str | None = None
+    track_name: str | None = None
+    release_date: str | None = None
+    attribution_text: str | None = None
 
 
 @dataclass
@@ -80,6 +103,7 @@ class TierListSession:
     )
     tier_colors: dict[str, tuple[int, int, int]] = field(default_factory=dict)
     panel_message: discord.Message | None = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
 
 
 # ============================================================
@@ -144,6 +168,9 @@ class TierListRenderer:
     TEXT_ITEM_HEIGHT = IMAGE_ITEM_SIZE
     IMAGE_ITEM_RADIUS = 18
     IMAGE_CAPTION_HEIGHT = 46
+    SPOTIFY_CAPTION_HEIGHT = 52
+    SPOTIFY_ITEM_HEIGHT = IMAGE_ITEM_SIZE + SPOTIFY_CAPTION_HEIGHT
+    SPOTIFY_ART_PADDING = 8
     FOOTER_TOP_GAP = 50
     FOOTER_AVATAR_TOP_GAP = 18
     FOOTER_AVATAR_SIZE = 63
@@ -550,9 +577,13 @@ class TierListRenderer:
         """A imagem altera o formato visual do item e entra no dry-run."""
         return bool(getattr(item, "image_bytes", None))
 
+    def _is_spotify_item(self, item: "TierItem") -> bool:
+        return getattr(item, "source_type", "") == "spotify" or bool(getattr(item, "spotify_id", None))
+
     def _item_display_name(self, item: "TierItem") -> str:
         """Nome opcional: retorna string vazia quando o item nao tiver legenda."""
-        return re.sub(r"\s+", " ", str(getattr(item, "name", "") or "").strip())
+        raw_name = getattr(item, "caption", None) or getattr(item, "name", "") or ""
+        return re.sub(r"\s+", " ", str(raw_name).strip())
 
     def _coerce_rgb_color(
         self,
@@ -772,6 +803,87 @@ class TierListRenderer:
 
         base.paste(card, (x1, y1), mask=card)
 
+    def _draw_spotify_square_item(
+        self,
+        base: Image.Image,
+        item: "TierItem",
+        box: tuple[int, int, int, int],
+        *,
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    ) -> None:
+        """
+        Desenha capa Spotify preservada: contain, sem crop e com texto fora da arte.
+        """
+        x1, y1, x2, y2 = box
+        width = x2 - x1
+        height = y2 - y1
+        card = Image.new("RGBA", (width, height), self.ITEM_BG)
+        card.putalpha(self._rounded_mask((width, height), self.IMAGE_ITEM_RADIUS))
+        draw = ImageDraw.Draw(card, "RGBA")
+        draw.rounded_rectangle(
+            (0, 0, width - 1, height - 1),
+            radius=self.IMAGE_ITEM_RADIUS,
+            outline=self.ITEM_OUTLINE,
+            width=1,
+        )
+
+        art_padding = self.SPOTIFY_ART_PADDING
+        art_size = max(1, min(width - art_padding * 2, self.IMAGE_ITEM_SIZE - art_padding * 2))
+        art_x = (width - art_size) // 2
+        art_y = art_padding
+        art_bg = (22, 26, 35, 255)
+        draw.rectangle((art_x, art_y, art_x + art_size, art_y + art_size), fill=art_bg)
+
+        try:
+            raw = self._safe_open_image(item.image_bytes, self._item_display_name(item) or "capa Spotify")
+            fitted = ImageOps.contain(
+                raw,
+                (art_size, art_size),
+                method=Image.Resampling.LANCZOS,
+            ).convert("RGBA")
+            paste_x = art_x + (art_size - fitted.width) // 2
+            paste_y = art_y + (art_size - fitted.height) // 2
+            card.paste(fitted, (paste_x, paste_y), mask=fitted)
+        except Exception as exc:
+            print(f"[ERRO] Fallback visual para item Spotify '{self._item_display_name(item)}': {exc}")
+
+        caption = self._item_display_name(item)
+        if caption:
+            caption_box = (
+                art_padding,
+                self.IMAGE_ITEM_SIZE + 4,
+                width - art_padding,
+                height - art_padding,
+            )
+            caption_font = self._font(14, bold=True)
+            max_caption_width = max(1, caption_box[2] - caption_box[0])
+            lines = self._wrap_text_lines(draw, caption, caption_font, max_caption_width) or [caption]
+            lines = lines[:2]
+            if lines:
+                lines[-1] = self._clip_text(draw, lines[-1], caption_font, max_caption_width)
+            multiline_text = "\n".join(lines)
+            left, top, right, bottom = draw.multiline_textbbox(
+                (0, 0),
+                multiline_text,
+                font=caption_font,
+                spacing=2,
+                align="center",
+            )
+            text_w = right - left
+            text_h = bottom - top
+            tx = caption_box[0] + ((caption_box[2] - caption_box[0]) - text_w) / 2 - left
+            ty = caption_box[1] + ((caption_box[3] - caption_box[1]) - text_h) / 2 - top
+            draw.multiline_text(
+                (tx, ty),
+                multiline_text,
+                font=caption_font,
+                fill=self.TEXT,
+                spacing=2,
+                align="center",
+            )
+
+        base.paste(card, (x1, y1), mask=card)
+
     def _draw_item_chip(
         self,
         base: Image.Image,
@@ -787,6 +899,9 @@ class TierListRenderer:
         height = y2 - y1
 
         if self._item_has_image(item):
+            if self._is_spotify_item(item):
+                self._draw_spotify_square_item(base, item, box, font=font)
+                return
             self._draw_image_square_item(base, item, box, font=font)
             return
 
@@ -1020,7 +1135,7 @@ class TierListRenderer:
             for item in items:
                 if self._item_has_image(item):
                     item_w = self.IMAGE_ITEM_SIZE
-                    item_h = self.IMAGE_ITEM_SIZE
+                    item_h = self.SPOTIFY_ITEM_HEIGHT if self._is_spotify_item(item) else self.IMAGE_ITEM_SIZE
                 else:
                     measurement = self._measure_text_item(
                         scratch_draw,
@@ -1320,10 +1435,10 @@ class AddItemModal(discord.ui.Modal):
             required=False,
         )
         self.spotify_album_input = discord.ui.TextInput(
-            label="Capa de Álbum (Spotify)",
-            placeholder="Exemplo: Blonde Frank Ocean",
+            label="Spotify URL/URI ou busca",
+            placeholder="Ex: https://open.spotify.com/album/... ou Brat Charli xcx",
             min_length=0,
-            max_length=100,
+            max_length=200,
             required=False,
         )
 
@@ -1368,8 +1483,83 @@ class AddItemModal(discord.ui.Modal):
         user_id_str = str(self.user_id_input.value).strip()
         web_search_str = str(self.web_search_input.value).strip()
         spotify_album_str = str(self.spotify_album_input.value).strip()
-        
+
+        if spotify_album_str and any([clean_url, user_id_str, web_search_str]):
+            await interaction.followup.send(
+                "⚠️ Escolha só uma fonte de imagem: Spotify, URL direta, foto de usuário ou pesquisa web.",
+                ephemeral=True,
+            )
+            return
+
+        if spotify_album_str:
+            try:
+                resolution = await self.cog.resolve_spotify_input(spotify_album_str)
+            except SpotifyUserError as exc:
+                LOGGER.exception("Falha amigável ao resolver Spotify: %s", exc.code)
+                await interaction.followup.send(f"❌ {exc.user_message}", ephemeral=True)
+                return
+            except Exception:
+                LOGGER.exception("Falha inesperada ao resolver entrada Spotify.")
+                await interaction.followup.send(
+                    "❌ Não consegui consultar o Spotify agora. Tente novamente em instantes.",
+                    ephemeral=True,
+                )
+                return
+
+            if resolution.is_ambiguous:
+                view = SpotifyCandidateSelectView(
+                    cog=self.cog,
+                    owner_id=self.owner_id,
+                    candidates=resolution.candidates,
+                    custom_caption=clean_item,
+                )
+                message = await interaction.followup.send(
+                    "🎵 Encontrei mais de um resultado. Escolha o correto no menu abaixo.",
+                    view=view,
+                    ephemeral=True,
+                    wait=True,
+                )
+                view.message = message
+                return
+
+            if resolution.item is None:
+                await interaction.followup.send(
+                    "❌ Não consegui encontrar esse álbum ou música no Spotify.",
+                    ephemeral=True,
+                )
+                return
+
+            try:
+                item = await self.cog.build_spotify_tier_item(
+                    resolution.item,
+                    custom_caption=clean_item,
+                )
+            except SpotifyUserError as exc:
+                LOGGER.exception("Falha amigável ao preparar capa Spotify: %s", exc.code)
+                await interaction.followup.send(f"❌ {exc.user_message}", ephemeral=True)
+                return
+            except Exception:
+                LOGGER.exception("Falha inesperada ao preparar item Spotify.")
+                await interaction.followup.send(
+                    "❌ A capa desse item não pôde ser baixada com segurança.",
+                    ephemeral=True,
+                )
+                return
+
+            await self.cog.send_tier_choice_for_item(
+                interaction,
+                owner_id=self.owner_id,
+                item=item,
+                tiers=session.tiers,
+                extra=(
+                    "\n🎵 Capa e metadados resolvidos pelo Spotify. "
+                    "A legenda ficará fora da arte da capa."
+                ),
+            )
+            return
+
         image_bytes = None
+        source_type = "text"
 
         # Hierarquia Estrita de Prioridade
         # Prioridade 1: Usa a URL informada
@@ -1385,35 +1575,7 @@ class AddItemModal(discord.ui.Modal):
             except (ValueError, discord.NotFound, discord.HTTPException):
                 clean_url = None
 
-        # Prioridade 3: Capa de álbum via API oficial do Spotify.
-        # Retorna uma URL CDN limpa, que segue pelo downloader assíncrono
-        # existente no fluxo de hidratação/renderização.
-        if not clean_url and spotify_album_str:
-            spotify_cover_url = await self.cog.fetch_spotify_album_cover(spotify_album_str)
-            if spotify_cover_url:
-                clean_url = spotify_cover_url
-                if not clean_item:
-                    clean_item = self.cog.clean_text(spotify_album_str, max_length=25)
-                try:
-                    timeout = aiohttp.ClientTimeout(total=self.cog.IMAGE_DOWNLOAD_TIMEOUT)
-                    async with aiohttp.ClientSession(timeout=timeout) as http:
-                        spotify_bytes = await self.cog.fetch_image_safely(http, spotify_cover_url)
-
-                    if spotify_bytes:
-                        image_bytes = spotify_bytes
-                        album_label = self.cog.clean_text(spotify_album_str, max_length=80)
-                        await interaction.followup.send(
-                            (
-                                f"🎵 Álbum \"{discord.utils.escape_markdown(album_label)}\" "
-                                "reconhecido pelo Spotify com sucesso! "
-                                "Processando capa em alta resolução..."
-                            ),
-                            ephemeral=True,
-                        )
-                except Exception as exc:
-                    print(f"[SPOTIFY API] Falha ao pré-hidratar capa de '{spotify_album_str}': {exc}")
-
-        # Prioridade 4: Sem URL/Spotify, mas com Pesquisa Web solicitada. Busca a imagem oficial da Wikipedia!
+        # Prioridade 3: Sem URL/Spotify, mas com Pesquisa Web solicitada. Busca a imagem oficial da Wikipedia!
         if not clean_url and not image_bytes and web_search_str:
             print(f"[DEBUG] Iniciando busca na Wikipedia pelo termo: '{web_search_str}'")
             
@@ -1422,12 +1584,10 @@ class AddItemModal(discord.ui.Modal):
                 fetched_bytes = await self.cog.fetch_wikipedia_image(http, web_search_str)
                 if fetched_bytes:
                     image_bytes = fetched_bytes
+                    source_type = "image"
                     clean_url = "(Pesquisa Wikipedia Automática)"  # Fallback estético para o log interno
                 else:
                     print(f"[ERRO] Wikipedia retornou falha total para '{web_search_str}'. Aplicando fallback para texto.")
-
-        if spotify_album_str and not clean_item:
-            clean_item = self.cog.clean_text(spotify_album_str, max_length=25)
 
         if not clean_item and not clean_url and not image_bytes:
             await interaction.followup.send(
@@ -1436,17 +1596,14 @@ class AddItemModal(discord.ui.Modal):
             )
             return
 
+        if clean_url or image_bytes:
+            source_type = "image"
+
         item = TierItem(
             name=clean_item,
             image_url=clean_url,
             image_bytes=image_bytes,
-        )
-
-        view = ItemTierSelectView(
-            cog=self.cog,
-            owner_id=self.owner_id,
-            item=item,
-            tiers=session.tiers,
+            source_type=source_type,
         )
 
         extra = (
@@ -1454,13 +1611,136 @@ class AddItemModal(discord.ui.Modal):
             if (clean_url or image_bytes)
             else ""
         )
-
-        item_label = clean_item or "item com imagem"
-        await interaction.followup.send(
-            f"📌 Escolha em qual tier colocar **{discord.utils.escape_markdown(item_label)}**:{extra}",
-            view=view,
-            ephemeral=True,
+        await self.cog.send_tier_choice_for_item(
+            interaction,
+            owner_id=self.owner_id,
+            item=item,
+            tiers=session.tiers,
+            extra=extra,
         )
+
+
+class SpotifyCandidateSelect(discord.ui.Select):
+    def __init__(self, view_instance: "SpotifyCandidateSelectView") -> None:
+        self.view_instance = view_instance
+
+        options: list[discord.SelectOption] = []
+        for index, candidate in enumerate(view_instance.candidates[:10]):
+            artist_text = ", ".join(candidate.artists) if candidate.artists else "Artista desconhecido"
+            year = (candidate.release_date or "")[:4]
+            kind = "álbum" if candidate.spotify_type == "album" else "track"
+            name = candidate.spotify_name
+            description_parts = [artist_text, year, kind]
+            description = " • ".join(part for part in description_parts if part)
+            options.append(
+                discord.SelectOption(
+                    label=name[:100],
+                    value=str(index),
+                    description=description[:100],
+                    emoji="🎵",
+                )
+            )
+
+        super().__init__(
+            placeholder="Escolha o resultado do Spotify",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.view_instance.owner_id:
+            await interaction.response.send_message(
+                "❌ Só quem criou a tier list pode usar esse menu.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=False)
+
+        session = self.view_instance.cog.sessions.get(self.view_instance.owner_id)
+        if session is None:
+            await interaction.edit_original_response(
+                content="❌ Essa sessão expirou ou foi cancelada.",
+                view=None,
+            )
+            return
+
+        selected_index = int(self.values[0])
+        try:
+            candidate = self.view_instance.candidates[selected_index]
+        except IndexError:
+            await interaction.edit_original_response(
+                content="❌ Esse resultado não está mais disponível. Tente adicionar de novo.",
+                view=None,
+            )
+            return
+
+        try:
+            item = await self.view_instance.cog.build_spotify_tier_item(
+                candidate,
+                custom_caption=self.view_instance.custom_caption,
+            )
+        except SpotifyUserError as exc:
+            LOGGER.exception("Falha amigável ao preparar candidato Spotify: %s", exc.code)
+            await interaction.edit_original_response(content=f"❌ {exc.user_message}", view=None)
+            return
+        except Exception:
+            LOGGER.exception("Falha inesperada ao preparar candidato Spotify.")
+            await interaction.edit_original_response(
+                content="❌ A capa desse item não pôde ser baixada com segurança.",
+                view=None,
+            )
+            return
+
+        tier_view = ItemTierSelectView(
+            cog=self.view_instance.cog,
+            owner_id=self.view_instance.owner_id,
+            item=item,
+            tiers=session.tiers,
+        )
+        item_label = item.name or "item com imagem"
+        await interaction.edit_original_response(
+            content=(
+                f"📌 Escolha em qual tier colocar **{discord.utils.escape_markdown(item_label)}**:"
+                "\n🎵 Capa e metadados resolvidos pelo Spotify. A legenda ficará fora da arte da capa."
+            ),
+            view=tier_view,
+        )
+        self.view_instance.stop()
+
+
+class SpotifyCandidateSelectView(discord.ui.View):
+    def __init__(
+        self,
+        *,
+        cog: "TierListCog",
+        owner_id: int,
+        candidates: list[SpotifyResolvedItem],
+        custom_caption: str,
+    ) -> None:
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.owner_id = owner_id
+        self.candidates = candidates
+        self.custom_caption = custom_caption
+        self.message: discord.Message | None = None
+        self.add_item(SpotifyCandidateSelect(self))
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+        if self.message:
+            try:
+                await self.message.edit(
+                    content="⌛ Tempo esgotado. Nenhum item do Spotify foi adicionado.",
+                    view=None,
+                )
+            except discord.HTTPException:
+                pass
+
+        self.stop()
 
 
 
@@ -1515,11 +1795,22 @@ class ItemTierSelect(discord.ui.Select):
             )
             return
 
-        session.items[selected_tier].append(self.item)
+        async with session.lock:
+            total_items = sum(len(items) for items in session.items.values())
+            if total_items >= self.cog.MAX_ITEMS_PER_SESSION:
+                await interaction.response.edit_message(
+                    content=f"⚠️ Limite de **{self.cog.MAX_ITEMS_PER_SESSION} itens** atingido nessa tier list.",
+                    view=None,
+                )
+                return
+
+            session.items[selected_tier].append(self.item)
 
         await self.cog.refresh_panel(session)
 
-        image_badge = " com imagem" if (self.item.image_url or self.item.image_bytes) else ""
+        image_badge = " com capa Spotify" if self.item.source_type == "spotify" else (
+            " com imagem" if (self.item.image_url or self.item.image_bytes) else ""
+        )
         item_label = self.item.name or "item com imagem"
 
         await interaction.response.edit_message(
@@ -1847,17 +2138,22 @@ class EditItemModal(discord.ui.Modal):
 
         # Snapshot reversivel: se refresh/render falhar, o estado volta ao ponto
         # anterior e a sessão não fica parcialmente corrompida.
-        old_name = current_item.name
+        old_state = replace(current_item)
         old_url = current_item.image_url
-        old_bytes = current_item.image_bytes
         old_valid_url = old_url if old_url and self.main_view.cog.looks_like_url(old_url) else None
         moved_item: TierItem | None = None
 
         try:
-            current_item.name = new_name
+            if current_item.source_type == "spotify" and new_url == old_valid_url:
+                current_item.name = new_name or self.main_view.cog.spotify_item_auto_label(current_item)
+                current_item.caption = current_item.name
+            else:
+                current_item.name = new_name
             current_item.image_url = new_url
             if new_url != old_valid_url:
                 current_item.image_bytes = None
+                self.main_view.cog.clear_spotify_metadata(current_item)
+                current_item.source_type = "image" if new_url else "text"
 
             if new_tier != old_tier:
                 moved_item = session.items[old_tier].pop(self.item_index)
@@ -1878,9 +2174,8 @@ class EditItemModal(discord.ui.Modal):
                     pass
                 session.items[old_tier].insert(self.item_index, moved_item)
 
-            rollback_item.name = old_name
-            rollback_item.image_url = old_url
-            rollback_item.image_bytes = old_bytes
+            for attr, value in vars(old_state).items():
+                setattr(rollback_item, attr, value)
 
             await interaction.followup.send("❌ Falha ao editar o item.", ephemeral=True)
 
@@ -2151,20 +2446,8 @@ class TierListControlView(discord.ui.View):
         if not session.panel_message:
             return
 
-        tiers_snapshot: OrderedDictType[str, list[TierItem]] = OrderedDict(
-            (
-                tier,
-                [
-                    TierItem(
-                        name=item.name,
-                        image_url=item.image_url,
-                        image_bytes=item.image_bytes,
-                    )
-                    for item in session.items.get(tier, [])
-                ],
-            )
-            for tier in session.tiers
-        )
+        async with session.lock:
+            tiers_snapshot = self.cog.clone_tiers_snapshot(session)
 
         hydrated_snapshot = await self.cog.hydrate_tier_images(tiers_snapshot)
 
@@ -2353,7 +2636,8 @@ class TierListControlView(discord.ui.View):
             )
             return
 
-        total_items = sum(len(items) for items in session.items.values())
+        async with session.lock:
+            total_items = sum(len(items) for items in session.items.values())
 
         if total_items <= 0:
             await interaction.response.send_message(
@@ -2366,23 +2650,11 @@ class TierListControlView(discord.ui.View):
         # Isso evita timeout da interação enquanto baixamos imagens e renderizamos.
         await interaction.response.defer(thinking=True)
 
-        title_snapshot = session.title
-
         # Copia a sessão para evitar alteração enquanto renderiza.
-        tiers_snapshot: OrderedDictType[str, list[TierItem]] = OrderedDict(
-            (
-                tier,
-                [
-                    TierItem(
-                        name=item.name,
-                        image_url=item.image_url,
-                        image_bytes=item.image_bytes,
-                    )
-                    for item in session.items.get(tier, [])
-                ],
-            )
-            for tier in session.tiers
-        )
+        async with session.lock:
+            title_snapshot = session.title
+            tier_colors_snapshot = dict(session.tier_colors)
+            tiers_snapshot = self.cog.clone_tiers_snapshot(session)
 
         # Download assíncrono das URLs. hydrate_tier_images e defensivo, mas
         # mantemos um fallback local para garantir que rede quebrada nunca mate
@@ -2408,7 +2680,7 @@ class TierListControlView(discord.ui.View):
                 hydrated_snapshot,
                 author=interaction.user,
                 guild_icon_bytes=guild_icon_bytes,
-                tier_colors=session.tier_colors,
+                tier_colors=tier_colors_snapshot,
             )
 
         except Exception as exc:
@@ -2417,15 +2689,17 @@ class TierListControlView(discord.ui.View):
                 (
                     tier,
                     [
-                        TierItem(
+                        replace(
+                            item,
                             name=item.name or "item com imagem",
                             image_url=None,
                             image_bytes=None,
+                            source_type="text",
                         )
                         for item in hydrated_snapshot.get(tier, [])
                     ],
                 )
-                for tier in session.tiers
+                for tier in hydrated_snapshot.keys()
             )
 
             try:
@@ -2467,8 +2741,13 @@ class TierListControlView(discord.ui.View):
 
         self.stop()
 
+        attribution = self.cog.build_spotify_attribution_text(hydrated_snapshot)
+        final_content = f"🖼️ **{discord.utils.escape_markdown(title_snapshot)}**"
+        if attribution:
+            final_content = f"{final_content}\n\n{attribution}"
+
         final_message = await interaction.followup.send(
-            content=f"🖼️ **{discord.utils.escape_markdown(title_snapshot)}**",
+            content=final_content,
             file=file,
             view=PostGenerationView(self.cog, self.owner_id),
             wait=True,
@@ -2545,155 +2824,197 @@ class TierListCog(
 
         self.renderer = TierListRenderer()
 
-        # Spotify Client Credentials cache:
-        # - token fica em RAM;
-        # - expires_at usa monotonic para não depender do relógio do host;
-        # - lock evita corrida quando vários usuários adicionam álbuns juntos.
-        self.spotify_client_id = os.getenv("SPOTIFY_CLIENT_ID", "").strip()
-        self.spotify_client_secret = os.getenv("SPOTIFY_CLIENT_SECRET", "").strip()
-        self._spotify_access_token: str | None = None
-        self._spotify_token_expires_at = 0.0
-        self._spotify_token_lock = asyncio.Lock()
+        self.spotify_service = SpotifyService()
+        self.spotify_resolver = SpotifyInputResolver(self.spotify_service)
+        self.spotify_image_downloader = SpotifyImageDownloader(
+            processor=SpotifyImageProcessor(),
+            max_bytes=self.MAX_IMAGE_BYTES,
+            timeout_seconds=max(self.IMAGE_DOWNLOAD_TIMEOUT, 8),
+        )
 
     async def get_spotify_access_token(self) -> str | None:
         """
-        Obtém Bearer Token do Spotify via Client Credentials Flow.
+        Compatibilidade com versões antigas.
 
-        O token expira normalmente em 3600s. Reusamos o token até 60s antes
-        do vencimento para evitar autenticação repetida e rate limit no endpoint
-        accounts.spotify.com.
+        A autenticação real agora fica dentro do Spotipy/SpotifyService, usando
+        Client Credentials Flow e inicialização lazy do cliente.
         """
-        now = time.monotonic()
-        if self._spotify_access_token and now < self._spotify_token_expires_at - 60:
-            return self._spotify_access_token
-
-        if not self.spotify_client_id or not self.spotify_client_secret:
-            print("[SPOTIFY API] Credenciais ausentes no ambiente.")
+        if not self.spotify_service.is_configured:
+            LOGGER.warning("Credenciais Spotify ausentes ou Spotipy indisponível.")
             return None
-
-        async with self._spotify_token_lock:
-            now = time.monotonic()
-            if self._spotify_access_token and now < self._spotify_token_expires_at - 60:
-                return self._spotify_access_token
-
-            auth_raw = f"{self.spotify_client_id}:{self.spotify_client_secret}".encode("utf-8")
-            auth_b64 = base64.b64encode(auth_raw).decode("ascii")
-
-            headers = {
-                "Authorization": f"Basic {auth_b64}",
-                "Content-Type": "application/x-www-form-urlencoded",
-            }
-            data = {"grant_type": "client_credentials"}
-            timeout = aiohttp.ClientTimeout(total=5, connect=2)
-
-            try:
-                async with aiohttp.ClientSession(timeout=timeout) as http:
-                    async with http.post(
-                        "https://accounts.spotify.com/api/token",
-                        headers=headers,
-                        data=data,
-                    ) as response:
-                        if response.status != 200:
-                            print(f"[SPOTIFY API] Auth falhou: HTTP {response.status}")
-                            return None
-
-                        payload = await response.json(content_type=None)
-
-                token = payload.get("access_token")
-                expires_in = int(payload.get("expires_in", 3600))
-
-                if not token:
-                    print("[SPOTIFY API] Auth sem access_token.")
-                    return None
-
-                self._spotify_access_token = str(token)
-                self._spotify_token_expires_at = time.monotonic() + max(60, expires_in)
-                return self._spotify_access_token
-
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                print(f"[SPOTIFY API] Auth com erro de rede/timeout: {exc}")
-                return None
-            except Exception as exc:
-                print(f"[SPOTIFY API] Auth com erro inesperado: {exc}")
-                return None
+        return "<managed-by-spotipy>"
 
     async def fetch_spotify_album_cover(self, query: str) -> str | None:
         """
-        Busca a capa de álbum mais relevante no Spotify.
+        Compatibilidade com o fluxo antigo de álbum.
 
-        Retorna somente a URL da maior imagem (`images[0].url`). A URL segue
-        para o downloader seguro existente, preservando o pipeline Pillow atual.
+        Novos caminhos devem usar resolve_spotify_input() e receber metadados
+        completos. Este método continua existindo para qualquer chamada legada.
         """
-        clean_query = re.sub(r"\s+", " ", (query or "").strip())
-        if not clean_query:
+        try:
+            resolution = await self.resolve_spotify_input(query, preferred_type="album", allow_ambiguous=False)
+        except SpotifyUserError as exc:
+            LOGGER.warning("Busca legada de capa Spotify falhou: %s", exc.code)
+            return None
+        except Exception:
+            LOGGER.exception("Busca legada de capa Spotify falhou inesperadamente.")
             return None
 
-        params = {
-            "q": clean_query,
-            "type": "album",
-            "limit": "1",
-        }
-        timeout = aiohttp.ClientTimeout(total=5, connect=2)
+        return resolution.item.image_url if resolution.item else None
 
-        for attempt in range(2):
-            token = await self.get_spotify_access_token()
-            if not token:
-                return None
+    async def resolve_spotify_input(
+        self,
+        raw: str,
+        *,
+        preferred_type: str | None = None,
+        allow_ambiguous: bool = True,
+    ) -> SpotifyResolution:
+        return await self.spotify_resolver.resolve(
+            raw,
+            preferred_type=preferred_type,
+            allow_ambiguous=allow_ambiguous,
+        )
 
-            headers = {"Authorization": f"Bearer {token}"}
+    async def build_spotify_tier_item(
+        self,
+        resolved: SpotifyResolvedItem,
+        *,
+        custom_caption: str = "",
+    ) -> TierItem:
+        image_bytes = await self.spotify_image_downloader.download(
+            resolved.image_url,
+            cache_key=resolved.cache_key,
+        )
 
-            try:
-                async with aiohttp.ClientSession(timeout=timeout) as http:
-                    async with http.get(
-                        "https://api.spotify.com/v1/search",
-                        headers=headers,
-                        params=params,
-                    ) as response:
-                        if response.status == 401 and attempt == 0:
-                            # Token pode ter sido revogado antes do vencimento
-                            # previsto. Invalida cache e tenta autenticar UMA vez.
-                            self._spotify_access_token = None
-                            self._spotify_token_expires_at = 0.0
-                            print("[SPOTIFY API] Search recebeu 401; reautenticando uma vez.")
-                            continue
+        caption = self.clean_text(custom_caption, max_length=80) if custom_caption else ""
+        if not caption:
+            caption = self.clean_text(resolved.caption or resolved.display_name, max_length=80)
 
-                        if response.status == 401:
-                            print("[SPOTIFY API] Search recebeu 401 apos reauth; fallback para texto.")
-                            return None
+        if not image_bytes:
+            raise SpotifyImageError(
+                "A capa desse item não pôde ser baixada com segurança.",
+                code="spotify_image_empty",
+            )
 
-                        if response.status != 200:
-                            print(f"[SPOTIFY API] Search falhou para '{clean_query}': HTTP {response.status}")
-                            return None
+        LOGGER.info(
+            "Item Spotify pronto: %s:%s '%s'.",
+            resolved.spotify_type,
+            resolved.spotify_id,
+            resolved.spotify_name,
+        )
 
-                        payload = await response.json(content_type=None)
+        return TierItem(
+            name=caption,
+            image_url=resolved.image_url,
+            image_bytes=image_bytes,
+            source_type="spotify",
+            caption=caption,
+            image_cache_key=resolved.cache_key,
+            spotify_type=resolved.spotify_type,
+            spotify_id=resolved.spotify_id,
+            spotify_url=resolved.spotify_url,
+            spotify_name=resolved.spotify_name,
+            spotify_artists=resolved.artists,
+            album_name=resolved.album_name,
+            track_name=resolved.track_name,
+            release_date=resolved.release_date,
+            attribution_text=resolved.attribution_text,
+        )
 
-                albums = payload.get("albums", {})
-                items = albums.get("items", []) if isinstance(albums, dict) else []
-                if not items:
-                    print(f"[SPOTIFY API] Nenhum álbum encontrado para '{clean_query}'.")
-                    return None
+    async def send_tier_choice_for_item(
+        self,
+        interaction: discord.Interaction,
+        *,
+        owner_id: int,
+        item: TierItem,
+        tiers: list[str],
+        extra: str = "",
+    ) -> None:
+        view = ItemTierSelectView(
+            cog=self,
+            owner_id=owner_id,
+            item=item,
+            tiers=tiers,
+        )
 
-                first_album = items[0] if isinstance(items[0], dict) else {}
-                images = first_album.get("images", [])
-                if not images:
-                    print(f"[SPOTIFY API] Álbum sem imagens para '{clean_query}'.")
-                    return None
+        item_label = item.name or "item com imagem"
+        await interaction.followup.send(
+            f"📌 Escolha em qual tier colocar **{discord.utils.escape_markdown(item_label)}**:{extra}",
+            view=view,
+            ephemeral=True,
+        )
 
-                best_image = images[0] if isinstance(images[0], dict) else {}
-                image_url = str(best_image.get("url") or "").strip()
-                if not self.looks_like_url(image_url):
-                    return None
+    def clone_tier_item(self, item: TierItem) -> TierItem:
+        return replace(item)
 
-                return image_url
+    def clone_tiers_snapshot(
+        self,
+        session: TierListSession,
+    ) -> OrderedDictType[str, list[TierItem]]:
+        return OrderedDict(
+            (
+                tier,
+                [self.clone_tier_item(item) for item in session.items.get(tier, [])],
+            )
+            for tier in session.tiers
+        )
 
-            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                print(f"[SPOTIFY API] Search com erro de rede/timeout para '{clean_query}': {exc}")
-                return None
-            except Exception as exc:
-                print(f"[SPOTIFY API] Search com erro inesperado para '{clean_query}': {exc}")
-                return None
+    def build_spotify_attribution_text(
+        self,
+        tiers_snapshot: OrderedDictType[str, list[TierItem]],
+        *,
+        max_visible: int = 8,
+    ) -> str:
+        entries: list[str] = []
+        seen: set[tuple[str | None, str | None, str | None]] = set()
 
-        return None
+        for items in tiers_snapshot.values():
+            for item in items:
+                if item.source_type != "spotify" and not item.spotify_url:
+                    continue
+                key = (item.spotify_type, item.spotify_id, item.spotify_url)
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                label = item.spotify_name or item.name or "Item Spotify"
+                artist_text = ", ".join(item.spotify_artists[:2])
+                if artist_text:
+                    label = f"{label} - {artist_text}"
+                safe_label = discord.utils.escape_markdown(label)
+                if item.spotify_url:
+                    entries.append(f"- {safe_label}: <{item.spotify_url}>")
+
+        if not entries:
+            return ""
+
+        visible_entries = entries[:max_visible]
+        hidden_count = max(0, len(entries) - len(visible_entries))
+        suffix = f"\n... +{hidden_count} itens Spotify" if hidden_count else ""
+        return (
+            "Capas e metadados fornecidos pelo Spotify. Links dos itens usados:\n"
+            + "\n".join(visible_entries)
+            + suffix
+        )
+
+    def spotify_item_auto_label(self, item: TierItem) -> str:
+        base_name = item.track_name or item.album_name or item.spotify_name or "Item Spotify"
+        artist_text = ", ".join(item.spotify_artists) if item.spotify_artists else ""
+        label = f"{base_name} - {artist_text}" if artist_text else base_name
+        return self.clean_text(label, max_length=80)
+
+    def clear_spotify_metadata(self, item: TierItem) -> None:
+        item.caption = None
+        item.image_cache_key = None
+        item.spotify_type = None
+        item.spotify_id = None
+        item.spotify_url = None
+        item.spotify_name = None
+        item.spotify_artists = tuple()
+        item.album_name = None
+        item.track_name = None
+        item.release_date = None
+        item.attribution_text = None
 
     async def fetch_wikipedia_image(self, http: aiohttp.ClientSession, query: str) -> bytes | None:
         """
@@ -3012,7 +3333,17 @@ class TierListCog(
                         return
 
                     async with semaphore:
-                        item.image_bytes = await self.fetch_image_safely(http, item.image_url)
+                        if item.source_type == "spotify" or item.spotify_id:
+                            try:
+                                item.image_bytes = await self.spotify_image_downloader.download(
+                                    item.image_url,
+                                    cache_key=item.image_cache_key or f"spotify:{item.spotify_type}:{item.spotify_id}",
+                                )
+                            except SpotifyUserError as exc:
+                                LOGGER.warning("Falha ao hidratar capa Spotify: %s", exc.code)
+                                item.image_bytes = None
+                        else:
+                            item.image_bytes = await self.fetch_image_safely(http, item.image_url)
 
                 tasks: list[asyncio.Task[None]] = []
 
@@ -3117,6 +3448,12 @@ class TierListCog(
             for item in items
             if item.image_url
         )
+        spotify_items = sum(
+            1
+            for items in session.items.values()
+            for item in items
+            if item.source_type == "spotify" or item.spotify_id
+        )
 
         embed = discord.Embed(
             title="🧩 Painel De Criação De Tier List",
@@ -3125,6 +3462,7 @@ class TierListCog(
                 f"**Tiers:** {len(session.tiers)}\n"
                 f"**Itens:** {total_items}/{self.MAX_ITEMS_PER_SESSION}\n"
                 f"**Itens Com URL:** {image_items}\n\n"
+                f"**Itens Spotify:** {spotify_items}\n\n"
                 "Use os botões abaixo para configurar, adicionar itens e gerar a imagem final."
             ),
             color=discord.Color.from_rgb(155, 93, 229),
@@ -3137,7 +3475,7 @@ class TierListCog(
 
             for item in items[:8]:
                 has_image = bool(item.image_url or item.image_bytes)
-                icon = "🖼️" if has_image else "📝"
+                icon = "🎵" if (item.source_type == "spotify" or item.spotify_id) else ("🖼️" if has_image else "📝")
                 item_label = item.name or "item com imagem"
                 preview_parts.append(f"{icon} {item_label}")
 
