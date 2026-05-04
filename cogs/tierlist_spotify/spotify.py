@@ -17,6 +17,7 @@ from PIL import Image, UnidentifiedImageError
 
 try:
     import spotipy
+    from spotipy.cache_handler import CacheHandler
     from spotipy.exceptions import SpotifyException
     from spotipy.oauth2 import SpotifyClientCredentials
     try:
@@ -25,6 +26,7 @@ try:
         SpotifyOauthError = None
 except ImportError:  # pragma: no cover - depends on deployment env
     spotipy = None
+    CacheHandler = None
     SpotifyException = None
     SpotifyClientCredentials = None
     SpotifyOauthError = None
@@ -98,6 +100,17 @@ class SpotifyNotConfiguredError(SpotifyUserError):
 
 class SpotifyImageError(SpotifyUserError):
     pass
+
+
+if CacheHandler is not None:
+    class SpotifyNoopCacheHandler(CacheHandler):
+        def get_cached_token(self) -> None:
+            return None
+
+        def save_token_to_cache(self, token_info: dict[str, Any]) -> None:
+            return None
+else:  # pragma: no cover - Spotipy missing in deployment env
+    SpotifyNoopCacheHandler = None
 
 
 class TTLCache:
@@ -230,11 +243,19 @@ class SpotifyService:
                 return self._client
 
             LOGGER.info("Inicializando cliente Spotipy com Client Credentials Flow.")
+            cache_handler = SpotifyNoopCacheHandler() if SpotifyNoopCacheHandler is not None else None
             auth_manager = SpotifyClientCredentials(
                 client_id=self.client_id,
                 client_secret=self.client_secret,
+                requests_timeout=8,
+                cache_handler=cache_handler,
             )
-            self._client = spotipy.Spotify(auth_manager=auth_manager)
+            self._client = spotipy.Spotify(
+                auth_manager=auth_manager,
+                requests_timeout=8,
+                retries=0,
+                status_retries=0,
+            )
             return self._client
 
     async def get_album(self, album_id: str) -> dict[str, Any]:
@@ -417,6 +438,15 @@ class SpotifyInputResolver:
         if parsed.kind == "search":
             candidates = await self._search(parsed.query)
             if not candidates:
+                raise SpotifyUserError("Não consegui encontrar esse álbum ou música no Spotify.", code="spotify_no_results")
+
+            top_score = self._candidate_score(parsed.query, candidates[0])
+            if top_score < 0.35:
+                LOGGER.info(
+                    "Busca Spotify sem resultado plausível para '%s' (score %.2f).",
+                    parsed.query,
+                    top_score,
+                )
                 raise SpotifyUserError("Não consegui encontrar esse álbum ou música no Spotify.", code="spotify_no_results")
 
             selected = self._auto_select_candidate(parsed.query, candidates)

@@ -27,7 +27,7 @@ httplib2==0.31.2
 httpx==0.28.1
 idna==3.11
 
-duckduckgo_search==5.8.0
+
 
 multidict==6.7.1
 oauthlib==3.3.1
