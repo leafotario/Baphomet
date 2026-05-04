@@ -136,6 +136,21 @@ class MyBot(commands.Bot):
         except Exception as exc:
             log_error(f"Falha ao sincronizar comandos: {exc}")
 
+        # 3. Tratador de Erros Global para Slash Commands (RBAC)
+        @self.tree.error
+        async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+            if isinstance(error, app_commands.MissingPermissions):
+                msg = "❌ Você não tem permissão para utilizar este comando."
+                if interaction.response.is_done():
+                    await interaction.followup.send(msg, ephemeral=True)
+                else:
+                    await interaction.response.send_message(msg, ephemeral=True)
+            else:
+                # Logar erros inesperados para depuração
+                log_error(f"Erro em /{interaction.command.name if interaction.command else 'unknown'}: {error}")
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("❌ Ocorreu um erro interno ao processar este comando.", ephemeral=True)
+
     async def close(self) -> None:
         """Desligamento gracioso do Bot, garantindo fechamento de conexões abertas."""
         log_warn("Iniciando processo de desligamento seguro...")

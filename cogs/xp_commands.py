@@ -202,23 +202,23 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
         return True
 
     @app_commands.command(name="difficulty", description="Define A Dificuldade Da Ascensão ⚙️")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.choices(difficulty=DIFFICULTY_CHOICES)
     async def difficulty(self, interaction: discord.Interaction, difficulty: app_commands.Choice[str]) -> None:
         config = await self.service.update_guild_config(interaction.guild.id, difficulty=XpDifficulty(difficulty.value))
         await interaction.response.send_message(f"⚙️ Ritual Atualizado! A Dificuldade Agora Está Em **{config.difficulty.label}**.", ephemeral=True)
 
     @app_commands.command(name="cooldown", description="Define O Cooldown De XP ⏳")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def cooldown(self, interaction: discord.Interaction, seconds: app_commands.Range[int, 0, 3600]) -> None:
         config = await self.service.update_guild_config(interaction.guild.id, cooldown_seconds=seconds)
         await interaction.response.send_message(f"⏳ Ritmo Ajustado! O Cooldown Agora É De **{config.cooldown_seconds}S**.", ephemeral=True)
 
     @app_commands.command(name="xp-range", description="Define A Faixa De XP Por Mensagem ✨")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def xp_range(self, interaction: discord.Interaction, min_xp: app_commands.Range[int, 1, 1000], max_xp: app_commands.Range[int, 1, 1000]) -> None:
         if min_xp > max_xp:
             await interaction.response.send_message("⚠️ O Valor Mínimo Não Pode Ser Maior Que O Máximo.", ephemeral=True)
@@ -227,32 +227,32 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
         await interaction.response.send_message(f"✨ Faixa Ritualística Ajustada Para **{config.min_xp_per_message}-{config.max_xp_per_message} XP**.", ephemeral=True)
 
     @app_commands.command(name="ignore-channel", description="Ignora Ou Libera Um Canal 🚪")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def ignore_channel(self, interaction: discord.Interaction, channel: GuildChannelParam, enabled: bool) -> None:
         await self.service.set_ignored_channel(interaction.guild.id, channel.id, enabled)
         status = "Ignorado Pelo Ritual" if enabled else "Liberado Para Ganhar XP"
         await interaction.response.send_message(f"📍 Canal **{channel.name}**: **{status}**.", ephemeral=True)
 
     @app_commands.command(name="ignore-category", description="Ignora Ou Libera Uma Categoria 🗂️")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def ignore_category(self, interaction: discord.Interaction, category: discord.CategoryChannel, enabled: bool) -> None:
         await self.service.set_ignored_category(interaction.guild.id, category.id, enabled)
         status = "Ignorada Pelo Ritual" if enabled else "Liberada Para Ganhar XP"
         await interaction.response.send_message(f"🗂️ Categoria **{category.name}**: **{status}**.", ephemeral=True)
 
     @app_commands.command(name="ignore-role", description="Ignora Ou Libera Um Cargo 🎭")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def ignore_role(self, interaction: discord.Interaction, role: discord.Role, enabled: bool) -> None:
         await self.service.set_ignored_role(interaction.guild.id, role.id, enabled)
         status = "Ignorado Pelo Ritual" if enabled else "Liberado Para Ganhar XP"
         await interaction.response.send_message(f"🎭 Cargo {role.mention}: **{status}**.", ephemeral=True)
 
     @app_commands.command(name="reset", description="Zera O XP De Um Membro ☠️")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def reset(self, interaction: discord.Interaction, member: discord.Member, reason: str | None = None) -> None:
         result = await self.service.reset_xp(interaction.guild, member, interaction.user.id, reason)
         await interaction.response.send_message(
@@ -261,8 +261,8 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
         )
 
     @app_commands.command(name="config", description="Mostra A Configuração Atual ⚙️")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def config(self, interaction: discord.Interaction) -> None:
         config = await self.service.get_guild_config(interaction.guild.id)
         levelup = f"<#{config.levelup_channel_id}>" if config.levelup_channel_id else "Mesmo Canal Da Mensagem"
@@ -285,8 +285,8 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="levelup-channel", description="Define O Canal Dos Avisos De Level Up 📣")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def levelup_channel(self, interaction: discord.Interaction, channel: discord.TextChannel | None = None) -> None:
         config = await self.service.update_guild_config(interaction.guild.id, levelup_channel_id=channel.id if channel else None)
         if config.levelup_channel_id:
@@ -295,15 +295,15 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
             await interaction.response.send_message("📣 Os Avisos De Ascensão Voltarão Para O Mesmo Canal Da Mensagem.", ephemeral=True)
 
     @app_commands.command(name="level-role-add", description="Liga Um Cargo A Um Nível 👑")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def level_role_add(self, interaction: discord.Interaction, level: app_commands.Range[int, 1, 1000], role: discord.Role) -> None:
         await self.service.set_level_role(interaction.guild.id, level, role.id)
         await interaction.response.send_message(f"👑 O Cargo {role.mention} Agora Será Concedido No **Nível {level}**.", ephemeral=True)
 
     @app_commands.command(name="level-role-remove", description="Desliga O Cargo Automático De Um Nível 🚫")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def level_role_remove(self, interaction: discord.Interaction, level: app_commands.Range[int, 1, 1000]) -> None:
         _config, removed = await self.service.remove_level_role(interaction.guild.id, level)
         if not removed:
