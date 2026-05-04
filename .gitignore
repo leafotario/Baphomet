@@ -3,3 +3,5 @@ token.json
 client_secret.json
 venv/
 __pycache__/
+data/tierlist_templates.sqlite3*
+data/tierlist_assets/
