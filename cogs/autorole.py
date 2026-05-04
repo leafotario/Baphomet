@@ -97,6 +97,7 @@ class SupremeAutoRole(commands.Cog):
     # --- COMANDOS DE ADMIN ---
     @app_commands.command(name="autorole_unico", description="Cria painel para 1 cargo.")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def unico(self, it: discord.Interaction, canal: discord.TextChannel, cargo: discord.Role, 
                     emoji: str, texto_botao: str, mensagem: str, desc_cargo: str, 
                     titulo: str = "Cargo Único", cor_hex: str = "#2B2D31"):
@@ -111,6 +112,7 @@ class SupremeAutoRole(commands.Cog):
 
     @app_commands.command(name="autorole_multi", description="Cria painel para dar de 2 a 5 cargos simultaneamente.")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def multi(self, it: discord.Interaction, canal: discord.TextChannel, 
                     cargo1: discord.Role, cargo2: discord.Role,
                     emoji: str, texto_botao: str, mensagem: str,
@@ -135,6 +137,7 @@ class SupremeAutoRole(commands.Cog):
 
     @app_commands.command(name="autorole_deci", description="Cria painel de 6-15 cargos via Parser.")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def deci(self, it: discord.Interaction, canal: discord.TextChannel, configuracao: str, 
                    mensagem: str, titulo: str = "Central de Cargos", cor_hex: str = "#2B2D31"):
         
@@ -162,6 +165,7 @@ class SupremeAutoRole(commands.Cog):
     @app_commands.command(name="autorole_editar", description="Abre o Modal de edição para um painel existente.")
     @app_commands.describe(link_mensagem="O link da mensagem do bot que queres editar.")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def editar(self, it: discord.Interaction, link_mensagem: str):
         try:
             parts = link_mensagem.split('/')

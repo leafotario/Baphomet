@@ -392,6 +392,8 @@ class ModerationCog(commands.Cog):
         description="gera um convite privado do servidor"
     )
     @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def convite(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
             await interaction.response.send_message(

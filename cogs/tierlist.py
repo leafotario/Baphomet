@@ -1461,7 +1461,7 @@ class AddItemModal(discord.ui.Modal):
 
         self.item_name = discord.ui.TextInput(
             label="Nome do item",
-            placeholder="Opcional: Pizza, Minecraft, Billie...",
+            placeholder="Opcional: Pizza, Minecraft, 21 Savage...",
             min_length=0,
             max_length=25,
             required=False,
@@ -1484,15 +1484,15 @@ class AddItemModal(discord.ui.Modal):
         )
 
         self.web_search_input = discord.ui.TextInput(
-            label="Wikipedia / termo de busca",
+            label="Pesquisa de imagem na web",
             placeholder="Ex: Billie Eilish, Minecraft, Brasil, Charizard",
             min_length=0,
             max_length=100,
             required=False,
         )
         self.spotify_album_input = discord.ui.TextInput(
-            label="Spotify URL/URI ou busca",
-            placeholder="Ex: https://open.spotify.com/album/... ou Brat Charli xcx",
+            label="Spotify (Álbum)",
+            placeholder="Ex: https://open.spotify.com/album/... ou Brat - Charli xcx",
             min_length=0,
             max_length=200,
             required=False,
@@ -3778,7 +3778,7 @@ class TierListCog(
             "⚠️ Honra e proveito não cabem no mesmo saco estreito.\n\n"
             "Você preencheu mais de uma fonte de imagem ao mesmo tempo. "
             "Eu preciso saber qual imagem usar: avatar de usuário, link direto, "
-            "Wikipedia, Spotify ou outra fonte — mas não tudo junto no mesmo item.\n\n"
+            "Wikipedia, Spotify ou outra fonte, e não tudo junto no mesmo item.\n\n"
             "Escolha só uma fonte de imagem e tente de novo."
             f"{suffix}"
         )
@@ -3901,12 +3901,13 @@ class TierListSafetyCog(
     commands.GroupCog,
     group_name="tierlist-safety",
     group_description="Configura o filtro de segurança da tierlist Wikipedia",
+    default_permissions=discord.Permissions(administrator=True),
 ):
-    block_term = app_commands.Group(name="block-term", description="Gerencia termos bloqueados.")
-    allow_term = app_commands.Group(name="allow-term", description="Gerencia termos liberados para busca.")
-    allow_page = app_commands.Group(name="allow-page", description="Gerencia páginas Wikipedia liberadas.")
-    allow_file = app_commands.Group(name="allow-file", description="Gerencia arquivos Wikimedia liberados.")
-    review = app_commands.Group(name="review", description="Gerencia a fila de revisão da tierlist.")
+    block_term = app_commands.Group(name="block-term", description="Gerencia termos bloqueados.", default_permissions=discord.Permissions(administrator=True))
+    allow_term = app_commands.Group(name="allow-term", description="Gerencia termos liberados para busca.", default_permissions=discord.Permissions(administrator=True))
+    allow_page = app_commands.Group(name="allow-page", description="Gerencia páginas Wikipedia liberadas.", default_permissions=discord.Permissions(administrator=True))
+    allow_file = app_commands.Group(name="allow-file", description="Gerencia arquivos Wikimedia liberados.", default_permissions=discord.Permissions(administrator=True))
+    review = app_commands.Group(name="review", description="Gerencia a fila de revisão da tierlist.", default_permissions=discord.Permissions(administrator=True))
 
     def __init__(self, bot: commands.Bot, tierlist_cog: TierListCog) -> None:
         self.bot = bot

@@ -115,6 +115,7 @@ class Denuncia(commands.Cog):
         name="denuncia_chat",
         description="Posta a mensagem de abertura de denúncias no canal (Admin).",
     )
+    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def denuncia_chat(self, interaction: discord.Interaction):
         embed = discord.Embed(
@@ -141,6 +142,7 @@ class Denuncia(commands.Cog):
         name="fechar_denuncia",
         description="Fecha (deleta) o canal de ticket atual (Admin).",
     )
+    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def fechar_denuncia(self, interaction: discord.Interaction):
         # Validação: garante que o comando só funciona dentro de um canal de ticket

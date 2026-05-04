@@ -26,6 +26,7 @@ class Moderation(commands.Cog):
         amount="A quantidade de mensagens a serem apagadas (entre 1 e 100)."
     )
     # Garante que apenas moderadores com gerência de mensagens possam usar
+    @app_commands.default_permissions(manage_messages=True)
     @app_commands.checks.has_permissions(manage_messages=True)
     # Garante que o bot tem as permissões vitais no canal antes de tentar rodar
     @app_commands.checks.bot_has_permissions(manage_messages=True, read_message_history=True)

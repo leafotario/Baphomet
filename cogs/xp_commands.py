@@ -371,6 +371,7 @@ async def setup(bot: commands.Bot) -> None:
     bot.tree.add_command(resetar_xp_servidor)
 
     @bot.tree.command(name="sync", description="Sincroniza os comandos (Admin)")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def sync(interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True)

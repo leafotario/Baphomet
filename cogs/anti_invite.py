@@ -42,6 +42,7 @@ class AntiInviteCog(commands.Cog):
 
     @app_commands.command(name="anti_invite_status", description="Exibe a configuração atual do Anti-Invite.")
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def anti_invite_status(self, it: discord.Interaction):
         guild_id = str(it.guild.id)
         estado = self.config.get(guild_id, False)

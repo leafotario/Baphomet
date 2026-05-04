@@ -397,6 +397,7 @@ class WhitelistGroup(app_commands.Group):
         self.cog = cog
 
     @app_commands.command(name="adicionar", description="Adiciona um membro ou cargo à whitelist 🛡️")
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
         usuario="Membro que será imune à expulsão (opcional)",
         cargo="Cargo cujos membros serão imunes à expulsão (opcional)",
@@ -432,6 +433,7 @@ class WhitelistGroup(app_commands.Group):
         await interaction.response.send_message("\n".join(results), ephemeral=True)
 
     @app_commands.command(name="remover", description="Remove um membro ou cargo da whitelist 🗑️")
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
         usuario="Membro a ser removido da whitelist (opcional)",
         cargo="Cargo a ser removido da whitelist (opcional)",
@@ -467,6 +469,7 @@ class WhitelistGroup(app_commands.Group):
         await interaction.response.send_message("\n".join(results), ephemeral=True)
 
     @app_commands.command(name="listar", description="Mostra quem está imune ao prune 📋")
+    @app_commands.checks.has_permissions(administrator=True)
     async def listar(self, interaction: discord.Interaction) -> None:
         entries = await self.cog.repo.get_whitelist(interaction.guild.id)
 

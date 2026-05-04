@@ -52,6 +52,7 @@ class StarboardCog(commands.Cog):
         mural="O canal onde as artes aprovadas serão postadas",
         min_estrelas="Quantidade de ⭐ necessárias (Padrão: 5)"
     )
+    @app_commands.checks.has_permissions(administrator=True)
     async def setup_mural(self, interaction: discord.Interaction, mural: discord.TextChannel, min_estrelas: int = 5):
         config = self.get_guild_config(interaction.guild_id)
         config["mural_channel"] = mural.id
@@ -66,6 +67,7 @@ class StarboardCog(commands.Cog):
         )
 
     @starboard.command(name="add_canal", description="Adiciona um canal para ser monitorado pelo bot.")
+    @app_commands.checks.has_permissions(administrator=True)
     async def add_channel(self, interaction: discord.Interaction, canal: discord.TextChannel):
         config = self.get_guild_config(interaction.guild_id)
         if canal.id in config["monitored_channels"]:
@@ -76,6 +78,7 @@ class StarboardCog(commands.Cog):
         await interaction.response.send_message(f"👁️‍🗨️ **Canal adicionado!** Agora estou monitorando {canal.mention} em busca de estrelas.", ephemeral=True)
 
     @starboard.command(name="remover_canal", description="Para de monitorar um canal específico.")
+    @app_commands.checks.has_permissions(administrator=True)
     async def remove_channel(self, interaction: discord.Interaction, canal: discord.TextChannel):
         config = self.get_guild_config(interaction.guild_id)
         if canal.id in config["monitored_channels"]:
@@ -86,6 +89,7 @@ class StarboardCog(commands.Cog):
             await interaction.response.send_message(f"⚠️ O canal {canal.mention} não estava na lista de monitoramento.", ephemeral=True)
 
     @starboard.command(name="status", description="Mostra as configurações atuais do Mural.")
+    @app_commands.checks.has_permissions(administrator=True)
     async def starboard_status(self, interaction: discord.Interaction):
         config = self.get_guild_config(interaction.guild_id)
         mural = f"<#{config['mural_channel']}>" if config['mural_channel'] else "Não definido"

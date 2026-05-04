@@ -155,6 +155,8 @@ class PunishmentLogs(commands.GroupCog, group_name="logs", group_description="co
     # =========================
 
     @app_commands.command(name="setup", description="define o canal e ativa/desativa os logs de punições")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
         channel="canal onde os logs serão enviados",
         status="true para ativar, false para desativar",
@@ -168,13 +170,6 @@ class PunishmentLogs(commands.GroupCog, group_name="logs", group_description="co
         if interaction.guild is None:
             await interaction.response.send_message(
                 "esse comando só pode ser usado dentro de um servidor.",
-                ephemeral=True,
-            )
-            return
-
-        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message(
-                "você precisa da permissão **administrator** para configurar isso.",
                 ephemeral=True,
             )
             return
@@ -218,12 +213,11 @@ class PunishmentLogs(commands.GroupCog, group_name="logs", group_description="co
         )
 
     @app_commands.command(name="status", description="exibe a configuração atual dos logs de punições")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def status_logs(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
             return await interaction.response.send_message("esse comando só pode ser usado dentro de um servidor.", ephemeral=True)
-
-        if not isinstance(interaction.user, discord.Member) or not interaction.user.guild_permissions.administrator:
-            return await interaction.response.send_message("você precisa da permissão **administrator** para usar isso.", ephemeral=True)
 
         cfg = self._get_config(interaction.guild.id)
         

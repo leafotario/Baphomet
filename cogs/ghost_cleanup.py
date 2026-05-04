@@ -249,6 +249,7 @@ class GhostCleanupCog(commands.Cog):
         description="Exibe a configuração atual do Ghost Cleanup 👻",
     )
     @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     async def status_limpeza_saida(self, interaction: discord.Interaction) -> None:
         minutes = await self.repo.get_config(interaction.guild.id)
         

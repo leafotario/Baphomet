@@ -204,6 +204,7 @@ class AlbumDoDia(commands.Cog):
         )
 
     @app_commands.command(name="aotd_lista", description="Lista todos os álbuns agendados (Admin)")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def listar_fila(self, interaction: discord.Interaction):
         fila = self.carregar_fila()
@@ -221,6 +222,7 @@ class AlbumDoDia(commands.Cog):
 
     @app_commands.command(name="aotd_remover", description="Remove um álbum pelo índice (Admin)")
     @app_commands.describe(indice="Número do álbum na !lista")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def remover(self, interaction: discord.Interaction, indice: int):
         fila = self.carregar_fila()
@@ -234,6 +236,7 @@ class AlbumDoDia(commands.Cog):
         await interaction.response.send_message(f"🗑️ **{removido['nome']}** removido.")
 
     @app_commands.command(name="aotd_testar_album", description="Força o envio do próximo álbum agora (Admin)")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def testar_album(self, interaction: discord.Interaction):
         await self.despachar_album(interaction)
