@@ -91,7 +91,8 @@ class TierListRenderer:
     """
 
     # Canvas em dark mode premium: grafite fosco, nunca preto puro.
-    CANVAS_BG = (20, 20, 20, 255)       # #141414
+    CANVAS_CENTER = (18, 18, 18, 255)   # #121212
+    CANVAS_EDGE = (24, 24, 24, 255)     # #181818
     ROW_BG = (36, 36, 36, 255)          # #242424
     ITEM_BG = (47, 47, 47, 255)         # #2F2F2F
     TEXT = (244, 244, 244, 255)
@@ -113,7 +114,7 @@ class TierListRenderer:
 
     # Medidas base. O layout recalcula quebras de linha e altura final antes
     # de criar a imagem, entao listas grandes expandem verticalmente.
-    OUTER_PADDING = 56
+    OUTER_PADDING = 64
     TITLE_HEIGHT = 116
     FOOTER_HEIGHT = 78
     ROW_GAP = 18
@@ -273,6 +274,34 @@ class TierListRenderer:
             draw.text((x, y + 2), text, font=font, fill=(0, 0, 0, shadow_alpha))
         draw.text((x, y), text, font=font, fill=fill)
 
+    def _create_background(self, width: int, height: int) -> Image.Image:
+        """
+        Renderiza um fundo radial premium em baixa resolucao e reamostra.
+
+        O gradiente parte de #121212 no centro e chega a #181818 nas bordas.
+        A matriz pequena reduz custo de CPU; o resize LANCZOS suaviza a rampa
+        tonal sem depender de bibliotecas externas.
+        """
+        small_w = max(1, width // 4)
+        small_h = max(1, height // 4)
+        cx = (small_w - 1) / 2
+        cy = (small_h - 1) / 2
+        max_dist = max(1.0, math.hypot(cx, cy))
+        pixels: list[tuple[int, int, int, int]] = []
+
+        for y in range(small_h):
+            for x in range(small_w):
+                t = min(1.0, math.hypot(x - cx, y - cy) / max_dist)
+                t = t ** 1.15
+                r = int(self.CANVAS_CENTER[0] + (self.CANVAS_EDGE[0] - self.CANVAS_CENTER[0]) * t)
+                g = int(self.CANVAS_CENTER[1] + (self.CANVAS_EDGE[1] - self.CANVAS_CENTER[1]) * t)
+                b = int(self.CANVAS_CENTER[2] + (self.CANVAS_EDGE[2] - self.CANVAS_CENTER[2]) * t)
+                pixels.append((r, g, b, 255))
+
+        background = Image.new("RGBA", (small_w, small_h))
+        background.putdata(pixels)
+        return background.resize((width, height), Image.Resampling.LANCZOS)
+
     # ============================================================
     #  MASCARAS PILL-SHAPED E SOMBRAS DIFUSAS
     # ============================================================
@@ -353,6 +382,34 @@ class TierListRenderer:
             layer,
             (x1 + offset[0] - blur - max(0, -offset[0]), y1 + offset[1] - blur - max(0, -offset[1])),
         )
+
+    def _draw_item_shadow(
+        self,
+        base: Image.Image,
+        box: tuple[int, int, int, int],
+    ) -> None:
+        """
+        Sombra especifica dos itens, com offset Y positivo e blur 5.
+
+        O item permanece visualmente elevado sobre o trilho, mas a sombra fica
+        contida e organica: uma pilula preta translúcida, deslocada para baixo,
+        borrada por GaussianBlur(radius=5) antes da colagem do chip real.
+        """
+        x1, y1, x2, y2 = box
+        width = x2 - x1
+        height = y2 - y1
+        blur = 5
+        offset_y = 8
+        pad = blur * 3
+        layer = Image.new("RGBA", (width + pad * 2, height + pad * 2 + offset_y), (0, 0, 0, 0))
+        shadow_draw = ImageDraw.Draw(layer, "RGBA")
+        shadow_draw.rounded_rectangle(
+            (pad, pad + offset_y, pad + width, pad + offset_y + height),
+            radius=height // 2,
+            fill=(0, 0, 0, 72),
+        )
+        layer = layer.filter(ImageFilter.GaussianBlur(radius=blur))
+        base.alpha_composite(layer, (x1 - pad, y1 - pad))
 
     def _paste_pill(
         self,
@@ -457,14 +514,7 @@ class TierListRenderer:
         height = y2 - y1
         radius = height // 2
 
-        self._draw_soft_shadow(
-            base,
-            box,
-            radius=radius,
-            offset=(0, 8),
-            blur=20,
-            opacity=58,
-        )
+        self._draw_item_shadow(base, box)
 
         chip = Image.new("RGBA", (width, height), self.ITEM_BG)
         chip.putalpha(self._pill_mask((width, height)))
@@ -534,10 +584,18 @@ class TierListRenderer:
         row_h = row_y2 - row_y1
         label_h = min(self.LABEL_HEIGHT, row_h - self.ROW_PADDING_Y * 2)
         label_w = self.LABEL_WIDTH
-        label_x1 = row_x1 + self.ROW_PADDING_X
+        label_x1 = row_x1
         label_y1 = row_y1 + (row_h - label_h) // 2
         label_box = (label_x1, label_y1, label_x1 + label_w, label_y1 + label_h)
 
+        self._draw_soft_shadow(
+            base,
+            label_box,
+            radius=label_h // 2,
+            offset=(0, 8),
+            blur=18,
+            opacity=70,
+        )
         self._paste_pill(base, label_box, (*tier_color, 255))
 
         draw = ImageDraw.Draw(base, "RGBA")
@@ -682,7 +740,7 @@ class TierListRenderer:
         canvas_w = layout["canvas_w"]
         canvas_h = layout["canvas_h"]
 
-        image = Image.new("RGBA", (canvas_w, canvas_h), self.CANVAS_BG)
+        image = self._create_background(canvas_w, canvas_h)
         draw = ImageDraw.Draw(image, "RGBA")
 
         title_text = re.sub(r"\s+", " ", (title or "Tier List").strip()) or "Tier List"
