@@ -130,6 +130,9 @@ class TierListRenderer:
     ITEM_GAP_X = 12
     ITEM_GAP_Y = 12
     ITEM_THUMB_SIZE = 48
+    IMAGE_ITEM_SIZE = 160
+    IMAGE_ITEM_RADIUS = 18
+    IMAGE_CAPTION_HEIGHT = 46
     FOOTER_TOP_GAP = 50
     FOOTER_AVATAR_TOP_GAP = 18
     FOOTER_AVATAR_SIZE = 63
@@ -532,6 +535,14 @@ class TierListRenderer:
         except Exception as exc:
             raise ValueError(f"imagem corrompida/ilegivel para {item_name}: {exc}") from exc
 
+    def _item_has_image(self, item: "TierItem") -> bool:
+        """A imagem altera o formato visual do item e entra no dry-run."""
+        return bool(getattr(item, "image_bytes", None))
+
+    def _item_display_name(self, item: "TierItem") -> str:
+        """Nome opcional: retorna string vazia quando o item nao tiver legenda."""
+        return re.sub(r"\s+", " ", str(getattr(item, "name", "") or "").strip())
+
     def _draw_image_inside_chip(
         self,
         chip: Image.Image,
@@ -559,6 +570,55 @@ class TierListRenderer:
         chip.paste(fitted, (image_x, image_y), mask=fitted)
         return True
 
+    def _draw_image_square_item(
+        self,
+        base: Image.Image,
+        item: "TierItem",
+        box: tuple[int, int, int, int],
+        *,
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    ) -> None:
+        """Desenha item com imagem como card quadrado, com legenda opcional."""
+        x1, y1, x2, y2 = box
+        width = x2 - x1
+        height = y2 - y1
+        mask = self._rounded_mask((width, height), self.IMAGE_ITEM_RADIUS)
+
+        try:
+            raw = self._safe_open_image(item.image_bytes, self._item_display_name(item) or "item com imagem")
+            card = ImageOps.fit(raw, (width, height), method=Image.Resampling.LANCZOS)
+            card = card.convert("RGBA")
+        except Exception as exc:
+            print(f"[ERRO] Fallback visual para item '{self._item_display_name(item)}': {exc}")
+            card = Image.new("RGBA", (width, height), self.ITEM_BG)
+
+        card.putalpha(mask)
+        draw = ImageDraw.Draw(card, "RGBA")
+        draw.rounded_rectangle(
+            (0, 0, width - 1, height - 1),
+            radius=self.IMAGE_ITEM_RADIUS,
+            outline=self.ITEM_OUTLINE,
+            width=1,
+        )
+
+        caption = self._item_display_name(item)
+        if caption:
+            caption_box = (0, height - self.IMAGE_CAPTION_HEIGHT, width, height)
+            draw.rectangle(caption_box, fill=(8, 13, 15, 178))
+            caption_font = self._fit_font(
+                draw,
+                caption,
+                start_size=getattr(font, "size", 22),
+                max_width=width - 18,
+                min_size=12,
+                bold=True,
+            )
+            clipped = self._clip_text(draw, caption, caption_font, width - 18)
+            tx, ty = self._center_text_position(draw, caption_box, clipped, caption_font)
+            self._draw_text(draw, clipped, (tx, ty), caption_font, self.TEXT, shadow_alpha=120)
+
+        base.paste(card, (x1, y1), mask=card)
+
     def _draw_item_chip(
         self,
         base: Image.Image,
@@ -573,6 +633,14 @@ class TierListRenderer:
         width = x2 - x1
         height = y2 - y1
 
+        if self._item_has_image(item):
+            self._draw_image_square_item(base, item, box, font=font)
+            return
+
+        display_name = self._item_display_name(item)
+        if not display_name:
+            return
+
         chip = Image.new("RGBA", (width, height), self.ITEM_BG)
         chip.putalpha(self._rounded_mask((width, height), self.ITEM_RADIUS))
         draw = ImageDraw.Draw(chip, "RGBA")
@@ -583,16 +651,10 @@ class TierListRenderer:
             width=1,
         )
 
-        has_image = bool(item.image_bytes) and self._draw_image_inside_chip(chip, item, tier_color=tier_color)
+        text_x1 = 14
+        text_x2 = width - 14
 
-        if has_image:
-            text_x1 = 68
-            text_x2 = width - 14
-        else:
-            text_x1 = 14
-            text_x2 = width - 14
-
-        clipped = self._clip_text(draw, item.name, font, max(20, text_x2 - text_x1))
+        clipped = self._clip_text(draw, display_name, font, max(20, text_x2 - text_x1))
         tx, ty = self._center_text_position(draw, (text_x1, 0, text_x2, height), clipped, font)
         self._draw_text(draw, clipped, (tx, ty), font, self.TEXT, shadow_alpha=0)
         base.paste(chip, (x1, y1), mask=chip)
@@ -640,10 +702,8 @@ class TierListRenderer:
         box: tuple[int, int, int, int],
         font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
     ) -> None:
-        draw = ImageDraw.Draw(base, "RGBA")
-        text = "Sem itens ainda"
-        tx, ty = self._center_text_position(draw, box, text, font)
-        self._draw_text(draw, text, (tx, ty), font, self.TEXT_MUTED, shadow_alpha=0)
+        """Tier vazia permanece visualmente limpa, sem texto placeholder."""
+        return
 
     def _resolve_author_name(self, author: object | None, creator_name: str) -> str:
         """Extrai exatamente o nome de usuario da interacao quando disponivel."""
@@ -760,7 +820,25 @@ class TierListRenderer:
         for index, (tier_name, items) in enumerate(tiers_dict.items()):
             item_count = len(items)
             line_count = max(1, math.ceil(item_count / items_per_row))
-            dynamic_items_h = line_count * self.ITEM_HEIGHT + (line_count - 1) * self.ITEM_GAP_Y
+
+            # Cada linha da matriz pode ter altura propria:
+            # - se houver qualquer item com imagem naquela linha, a linha vira quadrada;
+            # - se todos forem texto, conserva o card horizontal original.
+            line_heights: list[int] = []
+            for line_index in range(line_count):
+                line_start = line_index * items_per_row
+                line_end = line_start + items_per_row
+                line_items = items[line_start:line_end]
+                has_image = any(self._item_has_image(item) for item in line_items)
+                line_heights.append(self.IMAGE_ITEM_SIZE if has_image else self.ITEM_HEIGHT)
+
+            line_offsets: list[int] = []
+            accumulated_y = 0
+            for line_height in line_heights:
+                line_offsets.append(accumulated_y)
+                accumulated_y += line_height + self.ITEM_GAP_Y
+
+            dynamic_items_h = sum(line_heights) + max(0, line_count - 1) * self.ITEM_GAP_Y
             row_h = max(
                 self.ROW_HEIGHT_BASE,
                 self.ROW_PADDING_TOP
@@ -773,6 +851,8 @@ class TierListRenderer:
                 "items": items,
                 "color": self.TIER_COLORS[index % len(self.TIER_COLORS)],
                 "line_count": line_count,
+                "line_heights": line_heights,
+                "line_offsets": line_offsets,
                 "row_height": row_h,
                 "row_y": current_y,
                 "row_box": row_box,
@@ -863,13 +943,15 @@ class TierListRenderer:
                     line = item_index // row["items_per_row"]
 
                     # Offset X/Y bidimensional: origem da area de itens +
-                    # salto de slot, onde slot = tamanho do item + gap.
+                    # salto de slot, onde X usa largura fixa e Y soma as alturas
+                    # reais das linhas anteriores para suportar cards quadrados.
                     item_x = items_x + col * (self.ITEM_WIDTH + self.ITEM_GAP_X)
-                    item_y = items_y + line * (self.ITEM_HEIGHT + self.ITEM_GAP_Y)
+                    item_y = items_y + row["line_offsets"][line]
+                    item_h = self.IMAGE_ITEM_SIZE if self._item_has_image(item) else self.ITEM_HEIGHT
                     self._draw_item_chip(
                         image,
                         item,
-                        (item_x, item_y, item_x + self.ITEM_WIDTH, item_y + self.ITEM_HEIGHT),
+                        (item_x, item_y, item_x + self.ITEM_WIDTH, item_y + item_h),
                         tier_color=row["color"],
                         font=item_font,
                     )
@@ -970,10 +1052,10 @@ class AddItemModal(discord.ui.Modal):
 
         self.item_name = discord.ui.TextInput(
             label="Nome do item",
-            placeholder="Exemplo: Pizza, Minecraft, Billie...",
-            min_length=1,
+            placeholder="Opcional: Pizza, Minecraft, Billie...",
+            min_length=0,
             max_length=25,
-            required=True,
+            required=False,
         )
 
         self.image_url = discord.ui.TextInput(
@@ -1067,6 +1149,13 @@ class AddItemModal(discord.ui.Modal):
                 else:
                     print(f"[ERRO] Wikipedia retornou falha total para '{web_search_str}'. Aplicando fallback para texto.")
 
+        if not clean_item and not clean_url and not image_bytes:
+            await interaction.followup.send(
+                "⚠️ Informe um nome ou alguma fonte de imagem para adicionar o item.",
+                ephemeral=True,
+            )
+            return
+
         item = TierItem(
             name=clean_item,
             image_url=clean_url,
@@ -1086,8 +1175,9 @@ class AddItemModal(discord.ui.Modal):
             else ""
         )
 
+        item_label = clean_item or "item com imagem"
         await interaction.followup.send(
-            f"📌 Escolha em qual tier colocar **{discord.utils.escape_markdown(clean_item)}**:{extra}",
+            f"📌 Escolha em qual tier colocar **{discord.utils.escape_markdown(item_label)}**:{extra}",
             view=view,
             ephemeral=True,
         )
@@ -1149,11 +1239,12 @@ class ItemTierSelect(discord.ui.Select):
 
         await self.cog.refresh_panel(session)
 
-        image_badge = " com imagem" if self.item.image_url else ""
+        image_badge = " com imagem" if (self.item.image_url or self.item.image_bytes) else ""
+        item_label = self.item.name or "item com imagem"
 
         await interaction.response.edit_message(
             content=(
-                f"✅ **{discord.utils.escape_markdown(self.item.name)}**{image_badge} "
+                f"✅ **{discord.utils.escape_markdown(item_label)}**{image_badge} "
                 f"foi adicionado em **{selected_tier}**."
             ),
             view=None,
@@ -1237,6 +1328,283 @@ class ItemTierSelectView(discord.ui.View):
         return True
 
 
+class ItemSelectionSelect(discord.ui.Select):
+    """Select paginado que transforma a escolha do usuario em abertura de modal."""
+
+    def __init__(
+        self,
+        view_instance: "ItemSelectionView",
+        page_refs: list[dict],
+    ) -> None:
+        self.view_instance = view_instance
+        self.page_refs = page_refs
+
+        options: list[discord.SelectOption] = []
+        for local_index, ref in enumerate(page_refs):
+            item: TierItem = ref["item"]
+            display_name = view_instance.display_item_name(item)
+            options.append(
+                discord.SelectOption(
+                    label=display_name[:100],
+                    value=str(local_index),
+                    description=f"Tier {ref['tier']} • posição {ref['index'] + 1}"[:100],
+                    emoji="🖼️" if item.image_url or item.image_bytes else "📝",
+                )
+            )
+
+        super().__init__(
+            placeholder="Selecione o item que deseja editar",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        selected_index = int(self.values[0])
+        ref = self.page_refs[selected_index]
+
+        # Select -> Modal:
+        # O usuario nunca digita o nome defeituoso para localizar o item.
+        # Ele escolhe uma referencia exata de tier + indice, e o modal abre
+        # com os dados atuais ja preenchidos.
+        await interaction.response.send_modal(
+            EditItemModal(
+                main_view=self.view_instance.main_view,
+                tier_name=ref["tier"],
+                item_index=ref["index"],
+                item=ref["item"],
+            )
+        )
+
+
+class ItemSelectionView(discord.ui.View):
+    """View efemera que lista todos os itens da sessao em paginas de ate 25."""
+
+    PAGE_SIZE = 25
+
+    def __init__(
+        self,
+        main_view: "TierListControlView",
+        *,
+        page: int = 0,
+    ) -> None:
+        super().__init__(timeout=120)
+        self.main_view = main_view
+        self.cog = main_view.cog
+        self.owner_id = main_view.owner_id
+        self.page = page
+        self.item_refs = self.collect_item_refs()
+        self.total_pages = max(1, math.ceil(len(self.item_refs) / self.PAGE_SIZE))
+        self.page = max(0, min(self.page, self.total_pages - 1))
+
+        page_start = self.page * self.PAGE_SIZE
+        page_end = page_start + self.PAGE_SIZE
+        page_refs = self.item_refs[page_start:page_end]
+
+        if page_refs:
+            self.add_item(ItemSelectionSelect(self, page_refs))
+
+        self.previous_page.disabled = self.page <= 0
+        self.next_page.disabled = self.page >= self.total_pages - 1
+
+    def collect_item_refs(self) -> list[dict]:
+        session = self.cog.sessions.get(self.owner_id)
+        if not session:
+            return []
+
+        refs: list[dict] = []
+        for tier in session.tiers:
+            for index, item in enumerate(session.items.get(tier, [])):
+                refs.append(
+                    {
+                        "tier": tier,
+                        "index": index,
+                        "item": item,
+                    }
+                )
+        return refs
+
+    def display_item_name(self, item: TierItem) -> str:
+        name = re.sub(r"\s+", " ", (item.name or "").strip())
+        if name:
+            return name
+        if item.image_url or item.image_bytes:
+            return "item com imagem"
+        return "item sem nome"
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "❌ Só quem criou a tier list pode usar esse menu.",
+                ephemeral=True,
+            )
+            return False
+
+        if self.owner_id not in self.cog.sessions:
+            await interaction.response.send_message(
+                "❌ Essa sessão expirou ou foi cancelada.",
+                ephemeral=True,
+            )
+            return False
+
+        return True
+
+    @discord.ui.button(label="Anterior", emoji="⬅️", style=discord.ButtonStyle.secondary)
+    async def previous_page(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.edit_message(
+            content=f"✏️ Selecione o item para editar. Página {self.page}/{self.total_pages}",
+            view=ItemSelectionView(self.main_view, page=self.page - 1),
+        )
+
+    @discord.ui.button(label="Próxima", emoji="➡️", style=discord.ButtonStyle.secondary)
+    async def next_page(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.edit_message(
+            content=f"✏️ Selecione o item para editar. Página {self.page + 2}/{self.total_pages}",
+            view=ItemSelectionView(self.main_view, page=self.page + 1),
+        )
+
+
+class EditItemModal(discord.ui.Modal):
+    """Modal preenchido com os dados atuais do item selecionado."""
+
+    def __init__(
+        self,
+        *,
+        main_view: "TierListControlView",
+        tier_name: str,
+        item_index: int,
+        item: TierItem,
+    ) -> None:
+        super().__init__(title="Editar Item")
+        self.main_view = main_view
+        self.tier_name = tier_name
+        self.item_index = item_index
+        self.item = item
+
+        self.item_name = discord.ui.TextInput(
+            label="Nome do item",
+            placeholder="Opcional",
+            default=item.name or "",
+            min_length=0,
+            max_length=25,
+            required=False,
+        )
+        default_url = item.image_url if item.image_url and main_view.cog.looks_like_url(item.image_url) else ""
+        self.image_url = discord.ui.TextInput(
+            label="URL da imagem",
+            placeholder="Opcional: deixe vazio para remover/trocar por texto",
+            default=default_url,
+            min_length=0,
+            max_length=500,
+            required=False,
+        )
+        self.target_tier = discord.ui.TextInput(
+            label="Tier",
+            placeholder="Exemplo: S, A, B...",
+            default=tier_name,
+            min_length=1,
+            max_length=20,
+            required=True,
+        )
+
+        self.add_item(self.item_name)
+        self.add_item(self.image_url)
+        self.add_item(self.target_tier)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        # Defer obrigatório: mutação + possível hidratação + Pillow podem passar
+        # do tempo limite de resposta inicial do Discord.
+        await interaction.response.defer(ephemeral=True)
+
+        session = self.main_view.cog.sessions.get(self.main_view.owner_id)
+        if not session:
+            await interaction.followup.send("❌ Sessão expirada.", ephemeral=True)
+            return
+
+        old_tier = self.tier_name
+        new_tier = self.main_view.cog.clean_text(str(self.target_tier.value), max_length=20)
+        new_name = self.main_view.cog.clean_text(str(self.item_name.value), max_length=25)
+        new_url = str(self.image_url.value).strip() or None
+
+        if new_tier not in session.items:
+            await interaction.followup.send("❌ Essa tier não existe na sessão atual.", ephemeral=True)
+            return
+
+        if new_url and not self.main_view.cog.looks_like_url(new_url):
+            await interaction.followup.send("❌ A URL informada não parece válida.", ephemeral=True)
+            return
+
+        if not new_name and not new_url and not self.item.image_bytes:
+            await interaction.followup.send(
+                "⚠️ O item precisa ter um nome ou uma imagem.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            current_item = session.items[old_tier][self.item_index]
+        except (KeyError, IndexError):
+            await interaction.followup.send(
+                "❌ Não encontrei esse item na sessão atual. Abra o menu de edição novamente.",
+                ephemeral=True,
+            )
+            return
+
+        if current_item is not self.item:
+            await interaction.followup.send(
+                "❌ A lista mudou desde que você abriu o menu. Abra o menu de edição novamente.",
+                ephemeral=True,
+            )
+            return
+
+        # Snapshot reversivel: se refresh/render falhar, o estado volta ao ponto
+        # anterior e a sessão não fica parcialmente corrompida.
+        old_name = current_item.name
+        old_url = current_item.image_url
+        old_bytes = current_item.image_bytes
+        old_valid_url = old_url if old_url and self.main_view.cog.looks_like_url(old_url) else None
+        moved_item: TierItem | None = None
+
+        try:
+            current_item.name = new_name
+            current_item.image_url = new_url
+            if new_url != old_valid_url:
+                current_item.image_bytes = None
+
+            if new_tier != old_tier:
+                moved_item = session.items[old_tier].pop(self.item_index)
+                session.items[new_tier].append(moved_item)
+
+            await self.main_view.refresh_after_item_edit(interaction, session)
+
+            await interaction.followup.send("✅ Item editado com sucesso.", ephemeral=True)
+
+        except Exception:
+            # Rollback completo: restaura campos e recoloca o item na tier/indice
+            # original caso ele tenha sido movido antes da falha.
+            rollback_item = moved_item or current_item
+            if moved_item is not None:
+                try:
+                    session.items[new_tier].remove(moved_item)
+                except (KeyError, ValueError):
+                    pass
+                session.items[old_tier].insert(self.item_index, moved_item)
+
+            rollback_item.name = old_name
+            rollback_item.image_url = old_url
+            rollback_item.image_bytes = old_bytes
+
+            await interaction.followup.send("❌ Falha ao editar o item.", ephemeral=True)
+
+
 class TierListControlView(discord.ui.View):
     def __init__(self, cog: TierListCog, owner_id: int) -> None:
         super().__init__(timeout=15 * 60)
@@ -1282,6 +1650,60 @@ class TierListControlView(discord.ui.View):
                 pass
 
         self.stop()
+
+    async def refresh_after_item_edit(
+        self,
+        interaction: discord.Interaction,
+        session: TierListSession,
+    ) -> None:
+        """
+        Atualiza a mensagem principal depois da mutacao do item.
+
+        A fonte da verdade continua sendo `session.items`. Para a imagem, criamos
+        um snapshot descartavel e hidratado; assim bytes temporarios de download
+        nao poluem a sessao em memoria.
+        """
+        if not session.panel_message:
+            return
+
+        tiers_snapshot: OrderedDictType[str, list[TierItem]] = OrderedDict(
+            (
+                tier,
+                [
+                    TierItem(
+                        name=item.name,
+                        image_url=item.image_url,
+                        image_bytes=item.image_bytes,
+                    )
+                    for item in session.items.get(tier, [])
+                ],
+            )
+            for tier in session.tiers
+        )
+
+        hydrated_snapshot = await self.cog.hydrate_tier_images(tiers_snapshot)
+
+        guild_icon_bytes = None
+        if interaction.guild and interaction.guild.icon:
+            try:
+                guild_icon_bytes = await interaction.guild.icon.replace(format="png", size=128).read()
+            except (discord.HTTPException, ValueError, TypeError):
+                guild_icon_bytes = None
+
+        image_buffer = await asyncio.to_thread(
+            self.cog.renderer.generate_tierlist_image,
+            session.title,
+            hydrated_snapshot,
+            author=interaction.user,
+            guild_icon_bytes=guild_icon_bytes,
+        )
+
+        preview_file = discord.File(image_buffer, filename="tierlist_preview.png")
+        await session.panel_message.edit(
+            embed=self.cog.build_panel_embed(session),
+            attachments=[preview_file],
+            view=self,
+        )
 
     @discord.ui.button(
         label="Editar Título",
@@ -1361,6 +1783,40 @@ class TierListControlView(discord.ui.View):
         )
 
     @discord.ui.button(
+        label="Editar Item",
+        emoji="✏️",
+        style=discord.ButtonStyle.secondary,
+    )
+    async def edit_item(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        session = self.cog.sessions.get(self.owner_id)
+
+        if session is None:
+            await interaction.response.send_message(
+                "❌ Essa sessão expirou ou foi cancelada.",
+                ephemeral=True,
+            )
+            return
+
+        total_items = sum(len(items) for items in session.items.values())
+        if total_items <= 0:
+            await interaction.response.send_message(
+                "⚠️ Não há itens para editar.",
+                ephemeral=True,
+            )
+            return
+
+        selection_view = ItemSelectionView(self)
+        await interaction.response.send_message(
+            f"✏️ Selecione o item para editar. Página {selection_view.page + 1}/{selection_view.total_pages}",
+            view=selection_view,
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
         label="Gerar Imagem",
         emoji="🖼️",
         style=discord.ButtonStyle.secondary,
@@ -1414,12 +1870,20 @@ class TierListControlView(discord.ui.View):
             # Download assíncrono das URLs.
             hydrated_snapshot = await self.cog.hydrate_tier_images(tiers_snapshot)
 
+            guild_icon_bytes = None
+            if interaction.guild and interaction.guild.icon:
+                try:
+                    guild_icon_bytes = await interaction.guild.icon.replace(format="png", size=128).read()
+                except (discord.HTTPException, ValueError, TypeError):
+                    guild_icon_bytes = None
+
             # Pillow fora do event loop.
             image_buffer = await asyncio.to_thread(
                 self.cog.renderer.generate_tierlist_image,
                 title_snapshot,
                 hydrated_snapshot,
                 author=interaction.user,
+                guild_icon_bytes=guild_icon_bytes,
             )
 
         except Exception:
@@ -1920,8 +2384,10 @@ class TierListCog(
             preview_parts: list[str] = []
 
             for item in items[:8]:
-                icon = "🖼️" if item.image_url else "📝"
-                preview_parts.append(f"{icon} {item.name}")
+                has_image = bool(item.image_url or item.image_bytes)
+                icon = "🖼️" if has_image else "📝"
+                item_label = item.name or "item com imagem"
+                preview_parts.append(f"{icon} {item_label}")
 
             preview = ", ".join(preview_parts)
 
