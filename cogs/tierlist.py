@@ -90,50 +90,55 @@ class TierListRenderer:
     ou Wikipedia continua fora daqui e chega como `TierItem.image_bytes`.
     """
 
-    # Canvas em dark mode premium: grafite fosco, nunca preto puro.
-    CANVAS_CENTER = (18, 18, 18, 255)   # #121212
-    CANVAS_EDGE = (24, 24, 24, 255)     # #181818
-    ROW_BG = (36, 36, 36, 255)          # #242424
-    ITEM_BG = (47, 47, 47, 255)         # #2F2F2F
-    TEXT = (244, 244, 244, 255)
-    TEXT_MUTED = (160, 160, 160, 255)
-    TEXT_SUBTLE = (118, 118, 118, 255)
-    OUTLINE = (54, 54, 54, 255)
+    CANVAS_BG = (17, 17, 25, 255)       # #111119
+    ROW_BG = (29, 29, 37, 255)          # #1D1D25
+    ITEM_BG = (48, 55, 70, 255)         # #303746
+    ITEM_OUTLINE = (74, 82, 111, 255)   # #4A526F
+    TEXT = (246, 247, 250, 255)
+    TEXT_DARK = (17, 17, 25, 255)
+    TEXT_MUTED = (174, 183, 196, 255)
+    FOOTER_LINE = (61, 62, 70, 255)
 
-    # Cores de tier dessaturadas: funcionam como sinalizacao, nao como neon.
+    # Cores extraidas do mock anexado.
     TIER_COLORS = [
-        (143, 57, 71),    # S - carmesim/vinho sobrio.
-        (169, 105, 62),   # A - laranja queimado.
-        (177, 151, 82),   # B - ocre/dourado fosco.
-        (103, 134, 111),  # C - verde salvia.
-        (78, 108, 144),   # D - azul aco.
-        (116, 98, 143),   # Extra - ameixa dessaturado.
-        (145, 89, 121),   # Extra - malva fechado.
-        (87, 133, 137),   # Extra - teal sobrio.
+        (255, 67, 88),
+        (255, 164, 5),
+        (236, 208, 101),
+        (115, 229, 146),
+        (107, 155, 242),
+        (153, 126, 246),
+        (235, 111, 184),
+        (86, 190, 205),
     ]
 
-    # Medidas base. O layout recalcula quebras de linha e altura final antes
-    # de criar a imagem, entao listas grandes expandem verticalmente.
-    OUTER_PADDING = 64
-    TITLE_HEIGHT = 116
-    FOOTER_HEIGHT = 78
-    ROW_GAP = 18
-    ROW_PADDING_X = 18
-    ROW_PADDING_Y = 20
-    LABEL_COLUMN_WIDTH = 138
-    LABEL_WIDTH = 108
-    LABEL_HEIGHT = 76
+    CANVAS_WIDTH = 800
+    GRID_X = 40
+    GRID_RIGHT = 760
+    TITLE_TOP = 28
+    ROWS_TOP = 160
+    ROW_HEIGHT_BASE = 111
+    ROW_GAP = 11
+    ROW_RADIUS = 18
+    ROW_PADDING_TOP = 21
+    ROW_PADDING_BOTTOM = 20
+    LABEL_WIDTH = 162
     LABEL_TO_ITEMS_GAP = 18
-    ITEM_WIDTH = 178
-    ITEM_HEIGHT = 76
-    ITEM_GAP_X = 14
-    ITEM_GAP_Y = 14
-    ITEM_IMAGE_SIZE = 54
+    ITEM_WIDTH = 160
+    ITEM_HEIGHT = 70
+    ITEM_RADIUS = 12
+    ITEM_GAP_X = 12
+    ITEM_GAP_Y = 12
+    ITEM_THUMB_SIZE = 48
+    FOOTER_TOP_GAP = 50
+    FOOTER_AVATAR_TOP_GAP = 18
+    FOOTER_AVATAR_SIZE = 63
+    FOOTER_TEXT_X = 129
+    FOOTER_BOTTOM = 30
 
     def __init__(self, font_path: str | None = None) -> None:
         self.font_path = font_path
         self._font_cache: dict[tuple[int, bool], ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
-        self._mask_cache: dict[tuple[str, int, int], Image.Image] = {}
+        self._mask_cache: dict[tuple, Image.Image] = {}
         self._warned_font_fallback = False
 
     # ============================================================
@@ -162,8 +167,8 @@ class TierListRenderer:
 
         if bold:
             candidates.extend([
-                str(font_dir / "Montserrat-Black.ttf"),
                 str(font_dir / "Poppins-Bold.ttf"),
+                str(font_dir / "Montserrat-Black.ttf"),
                 "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
                 "arialbd.ttf",
             ])
@@ -275,32 +280,8 @@ class TierListRenderer:
         draw.text((x, y), text, font=font, fill=fill)
 
     def _create_background(self, width: int, height: int) -> Image.Image:
-        """
-        Renderiza um fundo radial premium em baixa resolucao e reamostra.
-
-        O gradiente parte de #121212 no centro e chega a #181818 nas bordas.
-        A matriz pequena reduz custo de CPU; o resize LANCZOS suaviza a rampa
-        tonal sem depender de bibliotecas externas.
-        """
-        small_w = max(1, width // 4)
-        small_h = max(1, height // 4)
-        cx = (small_w - 1) / 2
-        cy = (small_h - 1) / 2
-        max_dist = max(1.0, math.hypot(cx, cy))
-        pixels: list[tuple[int, int, int, int]] = []
-
-        for y in range(small_h):
-            for x in range(small_w):
-                t = min(1.0, math.hypot(x - cx, y - cy) / max_dist)
-                t = t ** 1.15
-                r = int(self.CANVAS_CENTER[0] + (self.CANVAS_EDGE[0] - self.CANVAS_CENTER[0]) * t)
-                g = int(self.CANVAS_CENTER[1] + (self.CANVAS_EDGE[1] - self.CANVAS_CENTER[1]) * t)
-                b = int(self.CANVAS_CENTER[2] + (self.CANVAS_EDGE[2] - self.CANVAS_CENTER[2]) * t)
-                pixels.append((r, g, b, 255))
-
-        background = Image.new("RGBA", (small_w, small_h))
-        background.putdata(pixels)
-        return background.resize((width, height), Image.Resampling.LANCZOS)
+        """Cria o fundo solido do mock 1:1, sem gradientes ou textura."""
+        return Image.new("RGBA", (width, height), self.CANVAS_BG)
 
     # ============================================================
     #  MASCARAS PILL-SHAPED E SOMBRAS DIFUSAS
@@ -344,6 +325,47 @@ class TierListRenderer:
         mask_hi = Image.new("L", (hi, hi), 0)
         ImageDraw.Draw(mask_hi).ellipse((0, 0, hi - 1, hi - 1), fill=255)
         mask = mask_hi.resize((diameter, diameter), Image.Resampling.LANCZOS)
+        self._mask_cache[key] = mask
+        return mask.copy()
+
+    def _rounded_mask(self, size: tuple[int, int], radius: int) -> Image.Image:
+        """Mascara anti-aliased para cards arredondados do item."""
+        width, height = size
+        key = ("round", width, height, radius)
+        cached = self._mask_cache.get(key)
+        if cached is not None:
+            return cached.copy()
+
+        scale = 3
+        hi_w, hi_h = width * scale, height * scale
+        mask_hi = Image.new("L", (hi_w, hi_h), 0)
+        ImageDraw.Draw(mask_hi).rounded_rectangle(
+            (0, 0, hi_w - 1, hi_h - 1),
+            radius=radius * scale,
+            fill=255,
+        )
+        mask = mask_hi.resize((width, height), Image.Resampling.LANCZOS)
+        self._mask_cache[key] = mask
+        return mask.copy()
+
+    def _left_round_mask(self, size: tuple[int, int], radius: int) -> Image.Image:
+        """Mascara com apenas os cantos esquerdos arredondados, igual ao label."""
+        width, height = size
+        key = ("left_round", width, height, radius)
+        cached = self._mask_cache.get(key)
+        if cached is not None:
+            return cached.copy()
+
+        scale = 3
+        hi_w, hi_h = width * scale, height * scale
+        hi_r = radius * scale
+        mask_hi = Image.new("L", (hi_w, hi_h), 0)
+        draw = ImageDraw.Draw(mask_hi)
+        draw.rectangle((hi_r, 0, hi_w, hi_h), fill=255)
+        draw.rectangle((0, hi_r, hi_r, hi_h - hi_r), fill=255)
+        draw.pieslice((0, 0, hi_r * 2, hi_r * 2), 180, 270, fill=255)
+        draw.pieslice((0, hi_h - hi_r * 2, hi_r * 2, hi_h), 90, 180, fill=255)
+        mask = mask_hi.resize((width, height), Image.Resampling.LANCZOS)
         self._mask_cache[key] = mask
         return mask.copy()
 
@@ -439,6 +461,50 @@ class TierListRenderer:
 
         base.paste(layer, (x1, y1), mask=layer)
 
+    def _paste_rounded_rect(
+        self,
+        base: Image.Image,
+        box: tuple[int, int, int, int],
+        fill: tuple[int, int, int, int],
+        *,
+        radius: int,
+        outline: tuple[int, int, int, int] | None = None,
+        outline_width: int = 1,
+    ) -> None:
+        x1, y1, x2, y2 = box
+        width = x2 - x1
+        height = y2 - y1
+        mask = self._rounded_mask((width, height), radius)
+        layer = Image.new("RGBA", (width, height), fill)
+        layer.putalpha(mask)
+
+        if outline is not None and outline_width > 0:
+            draw = ImageDraw.Draw(layer, "RGBA")
+            draw.rounded_rectangle(
+                (0, 0, width - 1, height - 1),
+                radius=radius,
+                outline=outline,
+                width=outline_width,
+            )
+
+        base.paste(layer, (x1, y1), mask=layer)
+
+    def _paste_left_round_rect(
+        self,
+        base: Image.Image,
+        box: tuple[int, int, int, int],
+        fill: tuple[int, int, int, int],
+        *,
+        radius: int,
+    ) -> None:
+        x1, y1, x2, y2 = box
+        width = x2 - x1
+        height = y2 - y1
+        mask = self._left_round_mask((width, height), radius)
+        layer = Image.new("RGBA", (width, height), fill)
+        layer.putalpha(mask)
+        base.paste(layer, (x1, y1), mask=layer)
+
     # ============================================================
     #  IMAGENS E CHIPS DE ITENS
     # ============================================================
@@ -472,31 +538,24 @@ class TierListRenderer:
         *,
         tier_color: tuple[int, int, int],
     ) -> bool:
-        """Recorta imagem em circulo e cola dentro do chip. Retorna False em falha."""
+        """Recorta imagem em card arredondado e cola dentro do item."""
         image_x = 11
-        image_y = (self.ITEM_HEIGHT - self.ITEM_IMAGE_SIZE) // 2
+        image_y = (self.ITEM_HEIGHT - self.ITEM_THUMB_SIZE) // 2
 
         try:
             raw = self._safe_open_image(item.image_bytes, item.name)
             fitted = ImageOps.fit(
                 raw,
-                (self.ITEM_IMAGE_SIZE, self.ITEM_IMAGE_SIZE),
+                (self.ITEM_THUMB_SIZE, self.ITEM_THUMB_SIZE),
                 method=Image.Resampling.LANCZOS,
             )
         except Exception as exc:
             print(f"[ERRO] Fallback visual para item '{item.name}': {exc}")
             return False
 
-        mask = self._circle_mask(self.ITEM_IMAGE_SIZE)
+        mask = self._rounded_mask((self.ITEM_THUMB_SIZE, self.ITEM_THUMB_SIZE), 9)
         fitted.putalpha(mask)
         chip.paste(fitted, (image_x, image_y), mask=fitted)
-
-        draw = ImageDraw.Draw(chip, "RGBA")
-        draw.ellipse(
-            (image_x, image_y, image_x + self.ITEM_IMAGE_SIZE - 1, image_y + self.ITEM_IMAGE_SIZE - 1),
-            outline=(*tier_color, 185),
-            width=2,
-        )
         return True
 
     def _draw_item_chip(
@@ -508,45 +567,33 @@ class TierListRenderer:
         tier_color: tuple[int, int, int],
         font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
     ) -> None:
-        """Desenha um item como chip pill-shaped com sombra difusa subjacente."""
+        """Desenha o card de item 160x70 do mock, com borda azulada sutil."""
         x1, y1, x2, y2 = box
         width = x2 - x1
         height = y2 - y1
-        radius = height // 2
-
-        self._draw_item_shadow(base, box)
 
         chip = Image.new("RGBA", (width, height), self.ITEM_BG)
-        chip.putalpha(self._pill_mask((width, height)))
+        chip.putalpha(self._rounded_mask((width, height), self.ITEM_RADIUS))
         draw = ImageDraw.Draw(chip, "RGBA")
         draw.rounded_rectangle(
             (0, 0, width - 1, height - 1),
-            radius=radius,
-            outline=self.OUTLINE,
+            radius=self.ITEM_RADIUS,
+            outline=self.ITEM_OUTLINE,
             width=1,
         )
 
         has_image = bool(item.image_bytes) and self._draw_image_inside_chip(chip, item, tier_color=tier_color)
 
         if has_image:
-            text_x1 = 76
-            text_x2 = width - 16
+            text_x1 = 68
+            text_x2 = width - 14
         else:
-            # Para itens de texto, uma barra-pilula discreta usa a cor da tier
-            # sem transformar o chip em botao chamativo.
-            accent_h = 38
-            accent_y = (height - accent_h) // 2
-            draw.rounded_rectangle(
-                (13, accent_y, 19, accent_y + accent_h),
-                radius=3,
-                fill=(*tier_color, 220),
-            )
-            text_x1 = 30
-            text_x2 = width - 18
+            text_x1 = 14
+            text_x2 = width - 14
 
         clipped = self._clip_text(draw, item.name, font, max(20, text_x2 - text_x1))
         tx, ty = self._center_text_position(draw, (text_x1, 0, text_x2, height), clipped, font)
-        self._draw_text(draw, clipped, (tx, ty), font, self.TEXT, shadow_alpha=70)
+        self._draw_text(draw, clipped, (tx, ty), font, self.TEXT, shadow_alpha=0)
         base.paste(chip, (x1, y1), mask=chip)
 
     # ============================================================
@@ -558,18 +605,8 @@ class TierListRenderer:
         base: Image.Image,
         box: tuple[int, int, int, int],
     ) -> None:
-        """Desenha o container da tier como uma pilula gigante."""
-        x1, y1, x2, y2 = box
-        radius = (y2 - y1) // 2
-        self._draw_soft_shadow(
-            base,
-            box,
-            radius=radius,
-            offset=(0, 12),
-            blur=34,
-            opacity=46,
-        )
-        self._paste_pill(base, box, self.ROW_BG, outline=(48, 48, 48, 255), outline_width=1)
+        """Desenha o trilho escuro com raio fixo igual ao mock."""
+        self._paste_rounded_rect(base, box, self.ROW_BG, radius=self.ROW_RADIUS)
 
     def _draw_tier_label(
         self,
@@ -579,33 +616,19 @@ class TierListRenderer:
         tier_color: tuple[int, int, int],
         font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
     ) -> None:
-        """Label da tier em formato de pilula, ancorada no lado esquerdo."""
+        """Label colorido com cantos esquerdos arredondados e direita reta."""
         row_x1, row_y1, _, row_y2 = row_box
-        row_h = row_y2 - row_y1
-        label_h = min(self.LABEL_HEIGHT, row_h - self.ROW_PADDING_Y * 2)
-        label_w = self.LABEL_WIDTH
-        label_x1 = row_x1
-        label_y1 = row_y1 + (row_h - label_h) // 2
-        label_box = (label_x1, label_y1, label_x1 + label_w, label_y1 + label_h)
-
-        self._draw_soft_shadow(
-            base,
-            label_box,
-            radius=label_h // 2,
-            offset=(0, 8),
-            blur=18,
-            opacity=70,
-        )
-        self._paste_pill(base, label_box, (*tier_color, 255))
+        label_box = (row_x1, row_y1, row_x1 + self.LABEL_WIDTH, row_y2)
+        self._paste_left_round_rect(base, label_box, (*tier_color, 255), radius=self.ROW_RADIUS)
 
         draw = ImageDraw.Draw(base, "RGBA")
-        label_text = re.sub(r"\s+", "", (tier_name or "?").strip())[:5] or "?"
+        label_text = re.sub(r"\s+", "", (tier_name or "?").strip())[:3] or "?"
         label_font = font
-        while self._text_size(draw, label_text, label_font)[0] > label_w - 24 and getattr(label_font, "size", 18) > 18:
+        while self._text_size(draw, label_text, label_font)[0] > self.LABEL_WIDTH - 24 and getattr(label_font, "size", 18) > 18:
             label_font = self._font(getattr(label_font, "size", 42) - 2, bold=True)
 
         tx, ty = self._center_text_position(draw, label_box, label_text, label_font)
-        self._draw_text(draw, label_text, (tx, ty), label_font, self.TEXT, shadow_alpha=95)
+        self._draw_text(draw, label_text, (tx, ty), label_font, self.TEXT_DARK, shadow_alpha=0)
 
     def _draw_empty_state(
         self,
@@ -614,9 +637,9 @@ class TierListRenderer:
         font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
     ) -> None:
         draw = ImageDraw.Draw(base, "RGBA")
-        text = "Sem itens"
+        text = "Sem itens ainda"
         tx, ty = self._center_text_position(draw, box, text, font)
-        self._draw_text(draw, text, (tx, ty), font, self.TEXT_SUBTLE, shadow_alpha=35)
+        self._draw_text(draw, text, (tx, ty), font, self.TEXT_MUTED, shadow_alpha=0)
 
     def _resolve_author_name(self, author: object | None, creator_name: str) -> str:
         """Extrai exatamente o nome de usuario da interacao quando disponivel."""
@@ -633,27 +656,70 @@ class TierListRenderer:
         base: Image.Image,
         *,
         usuario_autor: str,
+        avatar_bytes: bytes | None,
     ) -> None:
-        """Bloco inviolavel do branding permitido no canvas."""
+        """Desenha o footer do mock: linha, avatar circular e assinatura."""
         draw = ImageDraw.Draw(base, "RGBA")
-        data_atual = datetime.now().strftime("%d/%m/%Y")
-        footer_text = f"Criado com Baphomet | Feito por @{usuario_autor} | {data_atual}"
+        data_atual = datetime.now().strftime("%d/%m/%Y %H:%M")
+        footer_text = f"Gerado por Baphomet  •  Criado por @{usuario_autor}  •  {data_atual}"
+        line_y = base.height - self.FOOTER_BOTTOM - self.FOOTER_AVATAR_SIZE - self.FOOTER_AVATAR_TOP_GAP
+        avatar_y = line_y + self.FOOTER_AVATAR_TOP_GAP
+        avatar_box = (self.GRID_X, avatar_y, self.GRID_X + self.FOOTER_AVATAR_SIZE, avatar_y + self.FOOTER_AVATAR_SIZE)
+
+        draw.line((self.GRID_X, line_y, self.GRID_RIGHT, line_y), fill=self.FOOTER_LINE, width=2)
+        self._draw_footer_avatar(base, avatar_box, avatar_bytes=avatar_bytes, usuario_autor=usuario_autor)
+
         footer_box = (
-            self.OUTER_PADDING,
-            base.height - self.OUTER_PADDING - self.FOOTER_HEIGHT,
-            base.width - self.OUTER_PADDING,
-            base.height - self.OUTER_PADDING,
+            self.FOOTER_TEXT_X,
+            avatar_y,
+            self.GRID_RIGHT,
+            avatar_y + self.FOOTER_AVATAR_SIZE,
         )
         footer_font = self._fit_font(
             draw,
             footer_text,
             start_size=18,
             max_width=footer_box[2] - footer_box[0],
-            min_size=11,
-            bold=False,
+            min_size=12,
+            bold=True,
         )
-        tx, ty = self._center_text_position(draw, footer_box, footer_text, footer_font)
+        _, ty = self._center_text_position(draw, footer_box, footer_text, footer_font)
+        tx = footer_box[0]
         self._draw_text(draw, footer_text, (tx, ty), footer_font, self.TEXT_MUTED, shadow_alpha=25)
+
+    def _draw_footer_avatar(
+        self,
+        base: Image.Image,
+        box: tuple[int, int, int, int],
+        *,
+        avatar_bytes: bytes | None,
+        usuario_autor: str,
+    ) -> None:
+        """Usa bytes ja recebidos pela chamada ou gera fallback local, sem rede."""
+        x1, y1, x2, y2 = box
+        size = x2 - x1
+        mask = self._circle_mask(size)
+
+        if avatar_bytes:
+            try:
+                raw = self._safe_open_image(avatar_bytes, "avatar do autor")
+                avatar = ImageOps.fit(raw, (size, size), method=Image.Resampling.LANCZOS)
+                avatar.putalpha(mask)
+                base.paste(avatar, (x1, y1), mask=avatar)
+                return
+            except Exception:
+                pass
+
+        layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        avatar_draw = ImageDraw.Draw(layer, "RGBA")
+        avatar_draw.ellipse((0, 0, size - 1, size - 1), fill=(70, 76, 92, 255))
+        avatar_draw.ellipse((4, 4, size - 5, size - 5), fill=(106, 115, 137, 255))
+        initial = (usuario_autor[:1] or "B").upper()
+        font = self._font(26, bold=True)
+        tx, ty = self._center_text_position(avatar_draw, (0, 0, size, size), initial, font)
+        self._draw_text(avatar_draw, initial, (tx, ty), font, self.TEXT, shadow_alpha=0)
+        layer.putalpha(mask)
+        base.paste(layer, (x1, y1), mask=layer)
 
     # ============================================================
     #  LAYOUT RESPONSIVO E RENDERIZACAO FINAL
@@ -662,43 +728,33 @@ class TierListRenderer:
     def calculate_tierlist_dimensions(
         self,
         tiers_dict: dict,
-        min_width: int = 900,
-        max_width: int = 1920,
+        min_width: int = 800,
+        max_width: int = 800,
     ) -> dict:
         """
         Calcula a matriz visual antes de instanciar Image.new().
 
-        1. Estima uma largura ideal com ate 8 itens por linha.
-        2. Calcula quantos chips cabem na area real de itens.
-        3. Para cada tier, calcula o numero de linhas necessarias.
-        4. Soma altura de rows + gaps + titulo + rodape + padding global.
+        1. Mantem largura 800px, igual ao mock anexado.
+        2. Calcula quantos cards 160x70 cabem no trilho util.
+        3. Expande cada tier verticalmente quando os cards quebram linha.
+        4. Soma grid + footer para preservar a proporcao 1:1 quando ha 5 tiers.
         """
-        max_items = max((len(items) for items in tiers_dict.values()), default=1)
-        target_per_line = max(1, min(8, max_items))
-        ideal_width = (
-            self.OUTER_PADDING * 2
-            + self.ROW_PADDING_X * 2
-            + self.LABEL_COLUMN_WIDTH
-            + self.LABEL_TO_ITEMS_GAP
-            + target_per_line * self.ITEM_WIDTH
-            + (target_per_line - 1) * self.ITEM_GAP_X
-        )
-        canvas_w = max(min_width, min(max_width, ideal_width))
-
-        items_area_w = (
-            canvas_w
-            - self.OUTER_PADDING * 2
-            - self.ROW_PADDING_X * 2
-            - self.LABEL_COLUMN_WIDTH
-            - self.LABEL_TO_ITEMS_GAP
-        )
+        canvas_w = max(min_width, min(max_width, self.CANVAS_WIDTH))
+        items_x = self.GRID_X + self.LABEL_WIDTH + self.LABEL_TO_ITEMS_GAP
+        items_right = self.GRID_RIGHT - 22
+        items_area_w = max(1, items_right - items_x)
         per_line = max(1, math.floor((items_area_w + self.ITEM_GAP_X) / (self.ITEM_WIDTH + self.ITEM_GAP_X)))
 
         row_layouts: list[dict] = []
         for index, (tier_name, items) in enumerate(tiers_dict.items()):
             item_count = len(items)
             line_count = max(1, math.ceil(item_count / per_line))
-            row_h = self.ROW_PADDING_Y * 2 + line_count * self.ITEM_HEIGHT + (line_count - 1) * self.ITEM_GAP_Y
+            row_h = (
+                self.ROW_PADDING_TOP
+                + line_count * self.ITEM_HEIGHT
+                + (line_count - 1) * self.ITEM_GAP_Y
+                + self.ROW_PADDING_BOTTOM
+            )
             row_layouts.append({
                 "tier": tier_name,
                 "items": items,
@@ -710,13 +766,17 @@ class TierListRenderer:
 
         rows_h = sum(row["row_height"] for row in row_layouts)
         gaps_h = max(0, len(row_layouts) - 1) * self.ROW_GAP
-        canvas_h = self.OUTER_PADDING + self.TITLE_HEIGHT + rows_h + gaps_h + self.FOOTER_HEIGHT + self.OUTER_PADDING
+        rows_end = self.ROWS_TOP + rows_h + gaps_h
+        footer_line_y = rows_end + self.FOOTER_TOP_GAP
+        canvas_h = footer_line_y + self.FOOTER_AVATAR_TOP_GAP + self.FOOTER_AVATAR_SIZE + self.FOOTER_BOTTOM
 
         return {
             "canvas_w": int(canvas_w),
             "canvas_h": int(canvas_h),
             "row_layouts": row_layouts,
             "per_line": per_line,
+            "items_x": items_x,
+            "items_right": items_right,
         }
 
     def generate_tierlist_image(
@@ -731,10 +791,9 @@ class TierListRenderer:
         """
         Gera a imagem final em PNG.
 
-        `guild_icon_bytes` permanece na assinatura apenas por compatibilidade
-        com chamadas antigas; o novo canvas nao renderiza logos externas.
+        `guild_icon_bytes` e usado apenas como imagem ja pronta para o avatar
+        circular do footer. Nenhum download e feito aqui.
         """
-        _ = guild_icon_bytes
         usuario_autor = self._resolve_author_name(author, creator_name)
         layout = self.calculate_tierlist_dimensions(tiers_dict)
         canvas_w = layout["canvas_w"]
@@ -745,41 +804,41 @@ class TierListRenderer:
 
         title_text = re.sub(r"\s+", " ", (title or "Tier List").strip()) or "Tier List"
         title_box = (
-            self.OUTER_PADDING,
-            self.OUTER_PADDING,
-            canvas_w - self.OUTER_PADDING,
-            self.OUTER_PADDING + self.TITLE_HEIGHT - 28,
+            self.GRID_X,
+            self.TITLE_TOP,
+            self.GRID_RIGHT,
+            self.ROWS_TOP - 58,
         )
         title_font = self._fit_font(
             draw,
             title_text,
-            start_size=48,
+            start_size=50,
             max_width=title_box[2] - title_box[0],
-            min_size=26,
+            min_size=28,
             bold=True,
         )
         tx, ty = self._center_text_position(draw, title_box, title_text, title_font)
-        self._draw_text(draw, title_text, (tx, ty), title_font, self.TEXT, shadow_alpha=95)
+        self._draw_text(draw, title_text, (tx, ty), title_font, self.TEXT, shadow_alpha=0)
 
-        tier_font = self._font(42, bold=True)
-        item_font = self._font(18, bold=True)
-        empty_font = self._font(18, bold=False)
+        tier_font = self._font(48, bold=True)
+        item_font = self._font(22, bold=True)
+        empty_font = self._font(21, bold=True)
 
-        y = self.OUTER_PADDING + self.TITLE_HEIGHT
+        y = self.ROWS_TOP
         for row in layout["row_layouts"]:
             row_h = row["row_height"]
-            row_box = (self.OUTER_PADDING, y, canvas_w - self.OUTER_PADDING, y + row_h)
+            row_box = (self.GRID_X, y, self.GRID_RIGHT, y + row_h)
             self._draw_row_container(image, row_box)
             self._draw_tier_label(image, row_box, row["tier"], row["color"], tier_font)
 
-            items_x = row_box[0] + self.ROW_PADDING_X + self.LABEL_COLUMN_WIDTH + self.LABEL_TO_ITEMS_GAP
-            items_y = row_box[1] + self.ROW_PADDING_Y
-            items_right = row_box[2] - self.ROW_PADDING_X
+            items_x = layout["items_x"]
+            items_y = row_box[1] + self.ROW_PADDING_TOP
+            items_right = layout["items_right"]
 
             if not row["items"]:
                 self._draw_empty_state(
                     image,
-                    (items_x, items_y, items_right, row_box[3] - self.ROW_PADDING_Y),
+                    (items_x, row_box[1], row_box[2], row_box[3]),
                     empty_font,
                 )
             else:
@@ -798,7 +857,7 @@ class TierListRenderer:
 
             y += row_h + self.ROW_GAP
 
-        self._draw_footer(image, usuario_autor=usuario_autor)
+        self._draw_footer(image, usuario_autor=usuario_autor, avatar_bytes=guild_icon_bytes)
 
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
