@@ -10,6 +10,7 @@ import textwrap
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 from typing import OrderedDict as OrderedDictType
 from urllib.parse import urlparse
 
@@ -26,6 +27,9 @@ from cogs.tierlist_wikipedia.wikipedia import (
     WikipediaResolution,
     WikipediaResolvedImage,
     WikipediaUserError,
+)
+from cogs.tierlist_wikipedia.safety import (
+    SAFETY_MODE_OFF,
 )
 from cogs.tierlist_spotify.spotify import (
     SpotifyImageDownloader,
@@ -71,6 +75,10 @@ class TierItem:
     image_bytes: bytes | None = None
     source_type: str = "text"
     caption: str | None = None
+    user_caption: str | None = None
+    render_caption: str | None = None
+    internal_title: str | None = None
+    source_query: str | None = None
     image_cache_key: str | None = None
     spotify_type: str | None = None
     spotify_id: str | None = None
@@ -606,14 +614,26 @@ class TierListRenderer:
         return getattr(item, "source_type", "") == WIKIPEDIA_SOURCE_TYPE
 
     def _item_display_name(self, item: "TierItem") -> str:
-        """Nome opcional: retorna string vazia quando o item nao tiver legenda."""
-        raw_name = (
-            getattr(item, "caption", None)
-            or getattr(item, "display_name", None)
-            or getattr(item, "name", "")
-            or ""
-        )
+        """
+        Texto visual do card.
+
+        Metadados resolvidos de Spotify/Wikipedia ficam fora daqui de proposito:
+        so texto digitado pelo usuario deve aparecer como legenda renderizada.
+        """
+        raw_name = getattr(item, "render_caption", None)
+        if raw_name is None:
+            raw_name = getattr(item, "caption", None)
+        if raw_name is None and not self._item_has_visual_source(item):
+            raw_name = getattr(item, "name", "")
         return re.sub(r"\s+", " ", str(raw_name).strip())
+
+    def _item_has_visual_source(self, item: "TierItem") -> bool:
+        return bool(
+            getattr(item, "image_url", None)
+            or getattr(item, "image_bytes", None)
+            or self._is_spotify_item(item)
+            or self._is_wikipedia_item(item)
+        )
 
     def _coerce_rgb_color(
         self,
@@ -1252,9 +1272,9 @@ class TierListRenderer:
                 if self._item_has_image(item):
                     item_w = self.IMAGE_ITEM_SIZE
                     if self._is_spotify_item(item):
-                        item_h = self.SPOTIFY_ITEM_HEIGHT
+                        item_h = self.SPOTIFY_ITEM_HEIGHT if self._item_display_name(item) else self.IMAGE_ITEM_SIZE
                     elif self._is_wikipedia_item(item):
-                        item_h = self.WIKIPEDIA_ITEM_HEIGHT
+                        item_h = self.WIKIPEDIA_ITEM_HEIGHT if self._item_display_name(item) else self.IMAGE_ITEM_SIZE
                     else:
                         item_h = self.IMAGE_ITEM_SIZE
                 else:
@@ -1599,25 +1619,37 @@ class AddItemModal(discord.ui.Modal):
             )
             return
 
-        clean_item = self.cog.clean_text(str(self.item_name.value), max_length=25)
-        clean_url = str(self.image_url.value).strip() or None
+        raw_item_name = str(self.item_name.value).strip()
+        clean_item = self.cog.clean_text(raw_item_name, max_length=25)
+        render_caption = self.cog.render_caption_from_user(raw_item_name, max_length=25)
+        clean_url = str(self.image_url.value).strip()
         user_id_str = str(self.user_id_input.value).strip()
         wikipedia_search_str = str(self.web_search_input.value).strip()
         spotify_album_str = str(self.spotify_album_input.value).strip()
 
-        image_source_count = sum(
-            1
-            for has_value in (bool(clean_url), bool(user_id_str), bool(wikipedia_search_str), bool(spotify_album_str))
-            if has_value
+        filled_sources = self.cog.get_filled_image_sources(
+            image_url=clean_url,
+            avatar_user_id=user_id_str,
+            wikipedia=wikipedia_search_str,
+            spotify=spotify_album_str,
         )
-        if image_source_count > 1:
+        if len(filled_sources) > 1:
             await interaction.followup.send(
-                "⚠️ Escolha apenas uma fonte de imagem: URL direta, foto de usuário, Spotify ou Wikipedia.",
+                self.cog.conflicting_image_sources_message(filled_sources),
                 ephemeral=True,
             )
             return
 
-        if spotify_album_str:
+        if not filled_sources and not render_caption:
+            await interaction.followup.send(
+                self.cog.empty_item_message(),
+                ephemeral=True,
+            )
+            return
+
+        selected_source = filled_sources[0]["key"] if filled_sources else ""
+
+        if selected_source == "spotify":
             try:
                 resolution = await self.cog.resolve_spotify_input(spotify_album_str)
             except SpotifyUserError as exc:
@@ -1637,7 +1669,8 @@ class AddItemModal(discord.ui.Modal):
                     cog=self.cog,
                     owner_id=self.owner_id,
                     candidates=resolution.candidates,
-                    custom_caption=clean_item,
+                    custom_caption=render_caption or "",
+                    source_query=spotify_album_str,
                 )
                 message = await interaction.followup.send(
                     "🎵 Encontrei mais de um resultado. Escolha o correto no menu abaixo.",
@@ -1658,7 +1691,8 @@ class AddItemModal(discord.ui.Modal):
             try:
                 item = await self.cog.build_spotify_tier_item(
                     resolution.item,
-                    custom_caption=clean_item,
+                    custom_caption=render_caption or "",
+                    source_query=spotify_album_str,
                 )
             except SpotifyUserError as exc:
                 LOGGER.exception("Falha amigável ao preparar capa Spotify: %s", exc.code)
@@ -1684,9 +1718,13 @@ class AddItemModal(discord.ui.Modal):
             )
             return
 
-        if wikipedia_search_str:
+        if selected_source == "wikipedia":
             try:
-                resolution = await self.cog.resolve_wikipedia_input(wikipedia_search_str)
+                resolution = await self.cog.resolve_wikipedia_input(
+                    wikipedia_search_str,
+                    guild_id=interaction.guild_id,
+                    user_id=interaction.user.id,
+                )
             except WikipediaUserError as exc:
                 LOGGER.exception("Falha amigável ao resolver Wikipedia: %s", exc.code)
                 await interaction.followup.send(f"❌ {exc.user_message}", ephemeral=True)
@@ -1704,7 +1742,8 @@ class AddItemModal(discord.ui.Modal):
                     cog=self.cog,
                     owner_id=self.owner_id,
                     candidates=resolution.candidates,
-                    custom_caption=clean_item,
+                    custom_caption=render_caption or "",
+                    source_query=wikipedia_search_str,
                 )
                 message = await interaction.followup.send(
                     "🌐 Esse termo é ambíguo. Escolha o artigo correto no menu.",
@@ -1724,7 +1763,8 @@ class AddItemModal(discord.ui.Modal):
 
             item = self.cog.build_wikipedia_tier_item(
                 resolution.item,
-                custom_caption=clean_item,
+                custom_caption=render_caption or "",
+                source_query=wikipedia_search_str,
             )
             await self.cog.send_tier_choice_for_item(
                 interaction,
@@ -1738,51 +1778,74 @@ class AddItemModal(discord.ui.Modal):
             )
             return
 
-        image_bytes = None
-        source_type = "text"
+        if selected_source == "image_url":
+            if not self.cog.looks_like_url(clean_url):
+                await interaction.followup.send("❌ A URL informada não parece válida.", ephemeral=True)
+                return
 
-        # Hierarquia Estrita de Prioridade
-        # Prioridade 1: Usa a URL informada
-        if clean_url and not self.cog.looks_like_url(clean_url):
-            clean_url = None
-
-        # Prioridade 2: Sem URL, mas com ID informado. Tenta baixar avatar via Discord API
-        if not clean_url and user_id_str:
-            try:
-                user_id = int(user_id_str)
-                user = await interaction.client.fetch_user(user_id)
-                clean_url = user.display_avatar.replace(format='png', size=256).url
-            except (ValueError, discord.NotFound, discord.HTTPException):
-                clean_url = None
-
-        if not clean_item and not clean_url and not image_bytes:
-            await interaction.followup.send(
-                "⚠️ Informe um nome ou alguma fonte de imagem para adicionar o item.",
-                ephemeral=True,
+            item = TierItem(
+                name=render_caption or "",
+                image_url=clean_url,
+                image_bytes=None,
+                source_type="image_url",
+                caption=render_caption,
+                user_caption=render_caption,
+                render_caption=render_caption,
+                internal_title="Imagem por URL",
+                source_query=clean_url,
+            )
+            await self.cog.send_tier_choice_for_item(
+                interaction,
+                owner_id=self.owner_id,
+                item=item,
+                tiers=session.tiers,
+                extra="\n🖼️ Imagem detectada com sucesso. A legenda só aparece se você preencheu o nome.",
             )
             return
 
-        if clean_url or image_bytes:
-            source_type = "image_url"
+        if selected_source == "avatar_user_id":
+            try:
+                user_id = int(user_id_str)
+                user = await interaction.client.fetch_user(user_id)
+                avatar_url = user.display_avatar.replace(format="png", size=256).url
+            except (ValueError, discord.NotFound, discord.HTTPException):
+                await interaction.followup.send("❌ Não consegui encontrar esse usuário para usar o avatar.", ephemeral=True)
+                return
+
+            item = TierItem(
+                name=render_caption or "",
+                image_url=avatar_url,
+                image_bytes=None,
+                source_type="image_url",
+                caption=render_caption,
+                user_caption=render_caption,
+                render_caption=render_caption,
+                internal_title=f"Avatar de usuário {user_id}",
+                source_query=user_id_str,
+            )
+            await self.cog.send_tier_choice_for_item(
+                interaction,
+                owner_id=self.owner_id,
+                item=item,
+                tiers=session.tiers,
+                extra="\n🖼️ Avatar detectado com sucesso. A legenda só aparece se você preencheu o nome.",
+            )
+            return
 
         item = TierItem(
             name=clean_item,
-            image_url=clean_url,
-            image_bytes=image_bytes,
-            source_type=source_type,
-        )
-
-        extra = (
-            "\n🖼️ Imagem detectada com sucesso. Se a renderização falhar, o bot usará card de texto."
-            if (clean_url or image_bytes)
-            else ""
+            image_url=None,
+            image_bytes=None,
+            source_type="text",
+            caption=render_caption,
+            user_caption=render_caption,
+            render_caption=render_caption,
         )
         await self.cog.send_tier_choice_for_item(
             interaction,
             owner_id=self.owner_id,
             item=item,
             tiers=session.tiers,
-            extra=extra,
         )
 
 
@@ -1846,6 +1909,7 @@ class SpotifyCandidateSelect(discord.ui.Select):
             item = await self.view_instance.cog.build_spotify_tier_item(
                 candidate,
                 custom_caption=self.view_instance.custom_caption,
+                source_query=self.view_instance.source_query,
             )
         except SpotifyUserError as exc:
             LOGGER.exception("Falha amigável ao preparar candidato Spotify: %s", exc.code)
@@ -1884,12 +1948,14 @@ class SpotifyCandidateSelectView(discord.ui.View):
         owner_id: int,
         candidates: list[SpotifyResolvedItem],
         custom_caption: str,
+        source_query: str = "",
     ) -> None:
         super().__init__(timeout=120)
         self.cog = cog
         self.owner_id = owner_id
         self.candidates = candidates
         self.custom_caption = custom_caption
+        self.source_query = source_query
         self.message: discord.Message | None = None
         self.add_item(SpotifyCandidateSelect(self))
 
@@ -1965,10 +2031,15 @@ class WikipediaCandidateSelect(discord.ui.Select):
             return
 
         try:
-            resolved = await self.view_instance.cog.resolve_wikipedia_candidate(candidate)
+            resolved = await self.view_instance.cog.resolve_wikipedia_candidate(
+                candidate,
+                guild_id=interaction.guild_id,
+                user_id=interaction.user.id,
+            )
             item = self.view_instance.cog.build_wikipedia_tier_item(
                 resolved,
                 custom_caption=self.view_instance.custom_caption,
+                source_query=self.view_instance.source_query,
             )
         except WikipediaUserError as exc:
             LOGGER.exception("Falha amigável ao preparar candidato Wikipedia: %s", exc.code)
@@ -1988,7 +2059,7 @@ class WikipediaCandidateSelect(discord.ui.Select):
             item=item,
             tiers=session.tiers,
         )
-        item_label = item.name or item.wikipedia_title or "item Wikipedia"
+        item_label = item.name or "item Wikipedia"
         await interaction.edit_original_response(
             content=(
                 f"📌 Escolha em qual tier colocar **{discord.utils.escape_markdown(item_label)}**:"
@@ -2007,12 +2078,14 @@ class WikipediaCandidateSelectView(discord.ui.View):
         owner_id: int,
         candidates: list[WikipediaPageImageCandidate],
         custom_caption: str,
+        source_query: str = "",
     ) -> None:
         super().__init__(timeout=120)
         self.cog = cog
         self.owner_id = owner_id
         self.candidates = candidates
         self.custom_caption = custom_caption
+        self.source_query = source_query
         self.message: discord.Message | None = None
         self.add_item(WikipediaCandidateSelect(self))
 
@@ -2394,7 +2467,8 @@ class EditItemModal(discord.ui.Modal):
 
         old_tier = self.tier_name
         new_tier = self.main_view.cog.clean_text(str(self.target_tier.value), max_length=20)
-        new_name = self.main_view.cog.clean_text(str(self.item_name.value), max_length=25)
+        new_caption = self.main_view.cog.render_caption_from_user(str(self.item_name.value), max_length=25)
+        new_name = new_caption or ""
         new_url = str(self.image_url.value).strip() or None
 
         if new_tier not in session.items:
@@ -2403,13 +2477,6 @@ class EditItemModal(discord.ui.Modal):
 
         if new_url and not self.main_view.cog.looks_like_url(new_url):
             await interaction.followup.send("❌ A URL informada não parece válida.", ephemeral=True)
-            return
-
-        if not new_name and not new_url and not self.item.image_bytes:
-            await interaction.followup.send(
-                "⚠️ O item precisa ter um nome ou uma imagem.",
-                ephemeral=True,
-            )
             return
 
         try:
@@ -2433,18 +2500,32 @@ class EditItemModal(discord.ui.Modal):
         old_state = replace(current_item)
         old_url = current_item.image_url
         old_valid_url = old_url if old_url and self.main_view.cog.looks_like_url(old_url) else None
+        keeps_existing_image = bool(old_valid_url and new_url == old_valid_url)
+        if not new_caption and not new_url and not keeps_existing_image:
+            await interaction.followup.send(
+                self.main_view.cog.empty_item_message(),
+                ephemeral=True,
+            )
+            return
+
         moved_item: TierItem | None = None
 
         try:
             if current_item.source_type == "spotify" and new_url == old_valid_url:
-                current_item.name = new_name or self.main_view.cog.spotify_item_auto_label(current_item)
-                current_item.caption = current_item.name
+                current_item.name = new_name
+                current_item.caption = new_caption
+                current_item.user_caption = new_caption
+                current_item.render_caption = new_caption
             elif current_item.source_type == WIKIPEDIA_SOURCE_TYPE and new_url == old_valid_url:
-                current_item.name = new_name or current_item.wikipedia_title or current_item.display_name or "Item Wikipedia"
-                current_item.caption = current_item.name
-                current_item.display_name = current_item.name
+                current_item.name = new_name
+                current_item.caption = new_caption
+                current_item.user_caption = new_caption
+                current_item.render_caption = new_caption
             else:
                 current_item.name = new_name
+                current_item.caption = new_caption
+                current_item.user_caption = new_caption
+                current_item.render_caption = new_caption
             current_item.image_url = new_url
             if new_url != old_valid_url:
                 current_item.image_bytes = None
@@ -2988,7 +3069,7 @@ class TierListControlView(discord.ui.View):
                     [
                         replace(
                             item,
-                            name=item.name or "item com imagem",
+                            name=item.render_caption or item.caption or item.name or "",
                             image_url=None,
                             image_bytes=None,
                             source_type="text",
@@ -3038,54 +3119,8 @@ class TierListControlView(discord.ui.View):
 
         self.stop()
 
-        spotify_attribution = self.cog.build_spotify_attribution_text(hydrated_snapshot)
-        wikimedia_attribution, wikimedia_file_bytes = self.cog.build_wikimedia_attribution_text(hydrated_snapshot)
-        if wikimedia_file_bytes:
-            files.append(
-                discord.File(
-                    io.BytesIO(wikimedia_file_bytes),
-                    filename="wikimedia_attributions.txt",
-                )
-            )
-
-        base_content = f"🖼️ **{discord.utils.escape_markdown(title_snapshot)}**"
-        content_parts = [base_content]
-        if spotify_attribution:
-            content_parts.append(spotify_attribution)
-        if wikimedia_attribution:
-            content_parts.append(wikimedia_attribution)
-        final_content = "\n\n".join(content_parts)
-
-        if len(final_content) > 1900 and wikimedia_attribution:
-            if not wikimedia_file_bytes:
-                full_entries = self.cog.collect_wikimedia_attribution_entries(hydrated_snapshot)
-                full_text = (
-                    "Imagens via Wikipedia/Wikimedia. Créditos/licenças:\n"
-                    + "\n".join(
-                        f"- {self.cog.format_wikimedia_attribution_entry(entry, markdown=False)}"
-                        for entry in full_entries
-                    )
-                )
-                files.append(
-                    discord.File(
-                        io.BytesIO(full_text.encode("utf-8")),
-                        filename="wikimedia_attributions.txt",
-                    )
-                )
-
-            content_parts = [base_content]
-            if spotify_attribution:
-                content_parts.append(spotify_attribution)
-            content_parts.append(
-                "Imagens via Wikipedia/Wikimedia. Créditos/licenças anexados em `wikimedia_attributions.txt`."
-            )
-            final_content = "\n\n".join(content_parts)
-
-        if len(final_content) > 2000:
-            final_content = final_content[:1990].rstrip() + "..."
-
         final_message = await interaction.followup.send(
-            content=final_content,
+            content=f"🖼️ **{discord.utils.escape_markdown(title_snapshot)}**",
             files=files,
             view=PostGenerationView(self.cog, self.owner_id),
             wait=True,
@@ -3219,15 +3254,14 @@ class TierListCog(
         resolved: SpotifyResolvedItem,
         *,
         custom_caption: str = "",
+        source_query: str = "",
     ) -> TierItem:
         image_bytes = await self.spotify_image_downloader.download(
             resolved.image_url,
             cache_key=resolved.cache_key,
         )
 
-        caption = self.clean_text(custom_caption, max_length=80) if custom_caption else ""
-        if not caption:
-            caption = self.clean_text(resolved.caption or resolved.display_name, max_length=80)
+        caption = self.render_caption_from_user(custom_caption, max_length=80)
 
         if not image_bytes:
             raise SpotifyImageError(
@@ -3243,11 +3277,15 @@ class TierListCog(
         )
 
         return TierItem(
-            name=caption,
+            name=caption or "",
             image_url=resolved.image_url,
             image_bytes=image_bytes,
             source_type="spotify",
             caption=caption,
+            user_caption=caption,
+            render_caption=caption,
+            internal_title=resolved.display_name,
+            source_query=source_query,
             image_cache_key=resolved.cache_key,
             spotify_type=resolved.spotify_type,
             spotify_id=resolved.spotify_id,
@@ -3265,34 +3303,48 @@ class TierListCog(
         raw: str,
         *,
         allow_ambiguous: bool = True,
+        guild_id: int | None = None,
+        user_id: int | None = None,
     ) -> WikipediaResolution:
         return await self.wikipedia_service.resolve(
             raw,
             allow_ambiguous=allow_ambiguous,
+            guild_id=guild_id,
+            user_id=user_id,
         )
 
     async def resolve_wikipedia_candidate(
         self,
         candidate: WikipediaPageImageCandidate,
+        *,
+        guild_id: int | None = None,
+        user_id: int | None = None,
     ) -> WikipediaResolvedImage:
-        return await self.wikipedia_service.resolve_candidate(candidate)
+        return await self.wikipedia_service.resolve_candidate(
+            candidate,
+            guild_id=guild_id,
+            user_id=user_id,
+        )
 
     def build_wikipedia_tier_item(
         self,
         resolved: WikipediaResolvedImage,
         *,
         custom_caption: str = "",
+        source_query: str = "",
     ) -> TierItem:
-        caption = self.clean_text(custom_caption, max_length=80) if custom_caption else ""
-        if not caption:
-            caption = self.clean_text(resolved.caption or resolved.display_name, max_length=80)
+        caption = self.render_caption_from_user(custom_caption, max_length=80)
 
         return TierItem(
-            name=caption,
+            name=caption or "",
             image_url=resolved.image_url,
             image_bytes=resolved.image_bytes,
             source_type=WIKIPEDIA_SOURCE_TYPE,
             caption=caption,
+            user_caption=caption,
+            render_caption=caption,
+            internal_title=resolved.wikipedia_title or resolved.display_name,
+            source_query=source_query,
             image_cache_key=resolved.image_cache_key,
             attribution_text=None,
             display_name=resolved.display_name,
@@ -3485,7 +3537,6 @@ class TierListCog(
         return self.clean_text(label, max_length=80)
 
     def clear_spotify_metadata(self, item: TierItem) -> None:
-        item.caption = None
         item.image_cache_key = None
         item.spotify_type = None
         item.spotify_id = None
@@ -3764,6 +3815,56 @@ class TierListCog(
         text = re.sub(r"\s+", " ", text).strip()
         return text[:max_length].strip()
 
+    def render_caption_from_user(self, raw_caption: str, *, max_length: int = 80) -> str | None:
+        caption = self.clean_text(raw_caption, max_length=max_length)
+        return caption or None
+
+    def get_filled_image_sources(
+        self,
+        *,
+        image_url: str = "",
+        avatar_user_id: str = "",
+        wikipedia: str = "",
+        spotify: str = "",
+    ) -> list[dict[str, str]]:
+        source_fields = (
+            ("image_url", "Link de imagem", image_url),
+            ("avatar_user_id", "ID de usuário", avatar_user_id),
+            ("wikipedia", "Wikipedia", wikipedia),
+            ("spotify", "Spotify", spotify),
+        )
+        return [
+            {"key": key, "label": label}
+            for key, label, value in source_fields
+            if str(value or "").strip()
+        ]
+
+    def format_filled_image_sources(self, sources: list[dict[str, str]]) -> str:
+        labels = [source["label"] for source in sources if source.get("label")]
+        if not labels:
+            return ""
+        if len(labels) == 1:
+            return labels[0]
+        return f"{', '.join(labels[:-1])} e {labels[-1]}"
+
+    def conflicting_image_sources_message(self, sources: list[dict[str, str]]) -> str:
+        filled_text = self.format_filled_image_sources(sources)
+        suffix = f"\n\nFontes preenchidas: {filled_text}." if filled_text else ""
+        return (
+            "⚠️ Honra e proveito não cabem no mesmo saco estreito.\n\n"
+            "Você preencheu mais de uma fonte de imagem ao mesmo tempo. "
+            "Eu preciso saber qual imagem usar: avatar de usuário, link direto, "
+            "Wikipedia, Spotify ou outra fonte — mas não tudo junto no mesmo item.\n\n"
+            "Escolha só uma fonte de imagem e tente de novo."
+            f"{suffix}"
+        )
+
+    def empty_item_message(self) -> str:
+        return (
+            "⚠️ Esse item veio tão vazio que nem o abismo respondeu. "
+            "Preencha um nome ou escolha uma fonte de imagem."
+        )
+
     def parse_hex_color(self, raw: str) -> tuple[int, int, int] | None:
         """Valida e converte #RRGGBB/RRGGBB para tupla RGB."""
         value = (raw or "").strip()
@@ -3872,5 +3973,311 @@ class TierListCog(
             pass
 
 
+class TierListSafetyCog(
+    commands.GroupCog,
+    group_name="tierlist-safety",
+    group_description="Configura o filtro de segurança da tierlist Wikipedia",
+):
+    block_term = app_commands.Group(name="block-term", description="Gerencia termos bloqueados.")
+    allow_term = app_commands.Group(name="allow-term", description="Gerencia termos liberados para busca.")
+    allow_page = app_commands.Group(name="allow-page", description="Gerencia páginas Wikipedia liberadas.")
+    allow_file = app_commands.Group(name="allow-file", description="Gerencia arquivos Wikimedia liberados.")
+    review = app_commands.Group(name="review", description="Gerencia a fila de revisão da tierlist.")
+
+    def __init__(self, bot: commands.Bot, tierlist_cog: TierListCog) -> None:
+        self.bot = bot
+        self.tierlist_cog = tierlist_cog
+
+    @property
+    def safety_pipeline(self):
+        return self.tierlist_cog.wikipedia_service.safety_pipeline
+
+    async def _is_safety_admin(self, interaction: discord.Interaction) -> bool:
+        if interaction.guild is None or interaction.guild_id is None:
+            return False
+
+        if await self.bot.is_owner(interaction.user):
+            return True
+
+        if interaction.guild.owner_id == interaction.user.id:
+            return True
+
+        member = interaction.user
+        if isinstance(member, discord.Member):
+            if member.guild_permissions.administrator:
+                return True
+            guild_config = await self.safety_pipeline.config_store.get_guild_config(interaction.guild_id)
+            allowed_roles = set(guild_config.mod_role_ids)
+            if allowed_roles and any(role.id in allowed_roles for role in member.roles):
+                return True
+
+        return False
+
+    async def _require_safety_admin(self, interaction: discord.Interaction) -> bool:
+        if await self._is_safety_admin(interaction):
+            return True
+        await interaction.response.send_message(
+            "❌ Só administradores ou moderação configurada podem alterar o filtro da tierlist.",
+            ephemeral=True,
+        )
+        return False
+
+    async def _clear_safety_cache(self) -> None:
+        await self.safety_pipeline.cache.clear_all()
+
+    def _guild_id(self, interaction: discord.Interaction) -> int:
+        if interaction.guild_id is None:
+            raise RuntimeError("tierlist safety commands are guild-only")
+        return interaction.guild_id
+
+    @app_commands.command(name="status", description="Mostra a configuração atual do filtro Wikipedia.")
+    @app_commands.guild_only()
+    async def safety_status(self, interaction: discord.Interaction) -> None:
+        if not await self._require_safety_admin(interaction):
+            return
+
+        guild_id = self._guild_id(interaction)
+        guild_config = await self.safety_pipeline.config_store.get_guild_config(guild_id)
+        review_items = await self.safety_pipeline.review_queue.list_items(guild_id, limit=25)
+        visual_status = "ativado" if self.safety_pipeline.has_visual_classifier else "desativado"
+        await interaction.response.send_message(
+            (
+                "**Tierlist Safety**\n"
+                f"Modo: `{guild_config.mode}`\n"
+                f"Classificador visual: `{visual_status}`\n"
+                f"Termos bloqueados customizados: `{len(guild_config.custom_hard_block_terms)}`\n"
+                f"Termos allowlist customizados: `{len(guild_config.custom_allowlist_terms)}`\n"
+                f"Páginas liberadas: `{len(guild_config.allowed_pageids)}`\n"
+                f"Arquivos liberados: `{len(guild_config.allowed_file_titles)}`\n"
+                f"Fila de revisão: `{len(review_items)}`"
+            ),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="mode", description="Altera o modo do filtro Wikipedia.")
+    @app_commands.guild_only()
+    @app_commands.describe(
+        modo="strict_public é o padrão fail-closed; balanced usa revisão; off desativa o filtro.",
+        confirmar="Obrigatório para desligar o filtro.",
+    )
+    async def safety_mode(
+        self,
+        interaction: discord.Interaction,
+        modo: Literal["strict_public", "balanced", "off"],
+        confirmar: bool = False,
+    ) -> None:
+        if not await self._require_safety_admin(interaction):
+            return
+
+        guild_id = self._guild_id(interaction)
+        if modo == SAFETY_MODE_OFF and not confirmar:
+            await interaction.response.send_message(
+                "⚠️ Para usar `off`, rode o comando de novo com `confirmar: True`. "
+                "Essa mudança será registrada em log.",
+                ephemeral=True,
+            )
+            return
+
+        await self.safety_pipeline.config_store.set_mode(guild_id, modo)
+        await self._clear_safety_cache()
+        self.safety_pipeline.audit_logger.log_admin_action(
+            guild_id=guild_id,
+            user_id=interaction.user.id,
+            action="mode",
+            detail=modo,
+        )
+        await interaction.response.send_message(
+            f"✅ Modo de segurança da tierlist alterado para `{modo}`.",
+            ephemeral=True,
+        )
+
+    @block_term.command(name="add", description="Adiciona um termo à blocklist customizada.")
+    @app_commands.guild_only()
+    async def block_term_add(
+        self,
+        interaction: discord.Interaction,
+        termo: app_commands.Range[str, 1, 80],
+    ) -> None:
+        if not await self._require_safety_admin(interaction):
+            return
+        guild_id = self._guild_id(interaction)
+        await self.safety_pipeline.config_store.add_custom_hard_block_term(guild_id, str(termo))
+        await self._clear_safety_cache()
+        self.safety_pipeline.audit_logger.log_admin_action(
+            guild_id=guild_id,
+            user_id=interaction.user.id,
+            action="block-term add",
+            detail=str(termo),
+        )
+        await interaction.response.send_message("✅ Termo adicionado à blocklist da tierlist.", ephemeral=True)
+
+    @block_term.command(name="remove", description="Remove um termo da blocklist customizada.")
+    @app_commands.guild_only()
+    async def block_term_remove(
+        self,
+        interaction: discord.Interaction,
+        termo: app_commands.Range[str, 1, 80],
+    ) -> None:
+        if not await self._require_safety_admin(interaction):
+            return
+        guild_id = self._guild_id(interaction)
+        await self.safety_pipeline.config_store.remove_custom_hard_block_term(guild_id, str(termo))
+        await self._clear_safety_cache()
+        self.safety_pipeline.audit_logger.log_admin_action(
+            guild_id=guild_id,
+            user_id=interaction.user.id,
+            action="block-term remove",
+            detail=str(termo),
+        )
+        await interaction.response.send_message("✅ Termo removido da blocklist customizada.", ephemeral=True)
+
+    @allow_term.command(name="add", description="Adiciona um termo à allowlist de busca.")
+    @app_commands.guild_only()
+    async def allow_term_add(
+        self,
+        interaction: discord.Interaction,
+        termo: app_commands.Range[str, 1, 80],
+    ) -> None:
+        if not await self._require_safety_admin(interaction):
+            return
+        guild_id = self._guild_id(interaction)
+        await self.safety_pipeline.config_store.add_custom_allowlist_term(guild_id, str(termo))
+        await self._clear_safety_cache()
+        self.safety_pipeline.audit_logger.log_admin_action(
+            guild_id=guild_id,
+            user_id=interaction.user.id,
+            action="allow-term add",
+            detail=str(termo),
+        )
+        await interaction.response.send_message(
+            "✅ Termo adicionado à allowlist. Ele ainda passa por página, metadados e imagem.",
+            ephemeral=True,
+        )
+
+    @allow_page.command(name="add", description="Libera uma página específica por pageid.")
+    @app_commands.guild_only()
+    async def allow_page_add(
+        self,
+        interaction: discord.Interaction,
+        pageid: app_commands.Range[int, 1, 2_147_483_647],
+    ) -> None:
+        if not await self._require_safety_admin(interaction):
+            return
+        guild_id = self._guild_id(interaction)
+        await self.safety_pipeline.config_store.add_allowed_pageid(guild_id, int(pageid))
+        await self._clear_safety_cache()
+        self.safety_pipeline.audit_logger.log_admin_action(
+            guild_id=guild_id,
+            user_id=interaction.user.id,
+            action="allow-page add",
+            detail=str(pageid),
+        )
+        await interaction.response.send_message(
+            "✅ Página liberada. O arquivo e a imagem ainda passam pelas camadas seguintes.",
+            ephemeral=True,
+        )
+
+    @allow_file.command(name="add", description="Libera um arquivo Wikimedia específico.")
+    @app_commands.guild_only()
+    async def allow_file_add(
+        self,
+        interaction: discord.Interaction,
+        file_title: app_commands.Range[str, 1, 200],
+    ) -> None:
+        if not await self._require_safety_admin(interaction):
+            return
+        guild_id = self._guild_id(interaction)
+        await self.safety_pipeline.config_store.add_allowed_file_title(guild_id, str(file_title))
+        await self._clear_safety_cache()
+        self.safety_pipeline.audit_logger.log_admin_action(
+            guild_id=guild_id,
+            user_id=interaction.user.id,
+            action="allow-file add",
+            detail=str(file_title),
+        )
+        await interaction.response.send_message(
+            "✅ Arquivo liberado. Classificador visual e Pillow ainda podem recusar a imagem.",
+            ephemeral=True,
+        )
+
+    @review.command(name="list", description="Lista itens pendentes de revisão, sem mostrar imagem.")
+    @app_commands.guild_only()
+    async def review_list(self, interaction: discord.Interaction) -> None:
+        if not await self._require_safety_admin(interaction):
+            return
+        guild_id = self._guild_id(interaction)
+        items = await self.safety_pipeline.review_queue.list_items(guild_id, limit=10)
+        if not items:
+            await interaction.response.send_message("✅ Não há itens pendentes de revisão.", ephemeral=True)
+            return
+
+        lines = []
+        for item in items:
+            label = item.page_title or item.file_title or item.term or "item sem título"
+            lines.append(
+                f"`{item.review_id}` score `{item.score}` pageid `{item.pageid or '-'}` "
+                f"{discord.utils.escape_markdown(label)[:80]}"
+            )
+        await interaction.response.send_message(
+            "**Revisões pendentes, sem preview de imagem:**\n" + "\n".join(lines),
+            ephemeral=True,
+        )
+
+    @review.command(name="approve", description="Aprova uma revisão e adiciona page/file à allowlist.")
+    @app_commands.guild_only()
+    async def review_approve(
+        self,
+        interaction: discord.Interaction,
+        review_id: app_commands.Range[str, 1, 40],
+    ) -> None:
+        if not await self._require_safety_admin(interaction):
+            return
+        guild_id = self._guild_id(interaction)
+        item = await self.safety_pipeline.review_queue.pop(str(review_id), guild_id)
+        if item is None:
+            await interaction.response.send_message("❌ Revisão não encontrada.", ephemeral=True)
+            return
+        if item.pageid:
+            await self.safety_pipeline.config_store.add_allowed_pageid(guild_id, item.pageid)
+        if item.file_title:
+            await self.safety_pipeline.config_store.add_allowed_file_title(guild_id, item.file_title)
+        await self._clear_safety_cache()
+        self.safety_pipeline.audit_logger.log_admin_action(
+            guild_id=guild_id,
+            user_id=interaction.user.id,
+            action="review approve",
+            detail=str(review_id),
+        )
+        await interaction.response.send_message(
+            "✅ Revisão aprovada e exceção registrada sem expor a imagem.",
+            ephemeral=True,
+        )
+
+    @review.command(name="reject", description="Rejeita uma revisão pendente.")
+    @app_commands.guild_only()
+    async def review_reject(
+        self,
+        interaction: discord.Interaction,
+        review_id: app_commands.Range[str, 1, 40],
+    ) -> None:
+        if not await self._require_safety_admin(interaction):
+            return
+        guild_id = self._guild_id(interaction)
+        item = await self.safety_pipeline.review_queue.pop(str(review_id), guild_id)
+        if item is None:
+            await interaction.response.send_message("❌ Revisão não encontrada.", ephemeral=True)
+            return
+        await self._clear_safety_cache()
+        self.safety_pipeline.audit_logger.log_admin_action(
+            guild_id=guild_id,
+            user_id=interaction.user.id,
+            action="review reject",
+            detail=str(review_id),
+        )
+        await interaction.response.send_message("✅ Revisão rejeitada.", ephemeral=True)
+
+
 async def setup(bot: commands.Bot) -> None:
-    await bot.add_cog(TierListCog(bot))
+    tierlist_cog = TierListCog(bot)
+    await bot.add_cog(tierlist_cog)
+    await bot.add_cog(TierListSafetyCog(bot, tierlist_cog))

@@ -16,6 +16,12 @@ from urllib.parse import unquote, urlparse
 import aiohttp
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from cogs.tierlist_wikipedia.safety import (
+    SAFETY_PUBLIC_NO_SAFE_RESULTS_MESSAGE,
+    SAFETY_VERDICT_ALLOW,
+    SafetyPipeline,
+)
+
 
 LOGGER = logging.getLogger("baphomet.tierlist.wikipedia")
 
@@ -72,6 +78,8 @@ class WikipediaPageImageCandidate:
 
 @dataclass(frozen=True)
 class WikimediaImageMetadata:
+    file_pageid: int | None = None
+    commons_pageid: int | None = None
     canonicaltitle: str = ""
     descriptionurl: str = ""
     url: str = ""
@@ -89,6 +97,16 @@ class WikimediaImageMetadata:
     attribution_required: str = ""
     object_name: str = ""
     image_description: str = ""
+    extmetadata_categories: str = ""
+    restrictions: str = ""
+    categories: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class WikimediaFilePageData:
+    pageid: int | None = None
+    imageinfo: dict[str, Any] | None = None
+    categories: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -169,6 +187,7 @@ class WikimediaCache:
     ) -> None:
         self.search = AsyncTTLCache(search_ttl_seconds, label="search")
         self.page = AsyncTTLCache(page_ttl_seconds, label="page")
+        self.page_categories = AsyncTTLCache(page_ttl_seconds, label="page-categories")
         self.imageinfo = AsyncTTLCache(imageinfo_ttl_seconds, label="imageinfo")
         self.image_bytes = AsyncTTLCache(image_bytes_ttl_seconds, label="image-bytes")
         self.processed_image = AsyncTTLCache(processed_image_ttl_seconds, label="processed-image")
@@ -188,6 +207,10 @@ class WikimediaHttpClient:
 
     def api_url(self, language: str) -> str:
         safe_language = re.sub(r"[^a-z0-9-]", "", (language or "pt").casefold()) or "pt"
+        if safe_language in {"commons", "wikimedia-commons"}:
+            return "https://commons.wikimedia.org/w/api.php"
+        if safe_language == "wikidata":
+            return "https://www.wikidata.org/w/api.php"
         return f"https://{safe_language}.wikipedia.org/w/api.php"
 
     @property
@@ -420,13 +443,76 @@ class WikipediaSearchResolver:
             return None
 
 
+class WikimediaCategoryResolver:
+    def __init__(self, http_client: WikimediaHttpClient, cache: WikimediaCache) -> None:
+        self.http_client = http_client
+        self.cache = cache
+
+    async def fetch_page_categories(self, candidate: WikipediaPageImageCandidate) -> tuple[str, ...]:
+        cache_key = f"{candidate.wiki_language}:{candidate.pageid}"
+        cached = await self.cache.page_categories.get(cache_key)
+        if cached is not None:
+            return cached
+
+        params = {
+            "action": "query",
+            "prop": "categories",
+            "pageids": str(candidate.pageid),
+            "cllimit": "max",
+            "clprop": "hidden",
+            "format": "json",
+            "formatversion": "2",
+            "maxlag": "5",
+        }
+        categories: list[str] = []
+        continuation: dict[str, Any] = {}
+        for _ in range(8):
+            payload = await self.http_client.get_json(candidate.wiki_language, {**params, **continuation})
+            pages = payload.get("query", {}).get("pages", []) if isinstance(payload, dict) else []
+            page_list = pages if isinstance(pages, list) else []
+            for page in page_list:
+                if not isinstance(page, dict):
+                    continue
+                raw_categories = page.get("categories", [])
+                category_list = raw_categories if isinstance(raw_categories, list) else []
+                for category in category_list:
+                    if isinstance(category, dict):
+                        title = str(category.get("title") or "").strip()
+                        if title:
+                            categories.append(title)
+
+            raw_continue = payload.get("continue") if isinstance(payload, dict) else None
+            if not isinstance(raw_continue, dict):
+                break
+            continuation = {
+                key: value
+                for key, value in raw_continue.items()
+                if key != "continue"
+            }
+            if not continuation:
+                break
+
+        result = tuple(dict.fromkeys(categories))
+        await self.cache.page_categories.set(cache_key, result)
+        return result
+
+
 class WikimediaAttributionExtractor:
-    def from_imageinfo(self, imageinfo: dict[str, Any]) -> WikimediaImageMetadata:
+    def from_imageinfo(
+        self,
+        imageinfo: dict[str, Any],
+        *,
+        file_pageid: int | None = None,
+        commons_pageid: int | None = None,
+        categories: tuple[str, ...] = tuple(),
+    ) -> WikimediaImageMetadata:
         extmetadata = imageinfo.get("extmetadata")
         if not isinstance(extmetadata, dict):
             extmetadata = {}
 
         return WikimediaImageMetadata(
+            file_pageid=file_pageid,
+            commons_pageid=commons_pageid,
             canonicaltitle=self._clean(imageinfo.get("canonicaltitle")),
             descriptionurl=self._clean(imageinfo.get("descriptionurl")),
             url=self._clean(imageinfo.get("url")),
@@ -444,6 +530,9 @@ class WikimediaAttributionExtractor:
             attribution_required=self._metadata_value(extmetadata, "AttributionRequired", limit=20),
             object_name=self._metadata_value(extmetadata, "ObjectName"),
             image_description=self._metadata_value(extmetadata, "ImageDescription"),
+            extmetadata_categories=self._metadata_value(extmetadata, "Categories", limit=300),
+            restrictions=self._metadata_value(extmetadata, "Restrictions", limit=300),
+            categories=categories,
         )
 
     def _metadata_value(self, extmetadata: dict[str, Any], key: str, *, limit: int = 180) -> str:
@@ -495,34 +584,37 @@ class WikipediaPageImageResolver:
         if cached is not None:
             return cached
 
-        params = {
-            "action": "query",
-            "prop": "imageinfo",
-            "titles": file_title,
-            "iiprop": "url|size|mime|mediatype|canonicaltitle|extmetadata",
-            "iiurlwidth": "800",
-            "iiextmetadatafilter": "Artist|Credit|LicenseShortName|LicenseUrl|UsageTerms|AttributionRequired|ObjectName|ImageDescription",
-            "iiextmetadatalanguage": candidate.wiki_language,
-            "format": "json",
-            "formatversion": "2",
-            "maxlag": "5",
-        }
-        payload = await self.http_client.get_json(candidate.wiki_language, params)
-        pages = payload.get("query", {}).get("pages", []) if isinstance(payload, dict) else []
-        imageinfo = self._first_imageinfo(pages)
+        page_data = await self._fetch_file_page_data(candidate.wiki_language, file_title)
+        commons_data: WikimediaFilePageData | None = None
+        if candidate.wiki_language != "commons":
+            try:
+                commons_data = await self._fetch_file_page_data("commons", file_title)
+            except WikipediaUserError as exc:
+                LOGGER.warning("Não consegui consultar categorias do Commons para %s: %s", file_title, exc.code)
+
+        imageinfo = page_data.imageinfo or (commons_data.imageinfo if commons_data else None)
         if imageinfo is None:
             raise WikipediaUserError(
                 "Encontrei artigos, mas nenhum tinha imagem livre utilizável.",
                 code="wiki_no_imageinfo",
             )
 
-        metadata = self.attribution_extractor.from_imageinfo(imageinfo)
+        categories = tuple(dict.fromkeys(
+            tuple(page_data.categories) + (tuple(commons_data.categories) if commons_data else tuple())
+        ))
+        metadata = self.attribution_extractor.from_imageinfo(
+            imageinfo,
+            file_pageid=page_data.pageid,
+            commons_pageid=(commons_data.pageid if commons_data else page_data.pageid if candidate.wiki_language == "commons" else None),
+            categories=categories,
+        )
         LOGGER.info(
-            "Wikipedia imageinfo: pageid=%s file=%s mime=%s license=%s.",
+            "Wikipedia imageinfo: pageid=%s file=%s mime=%s license=%s categories=%d.",
             candidate.pageid,
             file_title,
             metadata.mime,
             metadata.license_short_name,
+            len(categories),
         )
         await self.cache.imageinfo.set(cache_key, metadata)
         return metadata
@@ -535,6 +627,71 @@ class WikipediaPageImageResolver:
             return value
         return f"File:{value}"
 
+    async def _fetch_file_page_data(self, language: str, file_title: str) -> WikimediaFilePageData:
+        params = {
+            "action": "query",
+            "prop": "imageinfo|categories",
+            "titles": file_title,
+            "iiprop": "url|size|mime|mediatype|canonicaltitle|extmetadata",
+            "iiurlwidth": "800",
+            "iiextmetadatafilter": (
+                "Artist|Credit|LicenseShortName|LicenseUrl|UsageTerms|AttributionRequired|"
+                "ObjectName|ImageDescription|Categories|Restrictions"
+            ),
+            "iiextmetadatalanguage": language if language not in {"commons", "wikidata"} else "en",
+            "cllimit": "max",
+            "clprop": "hidden",
+            "format": "json",
+            "formatversion": "2",
+            "maxlag": "5",
+        }
+        pageid: int | None = None
+        imageinfo: dict[str, Any] | None = None
+        categories: list[str] = []
+        continuation: dict[str, Any] = {}
+
+        for _ in range(8):
+            payload = await self.http_client.get_json(language, {**params, **continuation})
+            pages = payload.get("query", {}).get("pages", []) if isinstance(payload, dict) else []
+            page = self._first_page(pages)
+            if page is not None:
+                if pageid is None:
+                    pageid = self._optional_pageid(page.get("pageid"))
+                if imageinfo is None:
+                    imageinfo = self._first_imageinfo([page])
+                raw_categories = page.get("categories", [])
+                category_list = raw_categories if isinstance(raw_categories, list) else []
+                for category in category_list:
+                    if isinstance(category, dict):
+                        title = str(category.get("title") or "").strip()
+                        if title:
+                            categories.append(title)
+
+            raw_continue = payload.get("continue") if isinstance(payload, dict) else None
+            if not isinstance(raw_continue, dict):
+                break
+            continuation = {
+                key: value
+                for key, value in raw_continue.items()
+                if key != "continue"
+            }
+            if not continuation:
+                break
+
+        return WikimediaFilePageData(
+            pageid=pageid,
+            imageinfo=imageinfo,
+            categories=tuple(dict.fromkeys(categories)),
+        )
+
+    def _first_page(self, pages: Any) -> dict[str, Any] | None:
+        if not isinstance(pages, list):
+            return None
+        for page in pages:
+            if isinstance(page, dict):
+                return page
+        return None
+
     def _first_imageinfo(self, pages: Any) -> dict[str, Any] | None:
         if not isinstance(pages, list):
             return None
@@ -545,6 +702,13 @@ class WikipediaPageImageResolver:
             if isinstance(imageinfos, list) and imageinfos and isinstance(imageinfos[0], dict):
                 return imageinfos[0]
         return None
+
+    def _optional_pageid(self, value: Any) -> int | None:
+        try:
+            parsed = int(value)
+            return parsed if parsed > 0 else None
+        except (TypeError, ValueError):
+            return None
 
 
 class PillowImageValidator:
@@ -640,6 +804,18 @@ class ImageDownloadService:
                     if self._inflight.get(processed_key) is task:
                         self._inflight.pop(processed_key, None)
 
+    async def download_raw_for_safety(self, image_url: str) -> bytes:
+        return await self._download_raw(image_url, use_cache=False, store_cache=False)
+
+    async def validate_and_cache_raw(self, raw: bytes, *, cache_key: str) -> bytes:
+        processed_key = f"{cache_key}:processed:{self.validator.max_dimension}"
+        cached = await self.cache.processed_image.get(processed_key)
+        if cached is not None:
+            return cached
+        normalized = await asyncio.to_thread(self.validator.normalize, raw)
+        await self.cache.processed_image.set(processed_key, normalized)
+        return normalized
+
     async def _download_and_validate(self, image_url: str, *, processed_key: str) -> bytes:
         started_at = time.monotonic()
         raw = await self._download_raw(image_url)
@@ -653,7 +829,7 @@ class ImageDownloadService:
         )
         return normalized
 
-    async def _download_raw(self, image_url: str) -> bytes:
+    async def _download_raw(self, image_url: str, *, use_cache: bool = True, store_cache: bool = True) -> bytes:
         parsed = urlparse(image_url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise WikipediaUserError(
@@ -662,9 +838,10 @@ class ImageDownloadService:
             )
 
         cache_key = f"url:{self._hash(image_url)}"
-        cached = await self.cache.image_bytes.get(cache_key)
-        if cached is not None:
-            return cached
+        if use_cache:
+            cached = await self.cache.image_bytes.get(cache_key)
+            if cached is not None:
+                return cached
 
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
@@ -755,7 +932,8 @@ class ImageDownloadService:
                     )
 
                 raw_bytes = bytes(data)
-                await self.cache.image_bytes.set(cache_key, raw_bytes)
+                if store_cache:
+                    await self.cache.image_bytes.set(cache_key, raw_bytes)
                 return raw_bytes
 
             except WikipediaUserError:
@@ -801,18 +979,21 @@ class WikipediaImageService:
         fallback_language: str | None = None,
         user_agent: str | None = None,
         max_image_bytes: int | None = None,
+        safety_pipeline: SafetyPipeline | None = None,
     ) -> None:
         self.default_language = self._clean_language(default_language or os.getenv("WIKI_DEFAULT_LANG") or "pt")
         self.fallback_language = self._clean_language(fallback_language or os.getenv("WIKI_FALLBACK_LANG") or "en")
         self.cache = WikimediaCache()
         self.http_client = WikimediaHttpClient(user_agent=user_agent)
         self.search_resolver = WikipediaSearchResolver(self.http_client, self.cache)
+        self.category_resolver = WikimediaCategoryResolver(self.http_client, self.cache)
         self.attribution_extractor = WikimediaAttributionExtractor()
         self.page_image_resolver = WikipediaPageImageResolver(
             self.http_client,
             self.cache,
             self.attribution_extractor,
         )
+        self.safety_pipeline = safety_pipeline or SafetyPipeline(http_client=self.http_client)
         self.validator = PillowImageValidator()
         configured_max_bytes = max_image_bytes or self._env_int("WIKI_MAX_IMAGE_BYTES", 8 * 1024 * 1024)
         self.image_downloader = ImageDownloadService(
@@ -822,14 +1003,34 @@ class WikipediaImageService:
             max_bytes=configured_max_bytes,
         )
 
-    async def resolve(self, raw_term: str, *, allow_ambiguous: bool = True) -> WikipediaResolution:
+    async def resolve(
+        self,
+        raw_term: str,
+        *,
+        allow_ambiguous: bool = True,
+        guild_id: int | None = None,
+        user_id: int | None = None,
+    ) -> WikipediaResolution:
         term = self.normalize_search_term(raw_term)
         started_at = time.monotonic()
         LOGGER.info("Wikipedia termo recebido: %r; normalizado: %r.", raw_term, term)
 
+        query_decision = await self.safety_pipeline.evaluate_query(term, guild_id=guild_id, user_id=user_id)
+        self._raise_if_safety_rejected(query_decision)
+
         search_results = await self._search_with_fallback(term)
-        candidates = list(search_results.image_candidates)
+        candidates = await self._filter_safe_page_candidates(
+            list(search_results.image_candidates),
+            guild_id=guild_id,
+            user_id=user_id,
+            term=term,
+        )
         if not candidates:
+            if search_results.image_candidates:
+                raise WikipediaUserError(
+                    SAFETY_PUBLIC_NO_SAFE_RESULTS_MESSAGE,
+                    code="wiki_safety_filtered_results",
+                )
             if search_results.all_candidates:
                 raise WikipediaUserError(
                     "Encontrei artigos, mas nenhum tinha imagem livre utilizável para a tierlist.",
@@ -844,7 +1045,12 @@ class WikipediaImageService:
             LOGGER.info("Wikipedia termo ambíguo '%s': %d candidatos.", term, len(candidates))
             return WikipediaResolution(candidates=candidates[:25])
 
-        item = await self._resolve_first_usable_candidate(candidates)
+        item = await self._resolve_first_usable_candidate(
+            candidates,
+            guild_id=guild_id,
+            user_id=user_id,
+            term=term,
+        )
         LOGGER.info(
             "Wikipedia resolvida em %.2fs: %s:%s %s.",
             time.monotonic() - started_at,
@@ -854,7 +1060,14 @@ class WikipediaImageService:
         )
         return WikipediaResolution(item=item)
 
-    async def resolve_candidate(self, candidate: WikipediaPageImageCandidate) -> WikipediaResolvedImage:
+    async def resolve_candidate(
+        self,
+        candidate: WikipediaPageImageCandidate,
+        *,
+        guild_id: int | None = None,
+        user_id: int | None = None,
+        term: str = "",
+    ) -> WikipediaResolvedImage:
         started_at = time.monotonic()
         metadata = await self.page_image_resolver.resolve_imageinfo(candidate)
         if self._metadata_indicates_restricted_license(metadata):
@@ -870,6 +1083,26 @@ class WikipediaImageService:
                 code="wiki_non_free_image",
             )
 
+        metadata_decision = await self.safety_pipeline.evaluate_file_metadata(
+            metadata,
+            guild_id=guild_id,
+            user_id=user_id,
+            term=term,
+            pageid=candidate.pageid,
+            page_title=candidate.title,
+        )
+        self._raise_if_safety_rejected(metadata_decision)
+
+        structured_decision = await self.safety_pipeline.evaluate_structured_data(
+            metadata,
+            guild_id=guild_id,
+            user_id=user_id,
+            term=term,
+            pageid=candidate.pageid,
+            page_title=candidate.title,
+        )
+        self._raise_if_safety_rejected(structured_decision)
+
         download_url = self._select_download_url(candidate, metadata)
         if not download_url:
             raise WikipediaUserError(
@@ -879,7 +1112,21 @@ class WikipediaImageService:
 
         file_title = metadata.canonicaltitle or self.page_image_resolver.file_title(candidate.pageimage)
         cache_key = self._image_cache_key(candidate, file_title, download_url)
-        image_bytes = await self.image_downloader.download_validated(download_url, cache_key=cache_key)
+        if self.safety_pipeline.has_visual_classifier:
+            raw_image_bytes = await self.image_downloader.download_raw_for_safety(download_url)
+            visual_decision = await self.safety_pipeline.evaluate_visual(
+                raw_image_bytes,
+                metadata=metadata,
+                guild_id=guild_id,
+                user_id=user_id,
+                term=term,
+                pageid=candidate.pageid,
+                page_title=candidate.title,
+            )
+            self._raise_if_safety_rejected(visual_decision)
+            image_bytes = await self.image_downloader.validate_and_cache_raw(raw_image_bytes, cache_key=cache_key)
+        else:
+            image_bytes = await self.image_downloader.download_validated(download_url, cache_key=cache_key)
         caption = candidate.title.strip() or metadata.object_name or "Wikipedia"
 
         LOGGER.info(
@@ -918,6 +1165,10 @@ class WikipediaImageService:
     async def _resolve_first_usable_candidate(
         self,
         candidates: list[WikipediaPageImageCandidate],
+        *,
+        guild_id: int | None = None,
+        user_id: int | None = None,
+        term: str = "",
     ) -> WikipediaResolvedImage:
         last_error: WikipediaUserError | None = None
         retryable_codes = {
@@ -932,11 +1183,18 @@ class WikipediaImageService:
             "wiki_image_too_many_pixels",
             "wiki_image_empty",
             "wiki_image_http_error",
+            "wiki_safety_block",
+            "wiki_safety_review",
         }
 
         for candidate in candidates:
             try:
-                return await self.resolve_candidate(candidate)
+                return await self.resolve_candidate(
+                    candidate,
+                    guild_id=guild_id,
+                    user_id=user_id,
+                    term=term,
+                )
             except WikipediaUserError as exc:
                 last_error = exc
                 LOGGER.warning(
@@ -957,6 +1215,57 @@ class WikipediaImageService:
             code="wiki_no_free_image",
         )
 
+    async def _filter_safe_page_candidates(
+        self,
+        candidates: list[WikipediaPageImageCandidate],
+        *,
+        guild_id: int | None,
+        user_id: int | None,
+        term: str,
+    ) -> list[WikipediaPageImageCandidate]:
+        safe_candidates: list[WikipediaPageImageCandidate] = []
+
+        for candidate in candidates:
+            try:
+                categories = await self.category_resolver.fetch_page_categories(candidate)
+                decision = await self.safety_pipeline.evaluate_page(
+                    pageid=candidate.pageid,
+                    title=candidate.title,
+                    description=candidate.description,
+                    categories=categories,
+                    guild_id=guild_id,
+                    user_id=user_id,
+                    term=term,
+                )
+            except WikipediaUserError as exc:
+                LOGGER.warning(
+                    "Categorias da página indisponíveis; candidato bloqueado fail-closed: %s:%s code=%s.",
+                    candidate.wiki_language,
+                    candidate.pageid,
+                    exc.code,
+                )
+                decision = await self.safety_pipeline.evaluate_unavailable_source(
+                    source="page_categories",
+                    guild_id=guild_id,
+                    user_id=user_id,
+                    term=term,
+                    pageid=candidate.pageid,
+                    page_title=candidate.title,
+                )
+
+            if decision.verdict == SAFETY_VERDICT_ALLOW:
+                safe_candidates.append(candidate)
+            else:
+                LOGGER.warning(
+                    "Candidato Wikipedia filtrado por safety: lang=%s pageid=%s title=%r verdict=%s.",
+                    candidate.wiki_language,
+                    candidate.pageid,
+                    candidate.title,
+                    decision.verdict,
+                )
+
+        return safe_candidates
+
     def normalize_search_term(self, raw_term: str) -> str:
         value = re.sub(r"\s+", " ", (raw_term or "").strip())
         value = self._title_from_wikipedia_url(value) or value
@@ -968,6 +1277,13 @@ class WikipediaImageService:
         if not any(char.isalnum() for char in value):
             raise WikipediaUserError("Informe um termo com letras ou números para pesquisar na Wikipedia.", code="wiki_invalid")
         return value
+
+    def _raise_if_safety_rejected(self, decision: Any) -> None:
+        if getattr(decision, "verdict", SAFETY_VERDICT_ALLOW) == SAFETY_VERDICT_ALLOW:
+            return
+        public_message = getattr(decision, "public_message", "") or SAFETY_PUBLIC_NO_SAFE_RESULTS_MESSAGE
+        verdict = getattr(decision, "verdict", "blocked")
+        raise WikipediaUserError(public_message, code=f"wiki_safety_{verdict}")
 
     async def _search_with_fallback(self, term: str) -> WikipediaSearchResults:
         languages = [self.default_language]
