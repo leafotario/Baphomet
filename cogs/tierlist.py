@@ -19,6 +19,14 @@ from discord import app_commands
 from discord.ext import commands
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
+from cogs.tierlist_wikipedia.wikipedia import (
+    WIKIPEDIA_SOURCE_TYPE,
+    WikipediaImageService,
+    WikipediaPageImageCandidate,
+    WikipediaResolution,
+    WikipediaResolvedImage,
+    WikipediaUserError,
+)
 from cogs.tierlist_spotify.spotify import (
     SpotifyImageDownloader,
     SpotifyImageError,
@@ -29,11 +37,6 @@ from cogs.tierlist_spotify.spotify import (
     SpotifyService,
     SpotifyUserError,
 )
-
-try:
-    from duckduckgo_search import DDGS
-except ImportError:
-    DDGS = None
 
 LOGGER = logging.getLogger("baphomet.tierlist")
 
@@ -78,6 +81,22 @@ class TierItem:
     track_name: str | None = None
     release_date: str | None = None
     attribution_text: str | None = None
+    display_name: str | None = None
+    image_url_used: str | None = None
+    wiki_language: str | None = None
+    wikipedia_pageid: int | None = None
+    wikipedia_title: str | None = None
+    wikipedia_url: str | None = None
+    wikimedia_file_title: str | None = None
+    wikimedia_file_description_url: str | None = None
+    image_mime: str | None = None
+    artist: str | None = None
+    credit: str | None = None
+    license_short_name: str | None = None
+    license_url: str | None = None
+    usage_terms: str | None = None
+    attribution_required: str | None = None
+    metadata_source: str | None = None
 
 
 @dataclass
@@ -171,6 +190,9 @@ class TierListRenderer:
     SPOTIFY_CAPTION_HEIGHT = 52
     SPOTIFY_ITEM_HEIGHT = IMAGE_ITEM_SIZE + SPOTIFY_CAPTION_HEIGHT
     SPOTIFY_ART_PADDING = 8
+    WIKIPEDIA_CAPTION_HEIGHT = 48
+    WIKIPEDIA_ITEM_HEIGHT = IMAGE_ITEM_SIZE + WIKIPEDIA_CAPTION_HEIGHT
+    WIKIPEDIA_ART_PADDING = 8
     FOOTER_TOP_GAP = 50
     FOOTER_AVATAR_TOP_GAP = 18
     FOOTER_AVATAR_SIZE = 63
@@ -580,9 +602,17 @@ class TierListRenderer:
     def _is_spotify_item(self, item: "TierItem") -> bool:
         return getattr(item, "source_type", "") == "spotify" or bool(getattr(item, "spotify_id", None))
 
+    def _is_wikipedia_item(self, item: "TierItem") -> bool:
+        return getattr(item, "source_type", "") == WIKIPEDIA_SOURCE_TYPE
+
     def _item_display_name(self, item: "TierItem") -> str:
         """Nome opcional: retorna string vazia quando o item nao tiver legenda."""
-        raw_name = getattr(item, "caption", None) or getattr(item, "name", "") or ""
+        raw_name = (
+            getattr(item, "caption", None)
+            or getattr(item, "display_name", None)
+            or getattr(item, "name", "")
+            or ""
+        )
         return re.sub(r"\s+", " ", str(raw_name).strip())
 
     def _coerce_rgb_color(
@@ -884,6 +914,89 @@ class TierListRenderer:
 
         base.paste(card, (x1, y1), mask=card)
 
+    def _draw_wikipedia_square_item(
+        self,
+        base: Image.Image,
+        item: "TierItem",
+        box: tuple[int, int, int, int],
+        *,
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    ) -> None:
+        """
+        Desenha imagem Wikipedia preservando proporcao.
+
+        Diferente do fluxo generico de URL, a imagem ja foi validada antes de
+        entrar na sessao. Aqui fazemos apenas composicao visual, sem rede/API.
+        """
+        x1, y1, x2, y2 = box
+        width = x2 - x1
+        height = y2 - y1
+        card = Image.new("RGBA", (width, height), self.ITEM_BG)
+        card.putalpha(self._rounded_mask((width, height), self.IMAGE_ITEM_RADIUS))
+        draw = ImageDraw.Draw(card, "RGBA")
+        draw.rounded_rectangle(
+            (0, 0, width - 1, height - 1),
+            radius=self.IMAGE_ITEM_RADIUS,
+            outline=self.ITEM_OUTLINE,
+            width=1,
+        )
+
+        art_padding = self.WIKIPEDIA_ART_PADDING
+        art_size = max(1, min(width - art_padding * 2, self.IMAGE_ITEM_SIZE - art_padding * 2))
+        art_x = (width - art_size) // 2
+        art_y = art_padding
+        draw.rectangle((art_x, art_y, art_x + art_size, art_y + art_size), fill=(22, 26, 35, 255))
+
+        try:
+            raw = self._safe_open_image(item.image_bytes, self._item_display_name(item) or "imagem Wikipedia")
+            fitted = ImageOps.contain(
+                raw,
+                (art_size, art_size),
+                method=Image.Resampling.LANCZOS,
+            ).convert("RGBA")
+            paste_x = art_x + (art_size - fitted.width) // 2
+            paste_y = art_y + (art_size - fitted.height) // 2
+            card.paste(fitted, (paste_x, paste_y), mask=fitted)
+        except Exception as exc:
+            print(f"[ERRO] Fallback visual para item Wikipedia '{self._item_display_name(item)}': {exc}")
+
+        caption = self._item_display_name(item)
+        if caption:
+            caption_box = (
+                art_padding,
+                self.IMAGE_ITEM_SIZE + 4,
+                width - art_padding,
+                height - art_padding,
+            )
+            caption_font = self._font(14, bold=True)
+            max_caption_width = max(1, caption_box[2] - caption_box[0])
+            lines = self._wrap_text_lines(draw, caption, caption_font, max_caption_width) or [caption]
+            lines = lines[:2]
+            if lines:
+                lines[-1] = self._clip_text(draw, lines[-1], caption_font, max_caption_width)
+            multiline_text = "\n".join(lines)
+            left, top, right, bottom = draw.multiline_textbbox(
+                (0, 0),
+                multiline_text,
+                font=caption_font,
+                spacing=2,
+                align="center",
+            )
+            text_w = right - left
+            text_h = bottom - top
+            tx = caption_box[0] + ((caption_box[2] - caption_box[0]) - text_w) / 2 - left
+            ty = caption_box[1] + ((caption_box[3] - caption_box[1]) - text_h) / 2 - top
+            draw.multiline_text(
+                (tx, ty),
+                multiline_text,
+                font=caption_font,
+                fill=self.TEXT,
+                spacing=2,
+                align="center",
+            )
+
+        base.paste(card, (x1, y1), mask=card)
+
     def _draw_item_chip(
         self,
         base: Image.Image,
@@ -901,6 +1014,9 @@ class TierListRenderer:
         if self._item_has_image(item):
             if self._is_spotify_item(item):
                 self._draw_spotify_square_item(base, item, box, font=font)
+                return
+            if self._is_wikipedia_item(item):
+                self._draw_wikipedia_square_item(base, item, box, font=font)
                 return
             self._draw_image_square_item(base, item, box, font=font)
             return
@@ -1135,7 +1251,12 @@ class TierListRenderer:
             for item in items:
                 if self._item_has_image(item):
                     item_w = self.IMAGE_ITEM_SIZE
-                    item_h = self.SPOTIFY_ITEM_HEIGHT if self._is_spotify_item(item) else self.IMAGE_ITEM_SIZE
+                    if self._is_spotify_item(item):
+                        item_h = self.SPOTIFY_ITEM_HEIGHT
+                    elif self._is_wikipedia_item(item):
+                        item_h = self.WIKIPEDIA_ITEM_HEIGHT
+                    else:
+                        item_h = self.IMAGE_ITEM_SIZE
                 else:
                     measurement = self._measure_text_item(
                         scratch_draw,
@@ -1428,10 +1549,10 @@ class AddItemModal(discord.ui.Modal):
         )
 
         self.web_search_input = discord.ui.TextInput(
-            label="Pesquisa na Web (Termo)",
-            placeholder="Exemplo: Maçã, Goku, Logo do Python",
+            label="Wikipedia / termo de busca",
+            placeholder="Ex: Billie Eilish, Minecraft, Brasil, Charizard",
             min_length=0,
-            max_length=50,
+            max_length=100,
             required=False,
         )
         self.spotify_album_input = discord.ui.TextInput(
@@ -1481,12 +1602,17 @@ class AddItemModal(discord.ui.Modal):
         clean_item = self.cog.clean_text(str(self.item_name.value), max_length=25)
         clean_url = str(self.image_url.value).strip() or None
         user_id_str = str(self.user_id_input.value).strip()
-        web_search_str = str(self.web_search_input.value).strip()
+        wikipedia_search_str = str(self.web_search_input.value).strip()
         spotify_album_str = str(self.spotify_album_input.value).strip()
 
-        if spotify_album_str and any([clean_url, user_id_str, web_search_str]):
+        image_source_count = sum(
+            1
+            for has_value in (bool(clean_url), bool(user_id_str), bool(wikipedia_search_str), bool(spotify_album_str))
+            if has_value
+        )
+        if image_source_count > 1:
             await interaction.followup.send(
-                "⚠️ Escolha só uma fonte de imagem: Spotify, URL direta, foto de usuário ou pesquisa web.",
+                "⚠️ Escolha apenas uma fonte de imagem: URL direta, foto de usuário, Spotify ou Wikipedia.",
                 ephemeral=True,
             )
             return
@@ -1558,6 +1684,60 @@ class AddItemModal(discord.ui.Modal):
             )
             return
 
+        if wikipedia_search_str:
+            try:
+                resolution = await self.cog.resolve_wikipedia_input(wikipedia_search_str)
+            except WikipediaUserError as exc:
+                LOGGER.exception("Falha amigável ao resolver Wikipedia: %s", exc.code)
+                await interaction.followup.send(f"❌ {exc.user_message}", ephemeral=True)
+                return
+            except Exception:
+                LOGGER.exception("Falha inesperada ao resolver entrada Wikipedia.")
+                await interaction.followup.send(
+                    "❌ Não consegui consultar a Wikipedia agora. Tente novamente em instantes.",
+                    ephemeral=True,
+                )
+                return
+
+            if resolution.is_ambiguous:
+                view = WikipediaCandidateSelectView(
+                    cog=self.cog,
+                    owner_id=self.owner_id,
+                    candidates=resolution.candidates,
+                    custom_caption=clean_item,
+                )
+                message = await interaction.followup.send(
+                    "🌐 Esse termo é ambíguo. Escolha o artigo correto no menu.",
+                    view=view,
+                    ephemeral=True,
+                    wait=True,
+                )
+                view.message = message
+                return
+
+            if resolution.item is None:
+                await interaction.followup.send(
+                    "❌ Não encontrei nenhum artigo na Wikipedia para esse termo.",
+                    ephemeral=True,
+                )
+                return
+
+            item = self.cog.build_wikipedia_tier_item(
+                resolution.item,
+                custom_caption=clean_item,
+            )
+            await self.cog.send_tier_choice_for_item(
+                interaction,
+                owner_id=self.owner_id,
+                item=item,
+                tiers=session.tiers,
+                extra=(
+                    "\n🌐 Imagem livre resolvida via Wikipedia/Wikimedia. "
+                    "A legenda ficará fora da imagem."
+                ),
+            )
+            return
+
         image_bytes = None
         source_type = "text"
 
@@ -1575,20 +1755,6 @@ class AddItemModal(discord.ui.Modal):
             except (ValueError, discord.NotFound, discord.HTTPException):
                 clean_url = None
 
-        # Prioridade 3: Sem URL/Spotify, mas com Pesquisa Web solicitada. Busca a imagem oficial da Wikipedia!
-        if not clean_url and not image_bytes and web_search_str:
-            print(f"[DEBUG] Iniciando busca na Wikipedia pelo termo: '{web_search_str}'")
-            
-            timeout = aiohttp.ClientTimeout(total=self.cog.IMAGE_DOWNLOAD_TIMEOUT)
-            async with aiohttp.ClientSession(timeout=timeout) as http:
-                fetched_bytes = await self.cog.fetch_wikipedia_image(http, web_search_str)
-                if fetched_bytes:
-                    image_bytes = fetched_bytes
-                    source_type = "image"
-                    clean_url = "(Pesquisa Wikipedia Automática)"  # Fallback estético para o log interno
-                else:
-                    print(f"[ERRO] Wikipedia retornou falha total para '{web_search_str}'. Aplicando fallback para texto.")
-
         if not clean_item and not clean_url and not image_bytes:
             await interaction.followup.send(
                 "⚠️ Informe um nome ou alguma fonte de imagem para adicionar o item.",
@@ -1597,7 +1763,7 @@ class AddItemModal(discord.ui.Modal):
             return
 
         if clean_url or image_bytes:
-            source_type = "image"
+            source_type = "image_url"
 
         item = TierItem(
             name=clean_item,
@@ -1743,6 +1909,129 @@ class SpotifyCandidateSelectView(discord.ui.View):
         self.stop()
 
 
+class WikipediaCandidateSelect(discord.ui.Select):
+    def __init__(self, view_instance: "WikipediaCandidateSelectView") -> None:
+        self.view_instance = view_instance
+
+        options: list[discord.SelectOption] = []
+        for index, candidate in enumerate(view_instance.candidates[:25]):
+            description_parts = []
+            if candidate.description:
+                description_parts.append(candidate.description)
+            description_parts.append(candidate.wiki_language)
+            description_parts.append("imagem livre" if candidate.has_image else "sem imagem")
+            options.append(
+                discord.SelectOption(
+                    label=candidate.title[:100],
+                    value=str(index),
+                    description=" • ".join(description_parts)[:100],
+                    emoji="🌐",
+                )
+            )
+
+        super().__init__(
+            placeholder="Escolha o artigo da Wikipedia",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if interaction.user.id != self.view_instance.owner_id:
+            await interaction.response.send_message(
+                "❌ Só quem criou a tier list pode usar esse menu.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=False)
+
+        session = self.view_instance.cog.sessions.get(self.view_instance.owner_id)
+        if session is None:
+            await interaction.edit_original_response(
+                content="❌ Essa sessão expirou ou foi cancelada.",
+                view=None,
+            )
+            return
+
+        selected_index = int(self.values[0])
+        try:
+            candidate = self.view_instance.candidates[selected_index]
+        except IndexError:
+            await interaction.edit_original_response(
+                content="❌ Esse resultado não está mais disponível. Tente adicionar de novo.",
+                view=None,
+            )
+            return
+
+        try:
+            resolved = await self.view_instance.cog.resolve_wikipedia_candidate(candidate)
+            item = self.view_instance.cog.build_wikipedia_tier_item(
+                resolved,
+                custom_caption=self.view_instance.custom_caption,
+            )
+        except WikipediaUserError as exc:
+            LOGGER.exception("Falha amigável ao preparar candidato Wikipedia: %s", exc.code)
+            await interaction.edit_original_response(content=f"❌ {exc.user_message}", view=None)
+            return
+        except Exception:
+            LOGGER.exception("Falha inesperada ao preparar candidato Wikipedia.")
+            await interaction.edit_original_response(
+                content="❌ A imagem encontrada não pôde ser baixada com segurança.",
+                view=None,
+            )
+            return
+
+        tier_view = ItemTierSelectView(
+            cog=self.view_instance.cog,
+            owner_id=self.view_instance.owner_id,
+            item=item,
+            tiers=session.tiers,
+        )
+        item_label = item.name or item.wikipedia_title or "item Wikipedia"
+        await interaction.edit_original_response(
+            content=(
+                f"📌 Escolha em qual tier colocar **{discord.utils.escape_markdown(item_label)}**:"
+                "\n🌐 Imagem livre resolvida via Wikipedia/Wikimedia. A legenda ficará fora da imagem."
+            ),
+            view=tier_view,
+        )
+        self.view_instance.stop()
+
+
+class WikipediaCandidateSelectView(discord.ui.View):
+    def __init__(
+        self,
+        *,
+        cog: "TierListCog",
+        owner_id: int,
+        candidates: list[WikipediaPageImageCandidate],
+        custom_caption: str,
+    ) -> None:
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.owner_id = owner_id
+        self.candidates = candidates
+        self.custom_caption = custom_caption
+        self.message: discord.Message | None = None
+        self.add_item(WikipediaCandidateSelect(self))
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+        if self.message:
+            try:
+                await self.message.edit(
+                    content="⌛ A seleção expirou. O item não foi adicionado.",
+                    view=None,
+                )
+            except discord.HTTPException:
+                pass
+
+        self.stop()
+
+
 
 class ItemTierSelect(discord.ui.Select):
     def __init__(
@@ -1808,9 +2097,12 @@ class ItemTierSelect(discord.ui.Select):
 
         await self.cog.refresh_panel(session)
 
-        image_badge = " com capa Spotify" if self.item.source_type == "spotify" else (
-            " com imagem" if (self.item.image_url or self.item.image_bytes) else ""
-        )
+        if self.item.source_type == "spotify":
+            image_badge = " com capa Spotify"
+        elif self.item.source_type == WIKIPEDIA_SOURCE_TYPE:
+            image_badge = " com imagem da Wikipedia"
+        else:
+            image_badge = " com imagem" if (self.item.image_url or self.item.image_bytes) else ""
         item_label = self.item.name or "item com imagem"
 
         await interaction.response.edit_message(
@@ -1919,7 +2211,7 @@ class ItemSelectionSelect(discord.ui.Select):
                     label=display_name[:100],
                     value=str(local_index),
                     description=f"Tier {ref['tier']} • posição {ref['index'] + 1}"[:100],
-                    emoji="🖼️" if item.image_url or item.image_bytes else "📝",
+                    emoji="🌐" if item.source_type == WIKIPEDIA_SOURCE_TYPE else ("🖼️" if item.image_url or item.image_bytes else "📝"),
                 )
             )
 
@@ -2147,13 +2439,18 @@ class EditItemModal(discord.ui.Modal):
             if current_item.source_type == "spotify" and new_url == old_valid_url:
                 current_item.name = new_name or self.main_view.cog.spotify_item_auto_label(current_item)
                 current_item.caption = current_item.name
+            elif current_item.source_type == WIKIPEDIA_SOURCE_TYPE and new_url == old_valid_url:
+                current_item.name = new_name or current_item.wikipedia_title or current_item.display_name or "Item Wikipedia"
+                current_item.caption = current_item.name
+                current_item.display_name = current_item.name
             else:
                 current_item.name = new_name
             current_item.image_url = new_url
             if new_url != old_valid_url:
                 current_item.image_bytes = None
                 self.main_view.cog.clear_spotify_metadata(current_item)
-                current_item.source_type = "image" if new_url else "text"
+                self.main_view.cog.clear_wikipedia_metadata(current_item)
+                current_item.source_type = "image_url" if new_url else "text"
 
             if new_tier != old_tier:
                 moved_item = session.items[old_tier].pop(self.item_index)
@@ -2719,10 +3016,10 @@ class TierListControlView(discord.ui.View):
                 )
                 return
 
-        file = discord.File(
+        files = [discord.File(
             image_buffer,
             filename="tierlist.png",
-        )
+        )]
 
         for child in self.children:
             child.disabled = True
@@ -2741,14 +3038,55 @@ class TierListControlView(discord.ui.View):
 
         self.stop()
 
-        attribution = self.cog.build_spotify_attribution_text(hydrated_snapshot)
-        final_content = f"🖼️ **{discord.utils.escape_markdown(title_snapshot)}**"
-        if attribution:
-            final_content = f"{final_content}\n\n{attribution}"
+        spotify_attribution = self.cog.build_spotify_attribution_text(hydrated_snapshot)
+        wikimedia_attribution, wikimedia_file_bytes = self.cog.build_wikimedia_attribution_text(hydrated_snapshot)
+        if wikimedia_file_bytes:
+            files.append(
+                discord.File(
+                    io.BytesIO(wikimedia_file_bytes),
+                    filename="wikimedia_attributions.txt",
+                )
+            )
+
+        base_content = f"🖼️ **{discord.utils.escape_markdown(title_snapshot)}**"
+        content_parts = [base_content]
+        if spotify_attribution:
+            content_parts.append(spotify_attribution)
+        if wikimedia_attribution:
+            content_parts.append(wikimedia_attribution)
+        final_content = "\n\n".join(content_parts)
+
+        if len(final_content) > 1900 and wikimedia_attribution:
+            if not wikimedia_file_bytes:
+                full_entries = self.cog.collect_wikimedia_attribution_entries(hydrated_snapshot)
+                full_text = (
+                    "Imagens via Wikipedia/Wikimedia. Créditos/licenças:\n"
+                    + "\n".join(
+                        f"- {self.cog.format_wikimedia_attribution_entry(entry, markdown=False)}"
+                        for entry in full_entries
+                    )
+                )
+                files.append(
+                    discord.File(
+                        io.BytesIO(full_text.encode("utf-8")),
+                        filename="wikimedia_attributions.txt",
+                    )
+                )
+
+            content_parts = [base_content]
+            if spotify_attribution:
+                content_parts.append(spotify_attribution)
+            content_parts.append(
+                "Imagens via Wikipedia/Wikimedia. Créditos/licenças anexados em `wikimedia_attributions.txt`."
+            )
+            final_content = "\n\n".join(content_parts)
+
+        if len(final_content) > 2000:
+            final_content = final_content[:1990].rstrip() + "..."
 
         final_message = await interaction.followup.send(
             content=final_content,
-            file=file,
+            files=files,
             view=PostGenerationView(self.cog, self.owner_id),
             wait=True,
         )
@@ -2831,6 +3169,7 @@ class TierListCog(
             max_bytes=self.MAX_IMAGE_BYTES,
             timeout_seconds=max(self.IMAGE_DOWNLOAD_TIMEOUT, 8),
         )
+        self.wikipedia_service = WikipediaImageService()
 
     async def get_spotify_access_token(self) -> str | None:
         """
@@ -2921,6 +3260,59 @@ class TierListCog(
             attribution_text=resolved.attribution_text,
         )
 
+    async def resolve_wikipedia_input(
+        self,
+        raw: str,
+        *,
+        allow_ambiguous: bool = True,
+    ) -> WikipediaResolution:
+        return await self.wikipedia_service.resolve(
+            raw,
+            allow_ambiguous=allow_ambiguous,
+        )
+
+    async def resolve_wikipedia_candidate(
+        self,
+        candidate: WikipediaPageImageCandidate,
+    ) -> WikipediaResolvedImage:
+        return await self.wikipedia_service.resolve_candidate(candidate)
+
+    def build_wikipedia_tier_item(
+        self,
+        resolved: WikipediaResolvedImage,
+        *,
+        custom_caption: str = "",
+    ) -> TierItem:
+        caption = self.clean_text(custom_caption, max_length=80) if custom_caption else ""
+        if not caption:
+            caption = self.clean_text(resolved.caption or resolved.display_name, max_length=80)
+
+        return TierItem(
+            name=caption,
+            image_url=resolved.image_url,
+            image_bytes=resolved.image_bytes,
+            source_type=WIKIPEDIA_SOURCE_TYPE,
+            caption=caption,
+            image_cache_key=resolved.image_cache_key,
+            attribution_text=None,
+            display_name=resolved.display_name,
+            image_url_used=resolved.image_url,
+            wiki_language=resolved.wiki_language,
+            wikipedia_pageid=resolved.wikipedia_pageid,
+            wikipedia_title=resolved.wikipedia_title,
+            wikipedia_url=resolved.wikipedia_url,
+            wikimedia_file_title=resolved.wikimedia_file_title,
+            wikimedia_file_description_url=resolved.wikimedia_file_description_url,
+            image_mime=resolved.image_mime,
+            artist=resolved.artist,
+            credit=resolved.credit,
+            license_short_name=resolved.license_short_name,
+            license_url=resolved.license_url,
+            usage_terms=resolved.usage_terms,
+            attribution_required=resolved.attribution_required,
+            metadata_source=resolved.metadata_source,
+        )
+
     async def send_tier_choice_for_item(
         self,
         interaction: discord.Interaction,
@@ -2997,6 +3389,95 @@ class TierListCog(
             + suffix
         )
 
+    def collect_wikimedia_attribution_entries(
+        self,
+        tiers_snapshot: OrderedDictType[str, list[TierItem]],
+    ) -> list[dict[str, str]]:
+        entries: list[dict[str, str]] = []
+        seen: set[tuple[str | None, int | None, str | None]] = set()
+
+        for items in tiers_snapshot.values():
+            for item in items:
+                if item.source_type != WIKIPEDIA_SOURCE_TYPE:
+                    continue
+
+                key = (item.wiki_language, item.wikipedia_pageid, item.wikimedia_file_title)
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                label = item.name or item.display_name or item.wikipedia_title or "Item Wikipedia"
+                file_title = item.wikimedia_file_title or "arquivo Wikimedia"
+                author_credit = item.artist or item.credit or "autor/crédito não informado"
+                license_text = item.license_short_name or item.usage_terms or "licença não informada"
+                link = item.wikimedia_file_description_url or item.wikipedia_url or item.image_url_used or item.image_url or ""
+                entries.append({
+                    "label": label,
+                    "file_title": file_title,
+                    "author_credit": author_credit,
+                    "license_text": license_text,
+                    "link": link,
+                })
+
+        return entries
+
+    def format_wikimedia_attribution_entry(
+        self,
+        entry: dict[str, str],
+        *,
+        markdown: bool,
+    ) -> str:
+        parts = [
+            entry.get("label") or "Item Wikipedia",
+            entry.get("file_title") or "arquivo Wikimedia",
+            entry.get("author_credit") or "autor/crédito não informado",
+            entry.get("license_text") or "licença não informada",
+        ]
+        if markdown:
+            formatted_parts = [discord.utils.escape_markdown(part) for part in parts]
+            link = entry.get("link") or ""
+            if link:
+                formatted_parts.append(f"<{link}>")
+            return " - ".join(formatted_parts)
+
+        link = entry.get("link") or ""
+        if link:
+            parts.append(link)
+        return " - ".join(parts)
+
+    def build_wikimedia_attribution_text(
+        self,
+        tiers_snapshot: OrderedDictType[str, list[TierItem]],
+        *,
+        max_visible: int = 5,
+    ) -> tuple[str, bytes | None]:
+        entries = self.collect_wikimedia_attribution_entries(tiers_snapshot)
+        if not entries:
+            return "", None
+
+        visible_entries = entries[:max_visible]
+        hidden_count = max(0, len(entries) - len(visible_entries))
+        visible_text = (
+            "Imagens via Wikipedia/Wikimedia. Créditos/licenças:\n"
+            + "\n".join(
+                f"- {self.format_wikimedia_attribution_entry(entry, markdown=True)}"
+                for entry in visible_entries
+            )
+        )
+
+        full_text = (
+            "Imagens via Wikipedia/Wikimedia. Créditos/licenças:\n"
+            + "\n".join(
+                f"- {self.format_wikimedia_attribution_entry(entry, markdown=False)}"
+                for entry in entries
+            )
+        )
+        if hidden_count:
+            visible_text += f"\n... +{hidden_count} itens no arquivo de atribuições"
+            return visible_text, full_text.encode("utf-8")
+
+        return visible_text, None
+
     def spotify_item_auto_label(self, item: TierItem) -> str:
         base_name = item.track_name or item.album_name or item.spotify_name or "Item Spotify"
         artist_text = ", ".join(item.spotify_artists) if item.spotify_artists else ""
@@ -3016,168 +3497,27 @@ class TierListCog(
         item.release_date = None
         item.attribution_text = None
 
-    async def fetch_wikipedia_image(self, http: aiohttp.ClientSession, query: str) -> bytes | None:
-        """
-        Pesquisa uma imagem principal na Wikipedia com fallback silencioso.
-
-        Contrato inviolavel:
-        - retorna bytes PNG normalizados em RGBA quando a imagem for segura;
-        - retorna None para qualquer falha de busca, rede, JSON, SVG ou Pillow;
-        - nunca levanta excecao para o fluxo principal do Discord.
-        """
-        headers = {
-            "User-Agent": "TierListBot/2.0 (Bot Privado de Discord; Contato via Discord)",
-            "Accept": "application/json",
-        }
-
-        base_url = "https://pt.wikipedia.org/w/api.php"
-        timeout = aiohttp.ClientTimeout(total=5, connect=2)
-        clean_query = (query or "").strip()
-
-        def reject_wiki_asset(url: str) -> bool:
-            """
-            Bloqueia imagens que o Pillow nao decodifica ou que quase sempre sao
-            artefatos internos da Wikimedia, nao imagem real do item pesquisado.
-            """
-            normalized = (url or "").strip().lower()
-            parsed_path = urlparse(normalized).path
-            return (
-                not normalized
-                or normalized.endswith(".svg")
-                or parsed_path.endswith(".svg")
-                or ".svg.png" in normalized
-                or "ambox" in normalized
-                or "wikimedia-button" in normalized
-                or "disambig" in normalized
-                or "question_book" in normalized
-            )
-
-        if not clean_query:
-            print("[WIKI API] Busca vazia recebida; fallback para texto.")
-            return None
-
-        try:
-            print(f"[WIKI API] Buscando artigo para: {clean_query}")
-
-            # Passo 1: busca textual estrita. A Wikipedia pode retornar uma
-            # pagina de redirecionamento como primeiro resultado; por isso esta
-            # etapa apenas descobre o melhor titulo candidato.
-            search_params = {
-                "action": "query",
-                "list": "search",
-                "srsearch": clean_query,
-                "format": "json",
-            }
-
-            async with http.get(base_url, params=search_params, headers=headers, timeout=timeout) as response:
-                if response.status != 200:
-                    print(f"[WIKI API] Erro ao buscar '{clean_query}': HTTP {response.status}")
-                    return None
-                search_data = await response.json(content_type=None)
-
-            search_results = search_data.get("query", {}).get("search", [])
-            if not search_results:
-                print(f"[WIKI API] Erro ao processar '{clean_query}': busca sem resultados.")
-                return None
-
-            resolved_title = search_results[0].get("title")
-            if not resolved_title:
-                print(f"[WIKI API] Erro ao processar '{clean_query}': resultado sem title.")
-                return None
-
-            # Passo 2: extracao da imagem com redirects=1. A estrutura de pages
-            # usa IDs numericos imprevisiveis; nunca acessamos uma chave fixa.
-            image_params = {
-                "action": "query",
-                "prop": "pageimages",
-                "titles": resolved_title,
-                "pithumbsize": 500,
-                "redirects": 1,
-                "format": "json",
-            }
-
-            async with http.get(base_url, params=image_params, headers=headers, timeout=timeout) as response:
-                if response.status != 200:
-                    print(f"[WIKI API] Erro ao buscar thumbnail de '{resolved_title}': HTTP {response.status}")
-                    return None
-                image_data_json = await response.json(content_type=None)
-
-            pages = image_data_json.get("query", {}).get("pages", {})
-            if not pages:
-                print(f"[WIKI API] Erro ao processar '{resolved_title}': sem dicionario pages.")
-                return None
-
-            page_ids = list(pages.keys())
-            if not page_ids:
-                print(f"[WIKI API] Erro ao processar '{resolved_title}': pages sem IDs.")
-                return None
-
-            first_page_id = page_ids[0]
-            page_info = pages.get(first_page_id, {})
-            if not isinstance(page_info, dict):
-                print(f"[WIKI API] Erro ao processar '{resolved_title}': page_info invalido.")
-                return None
-
-            image_url = page_info.get("thumbnail", {}).get("source")
-            if not image_url:
-                print(f"[WIKI API] Erro ao processar '{resolved_title}': sem chave thumbnail.source.")
-                return None
-
-            # Passo 3: bloqueio preventivo de SVG e assets internos da Wiki.
-            if reject_wiki_asset(image_url):
-                print(f"[WIKI API] Imagem rejeitada para '{resolved_title}': asset SVG/sistema -> {image_url}")
-                return None
-
-            # Passo 4: download da imagem. Status nao-200 nunca e lido como
-            # imagem; HTML de erro 404/503 nao deve chegar ao Pillow.
-            async with http.get(image_url, headers=headers, timeout=timeout) as response:
-                if response.status != 200:
-                    print(f"[WIKI API] Erro ao baixar imagem de '{resolved_title}': HTTP {response.status}")
-                    return None
-                image_bytes = await response.read()
-
-            if not image_bytes:
-                print(f"[WIKI API] Erro ao processar '{resolved_title}': imagem vazia.")
-                return None
-
-            if len(image_bytes) > self.MAX_IMAGE_BYTES:
-                print(f"[WIKI API] Erro ao processar '{resolved_title}': imagem maior que {self.MAX_IMAGE_BYTES} bytes.")
-                return None
-
-            # Passo 5: rito de passagem do byte. O seek(0) antes do Image.open
-            # evita ponteiro perdido; convert('RGBA') normaliza paleta, alpha e
-            # perfis estranhos antes do renderer receber os bytes.
-            try:
-                buffer = io.BytesIO(image_bytes)
-                buffer.seek(0)
-                with Image.open(buffer) as raw_image:
-                    try:
-                        raw_image.seek(0)
-                    except Exception:
-                        pass
-                    purified_image = raw_image.convert("RGBA")
-
-                output = io.BytesIO()
-                purified_image.save(output, format="PNG")
-                output.seek(0)
-                normalized_bytes = output.getvalue()
-            except Exception as exc:
-                print(f"[WIKI API] Pillow recusou '{resolved_title}': {exc}")
-                return None
-
-            print(f"[WIKI API] Sucesso para '{clean_query}' -> '{resolved_title}' ({len(normalized_bytes)} bytes PNG RGBA).")
-            return normalized_bytes
-
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            print(f"[WIKI API] Erro de rede/timeout ao processar '{clean_query}': {exc}")
-            return None
-        except Exception as exc:
-            print(f"[WIKI API] Erro inesperado ao processar '{clean_query}': {exc}")
-            return None
+    def clear_wikipedia_metadata(self, item: TierItem) -> None:
+        item.display_name = None
+        item.image_url_used = None
+        item.wiki_language = None
+        item.wikipedia_pageid = None
+        item.wikipedia_title = None
+        item.wikipedia_url = None
+        item.wikimedia_file_title = None
+        item.wikimedia_file_description_url = None
+        item.image_mime = None
+        item.artist = None
+        item.credit = None
+        item.license_short_name = None
+        item.license_url = None
+        item.usage_terms = None
+        item.attribution_required = None
+        item.metadata_source = None
 
     @app_commands.command(
         name="criar",
-        description="Cria uma tier list interativa com texto e imagens por URL.",
+        description="Cria uma tier list interativa com texto, URLs, Spotify e Wikipedia.",
     )
     @app_commands.guild_only()
     @app_commands.describe(titulo="Título da tier list")
@@ -3244,11 +3584,16 @@ class TierListCog(
         if not self.looks_like_url(url):
             return None
 
-        # 1. Bypass de Firewalls Básicos (Cloudflare / CDN Blocks)
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-        }
+        parsed_url = urlparse(url)
+        host = (parsed_url.netloc or "").casefold()
+        if host.endswith("wikimedia.org") or host.endswith("wikipedia.org"):
+            headers = self.wikipedia_service.http_client.image_headers
+        else:
+            # 1. Bypass de Firewalls Básicos (Cloudflare / CDN Blocks)
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+            }
 
         # 4. Gestão Rigorosa de Timeouts (5s limite rígido)
         timeout = aiohttp.ClientTimeout(total=5)
@@ -3341,6 +3686,15 @@ class TierListCog(
                                 )
                             except SpotifyUserError as exc:
                                 LOGGER.warning("Falha ao hidratar capa Spotify: %s", exc.code)
+                                item.image_bytes = None
+                        elif item.source_type == WIKIPEDIA_SOURCE_TYPE:
+                            try:
+                                item.image_bytes = await self.wikipedia_service.image_downloader.download_validated(
+                                    item.image_url,
+                                    cache_key=item.image_cache_key or item.image_url_used or item.image_url,
+                                )
+                            except WikipediaUserError as exc:
+                                LOGGER.warning("Falha ao hidratar imagem Wikipedia: %s", exc.code)
                                 item.image_bytes = None
                         else:
                             item.image_bytes = await self.fetch_image_safely(http, item.image_url)
@@ -3454,6 +3808,12 @@ class TierListCog(
             for item in items
             if item.source_type == "spotify" or item.spotify_id
         )
+        wikipedia_items = sum(
+            1
+            for items in session.items.values()
+            for item in items
+            if item.source_type == WIKIPEDIA_SOURCE_TYPE
+        )
 
         embed = discord.Embed(
             title="🧩 Painel De Criação De Tier List",
@@ -3462,7 +3822,8 @@ class TierListCog(
                 f"**Tiers:** {len(session.tiers)}\n"
                 f"**Itens:** {total_items}/{self.MAX_ITEMS_PER_SESSION}\n"
                 f"**Itens Com URL:** {image_items}\n\n"
-                f"**Itens Spotify:** {spotify_items}\n\n"
+                f"**Itens Spotify:** {spotify_items}\n"
+                f"**Itens Wikipedia:** {wikipedia_items}\n\n"
                 "Use os botões abaixo para configurar, adicionar itens e gerar a imagem final."
             ),
             color=discord.Color.from_rgb(155, 93, 229),
@@ -3475,7 +3836,12 @@ class TierListCog(
 
             for item in items[:8]:
                 has_image = bool(item.image_url or item.image_bytes)
-                icon = "🎵" if (item.source_type == "spotify" or item.spotify_id) else ("🖼️" if has_image else "📝")
+                if item.source_type == "spotify" or item.spotify_id:
+                    icon = "🎵"
+                elif item.source_type == WIKIPEDIA_SOURCE_TYPE:
+                    icon = "🌐"
+                else:
+                    icon = "🖼️" if has_image else "📝"
                 item_label = item.name or "item com imagem"
                 preview_parts.append(f"{icon} {item_label}")
 
