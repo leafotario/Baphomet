@@ -146,7 +146,7 @@ class DailyLoggerCog(commands.Cog):
 
         guild_id = message.guild.id
         channel_name = message.channel.name if hasattr(message.channel, "name") else "unknown"
-        author_name = message.author.name
+        author_name = f"{message.author.name} (`{message.author.id}`)"
         content = message.content or "[Mídia / Vazio]"
         
         # Timestamp de Brasília isolado para o momento da captura
