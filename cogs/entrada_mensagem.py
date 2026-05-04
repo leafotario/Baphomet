@@ -30,6 +30,9 @@ from discord.ext import commands
 import json
 import os
 import logging
+import asyncio
+import io
+from PIL import Image
 from datetime import datetime
 from typing import Optional
 
@@ -132,12 +135,30 @@ def _apply_vars(text: str, member: discord.Member) -> str:
     )
 
 
-def build_embed(cfg: dict, member: discord.Member) -> discord.Embed:
+async def build_embed(cfg: dict, member: discord.Member) -> discord.Embed:
     """Constrói o embed real substituindo variáveis pelo membro que entrou."""
+    
+    try:
+        avatar_bytes = await member.display_avatar.read()
+        def extract_color():
+            with Image.open(io.BytesIO(avatar_bytes)) as img:
+                img = img.convert("RGBA")
+                img_1x1 = img.resize((1, 1), resample=Image.Resampling.LANCZOS)
+                color = img_1x1.getpixel((0, 0))
+                if isinstance(color, tuple) and len(color) >= 3:
+                    return (color[0] << 16) + (color[1] << 8) + color[2]
+                return resolve_color(cfg.get("color", "blurple"))
+                
+        loop = asyncio.get_running_loop()
+        color_val = await loop.run_in_executor(None, extract_color)
+    except Exception as e:
+        log.warning("Falha ao extrair cor do avatar: %s", e)
+        color_val = resolve_color(cfg.get("color", "blurple"))
+
     embed = discord.Embed(
         title=_apply_vars(cfg.get("title", "Bem-vindo(a)!"), member),
         description=_apply_vars(cfg.get("description", ""), member),
-        color=resolve_color(cfg.get("color", "blurple")),
+        color=color_val,
         timestamp=datetime.utcnow(),
     )
 
@@ -459,7 +480,7 @@ class WelcomeCog(commands.Cog, name="Welcome"):
             return
 
         try:
-            embed = build_embed(cfg, member)
+            embed = await build_embed(cfg, member)
             await channel.send(embed=embed)
             log.info(
                 "Boas-vindas enviadas → %s em '%s' (#%s)",
