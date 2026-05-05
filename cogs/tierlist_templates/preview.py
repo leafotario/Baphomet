@@ -39,11 +39,20 @@ class TierTemplatePreviewRenderer:
                 continue
             asset = await self.asset_repository.get_asset(item.asset_id)
             if asset is None:
+                LOGGER.warning(
+                    "asset_missing surface=template_preview template_item_id=%s asset_id=%s reason=db_row_missing",
+                    item.id,
+                    item.asset_id,
+                )
                 continue
             try:
                 asset_bytes[item.id] = await self.asset_store.load_asset_bytes(asset)
             except OSError:
-                LOGGER.exception("Falha ao carregar asset local para preview template_item_id=%s asset_id=%s.", item.id, asset.id)
+                LOGGER.exception(
+                    "asset_missing surface=template_preview template_item_id=%s asset_id=%s reason=file_unavailable",
+                    item.id,
+                    asset.id,
+                )
                 continue
 
         return await self._to_thread(template=template, version=version, items=items, asset_bytes=asset_bytes)
@@ -158,7 +167,7 @@ class TierTemplatePreviewRenderer:
                     thumb = self._cover_image(raw, (image_box[2] - image_box[0], image_box[3] - image_box[1]))
                     self._paste_rounded(canvas, thumb, image_box, radius=8 if footer_height == 0 else 6)
             except (UnidentifiedImageError, OSError, ValueError):
-                LOGGER.exception("Asset local inválido durante preview template_item_id=%s.", item.id)
+                LOGGER.exception("render_failed surface=template_preview_item template_item_id=%s reason=invalid_asset", item.id)
                 self._draw_missing_image_card(draw, box, tiny_font)
                 return
 

@@ -7,6 +7,7 @@ import importlib.util
 import tempfile
 import threading
 import unittest
+from collections import OrderedDict
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -29,7 +30,17 @@ from cogs.tierlist_templates.item_resolver import (
     normalize_caption,
 )
 from cogs.tierlist_templates.migrations import DEFAULT_TIERS_JSON
-from cogs.tierlist_templates.models import TemplateItemType, TemplateVisibility
+from cogs.tierlist_templates.messages import (
+    EMPTY_ITEM_MESSAGE,
+    SESSION_FINALIZED_MESSAGE,
+    SESSION_PERMISSION_DENIED_MESSAGE,
+    TEMPLATE_NOT_FOUND_MESSAGE,
+    TEMPLATE_PRIVATE_MESSAGE,
+    VERSION_LOCKED_MESSAGE,
+)
+from cogs.tierlist_templates.models import TemplateItemType, TemplateVisibility, TierTemplateItem
+from cogs.tierlist_templates.session_renderer import RenderItem, RenderSessionPayload, RenderTier, TierSessionRenderer
+from cogs.tierlist_templates.cog import TierTemplateCog
 
 if AIOSQLITE_AVAILABLE:
     from cogs.tierlist_templates.asset_repository import TierAssetRepository
@@ -53,6 +64,27 @@ async def asyncio_threadsafe_callbacks_work() -> bool:
 
 
 class TierTemplateSchemaConstantTests(unittest.TestCase):
+    def test_required_user_messages_are_exact(self) -> None:
+        self.assertEqual(
+            EMPTY_ITEM_MESSAGE,
+            "⚠️ Esse item veio tão vazio que nem o abismo respondeu. Preencha um nome ou escolha uma fonte de imagem.",
+        )
+        self.assertEqual(
+            CONFLICTING_IMAGE_SOURCES_MESSAGE,
+            "⚠️ Honra e proveito não cabem no mesmo saco estreito.\n\n"
+            "Você preencheu mais de uma fonte de imagem ao mesmo tempo. Eu preciso saber qual imagem usar: "
+            "avatar de usuário, link direto, Wikipedia, Spotify ou outra fonte — mas não tudo junto no mesmo item.\n\n"
+            "Escolha só uma fonte de imagem e tente de novo.",
+        )
+        self.assertEqual(
+            SESSION_PERMISSION_DENIED_MESSAGE,
+            "⚠️ Essa tierlist não é sua, fofoqueira. Crie sua própria sessão com /tierlist-template usar.",
+        )
+        self.assertEqual(SESSION_FINALIZED_MESSAGE, "🏁 Essa tierlist já foi finalizada. Ela agora é relíquia histórica.")
+        self.assertEqual(TEMPLATE_PRIVATE_MESSAGE, "🔒 Esse template é privado e só o criador pode usar.")
+        self.assertEqual(TEMPLATE_NOT_FOUND_MESSAGE, "🔎 Não encontrei esse template. Confere o nome/slug e tenta de novo.")
+        self.assertEqual(VERSION_LOCKED_MESSAGE, "🔒 Esse template já foi publicado. Para editar, vou criar uma nova versão em rascunho.")
+
     def test_default_tiers_use_expected_ids(self) -> None:
         self.assertIn('"id":"S"', DEFAULT_TIERS_JSON)
         self.assertIn('"id":"D"', DEFAULT_TIERS_JSON)
@@ -88,6 +120,105 @@ class TierTemplateSchemaConstantTests(unittest.TestCase):
         downloader = SafeImageDownloader()
         with self.assertRaises(UnsupportedImageTypeError):
             downloader._validate_content_type("image/svg+xml")
+
+    @unittest.skipIf(not AIOSQLITE_AVAILABLE, "aiosqlite não está instalado neste Python")
+    def test_sqlite_busy_error_detection_is_conservative(self) -> None:
+        self.assertTrue(DatabaseManager._is_busy_error(Exception("database is locked")))
+        self.assertTrue(DatabaseManager._is_busy_error(Exception("database is busy")))
+        self.assertFalse(DatabaseManager._is_busy_error(Exception("foreign key constraint failed")))
+
+    def test_renderer_safe_text_suppresses_empty_sentinel_values(self) -> None:
+        renderer = TierSessionRenderer(
+            template_repository=SimpleNamespace(),
+            session_repository=SimpleNamespace(),
+            asset_repository=SimpleNamespace(),
+            asset_store=SimpleNamespace(),
+        )
+        self.assertIsNone(renderer._safe_text(None))
+        self.assertIsNone(renderer._safe_text(""))
+        self.assertIsNone(renderer._safe_text("  None "))
+        self.assertIsNone(renderer._safe_text("null"))
+        self.assertEqual(renderer._safe_text("  Nome limpo  "), "Nome limpo")
+
+    def test_renderer_does_not_draw_caption_for_unnamed_image(self) -> None:
+        renderer = TierSessionRenderer(
+            template_repository=SimpleNamespace(),
+            session_repository=SimpleNamespace(),
+            asset_repository=SimpleNamespace(),
+            asset_store=SimpleNamespace(),
+        )
+        image = Image.new("RGB", (24, 12), (255, 0, 0))
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        image_bytes = buffer.getvalue()
+        payload = RenderSessionPayload(
+            template_name="Template Teste",
+            tiers=[RenderTier(id="S", label="S", color=(255, 80, 80))],
+            items_by_tier=OrderedDict(
+                [
+                    (
+                        "S",
+                        [
+                            RenderItem(
+                                item_type=TemplateItemType.IMAGE,
+                                image_bytes=image_bytes,
+                                render_caption=None,
+                                has_visible_caption=False,
+                                position=0,
+                                debug_id="image-without-caption",
+                            ),
+                            RenderItem(
+                                item_type=TemplateItemType.IMAGE,
+                                image_bytes=image_bytes,
+                                render_caption="None",
+                                has_visible_caption=True,
+                                position=1,
+                                debug_id="image-with-none-caption",
+                            ),
+                        ],
+                    )
+                ]
+            ),
+            unused_count=0,
+            allocated_count=2,
+            author_name="",
+        )
+
+        drawn_single_lines: list[str] = []
+        original_draw_single_line = renderer._draw_single_line
+
+        def spy_draw_single_line(*args, **kwargs):
+            drawn_single_lines.append(args[1])
+            return original_draw_single_line(*args, **kwargs)
+
+        renderer._draw_single_line = spy_draw_single_line  # type: ignore[method-assign]
+        output = renderer.render_payload(payload)
+
+        self.assertGreater(len(output.getvalue()), 0)
+        self.assertNotIn("None", drawn_single_lines)
+        self.assertNotIn("null", drawn_single_lines)
+
+    def test_session_and_editor_labels_do_not_fallback_to_internal_title_for_images(self) -> None:
+        cog = object.__new__(TierTemplateCog)
+        item = TierTemplateItem(
+            id="item-1",
+            template_version_id="version-1",
+            item_type=TemplateItemType.IMAGE,
+            source_type="SPOTIFY",
+            asset_id="asset-1",
+            user_caption=None,
+            render_caption=None,
+            has_visible_caption=False,
+            internal_title="Album que nao deve aparecer",
+            source_query="https://example.com/nao-renderizar",
+            metadata={},
+            sort_order=0,
+            created_at="2026-01-01T00:00:00+00:00",
+            deleted_at=None,
+        )
+
+        self.assertEqual(TierTemplateCog.session_item_label(cog, item, 0), "Item com imagem #1")
+        self.assertEqual(TierTemplateCog.item_display_label(cog, item, 0), "Imagem sem legenda: Item com imagem #1")
 
 
 class FakeDownloader:

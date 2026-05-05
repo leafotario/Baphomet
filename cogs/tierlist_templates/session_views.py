@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING
 
 import discord
 
+from .messages import (
+    SESSION_NOT_AVAILABLE_MESSAGE,
+    SESSION_PERMISSION_DENIED_MESSAGE,
+    inactive_session_message,
+)
 from .models import SessionStatus, TierSessionItem, TierTemplateItem
 from .session_renderer import SessionRenderSnapshot
 
 if TYPE_CHECKING:
     from .cog import TierTemplateCog
 
+
+LOGGER = logging.getLogger("baphomet.tierlist_templates.session_views")
 
 INVENTORY_VALUE = "__inventory__"
 NO_ITEM_VALUE = "__no_item__"
@@ -125,16 +133,19 @@ class TierSessionView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         session = await self.cog.session_repository.get_session(self.session_id)
         if session is None:
-            await interaction.response.send_message("⚠️ Essa sessão não existe mais ou expirou.", ephemeral=True)
+            await interaction.response.send_message(SESSION_NOT_AVAILABLE_MESSAGE, ephemeral=True)
             return False
         if interaction.user.id != session.owner_id:
-            await interaction.response.send_message(
-                "⚠️ Essa tierlist não é sua, fofoqueira. Crie sua própria sessão com /tierlist-template usar.",
-                ephemeral=True,
+            LOGGER.info(
+                "permission_denied surface=session_view user_id=%s owner_id=%s session_id=%s",
+                interaction.user.id,
+                session.owner_id,
+                self.session_id,
             )
+            await interaction.response.send_message(SESSION_PERMISSION_DENIED_MESSAGE, ephemeral=True)
             return False
         if session.status != SessionStatus.ACTIVE:
-            await interaction.response.send_message("⚠️ Essa sessão já foi finalizada ou expirou.", ephemeral=True)
+            await interaction.response.send_message(inactive_session_message(session.status), ephemeral=True)
             return False
         return True
 
@@ -197,10 +208,13 @@ class ConfirmResetSessionView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.owner_id:
             return True
-        await interaction.response.send_message(
-            "⚠️ Essa tierlist não é sua, fofoqueira. Crie sua própria sessão com /tierlist-template usar.",
-            ephemeral=True,
+        LOGGER.info(
+            "permission_denied surface=session_reset_confirm user_id=%s owner_id=%s session_id=%s",
+            interaction.user.id,
+            self.owner_id,
+            self.session_id,
         )
+        await interaction.response.send_message(SESSION_PERMISSION_DENIED_MESSAGE, ephemeral=True)
         return False
 
     @discord.ui.button(label="Confirmar reset", style=discord.ButtonStyle.danger, custom_id="tier_session:confirm_reset")

@@ -171,7 +171,7 @@ class TierSessionRenderer:
             asset = await self.asset_repository.get_asset(template_item.asset_id)
             if asset is None:
                 LOGGER.warning(
-                    "Asset ausente no render session_id=%s session_item_id=%s asset_id=%s.",
+                    "asset_missing surface=session_render session_id=%s session_item_id=%s asset_id=%s reason=db_row_missing",
                     snapshot.session.id,
                     session_item.id,
                     template_item.asset_id,
@@ -181,7 +181,7 @@ class TierSessionRenderer:
                 result[session_item.id] = await self.asset_store.load_asset_bytes(asset)
             except OSError:
                 LOGGER.exception(
-                    "Falha ao carregar asset local no render session_id=%s session_item_id=%s asset_id=%s.",
+                    "asset_missing surface=session_render session_id=%s session_item_id=%s asset_id=%s reason=file_unavailable",
                     snapshot.session.id,
                     session_item.id,
                     asset.id,
@@ -304,7 +304,7 @@ class TierSessionRenderer:
                 fitted = self._cover_image(source, (image_box[2] - image_box[0], image_box[3] - image_box[1]))
                 self._paste_rounded(canvas, fitted, image_box, radius=8 if footer_height == 0 else 6)
         except (UnidentifiedImageError, OSError, ValueError):
-            LOGGER.exception("Asset local inválido durante render session_item_id=%s.", item.debug_id)
+            LOGGER.exception("render_failed surface=session_item session_item_id=%s reason=invalid_asset", item.debug_id)
             self._draw_missing_image_card(draw, box, placeholder_font)
             return
 

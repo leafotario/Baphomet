@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from .database import DatabaseManager
@@ -13,6 +14,9 @@ from .repository_utils import (
     validate_asset_hash,
     validate_relative_storage_path,
 )
+
+
+LOGGER = logging.getLogger("baphomet.tierlist_templates.asset_repository")
 
 
 def _asset_from_row(row: Any | None) -> TierAsset | None:
@@ -77,6 +81,7 @@ class TierAssetRepository:
             now = utc_now_iso()
             if existing is not None:
                 if existing["deleted_at"] is None:
+                    LOGGER.info("asset_reused asset_id=%s asset_hash=%s", existing["id"], asset_hash)
                     return _asset_from_row(existing)  # type: ignore[return-value]
                 await conn.execute(
                     """
@@ -98,9 +103,13 @@ class TierAssetRepository:
                         existing["id"],
                     ),
                 )
-                return _asset_from_row(
+                asset = _asset_from_row(
                     await fetch_one(conn, "SELECT * FROM tier_assets WHERE id = ?", (existing["id"],))
-                )  # type: ignore[return-value]
+                )
+                if asset is None:
+                    raise RuntimeError("Asset reativado não pôde ser recuperado.")
+                LOGGER.info("asset_reused asset_id=%s asset_hash=%s reactivated=true", asset.id, asset_hash)
+                return asset
 
             asset_id = new_uuid()
             await conn.execute(
@@ -129,6 +138,13 @@ class TierAssetRepository:
         asset = await self.get_asset_by_hash(asset_hash, include_deleted=True)
         if asset is None:
             raise RuntimeError("Asset criado não pôde ser recuperado.")
+        LOGGER.info(
+            "asset_created asset_id=%s asset_hash=%s source_type=%s size_bytes=%s",
+            asset.id,
+            asset.asset_hash,
+            asset.source_type,
+            asset.size_bytes,
+        )
         return asset
 
     async def get_asset(self, asset_id: str, *, include_deleted: bool = False) -> TierAsset | None:

@@ -16,17 +16,11 @@ from .exceptions import (
     UnsafeWikipediaImageError,
 )
 from .migrations import dumps_json
+from .messages import CONFLICTING_IMAGE_SOURCES_MESSAGE, EMPTY_ITEM_MESSAGE
 from .models import TemplateItemType, TemplateSourceType
 
 
 LOGGER = logging.getLogger("baphomet.tierlist_templates.item_resolver")
-
-CONFLICTING_IMAGE_SOURCES_MESSAGE = (
-    "⚠️ Honra e proveito não cabem no mesmo saco estreito.\n\n"
-    "Você preencheu mais de uma fonte de imagem ao mesmo tempo. Eu preciso saber qual imagem usar: "
-    "avatar de usuário, link direto, Wikipedia, Spotify ou outra fonte — mas não tudo junto no mesmo item.\n\n"
-    "Escolha só uma fonte de imagem e tente de novo."
-)
 
 
 @dataclass(frozen=True)
@@ -153,7 +147,7 @@ class TierTemplateItemResolver:
         if not filled_sources:
             if user_caption is None:
                 raise EmptyTemplateItemError(
-                    "⚠️ Esse item veio tão vazio que nem o abismo respondeu. Preencha um nome ou escolha uma fonte de imagem.",
+                    EMPTY_ITEM_MESSAGE,
                     detail="Item sem caption e sem fonte visual.",
                     code="empty_template_item",
                 )

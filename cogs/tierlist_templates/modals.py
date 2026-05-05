@@ -63,7 +63,7 @@ class TemplateCreateModal(discord.ui.Modal, title="Criar Template de Tier List")
                 interaction=interaction,
             )
         except ValueError as exc:
-            await interaction.followup.send(f"⚠️ {exc}", ephemeral=True)
+            await interaction.followup.send(self.cog.warning_message(exc), ephemeral=True)
             return
         except Exception:
             LOGGER.exception("Falha inesperada ao criar template.")
@@ -110,10 +110,10 @@ class TemplateTextItemModal(discord.ui.Modal, title="Adicionar Item de Texto"):
                 **resolver_kwargs,
             )
         except TemplateItemResolveError as exc:
-            await interaction.followup.send(f"⚠️ {exc.user_message}", ephemeral=True)
+            await interaction.followup.send(self.cog.warning_message(exc.user_message), ephemeral=True)
             return
         except ValueError as exc:
-            await interaction.followup.send(f"⚠️ {exc}", ephemeral=True)
+            await interaction.followup.send(self.cog.warning_message(exc), ephemeral=True)
             return
         except Exception:
             LOGGER.exception("Falha inesperada ao adicionar item ao template %s.", self.template_id)
@@ -126,7 +126,7 @@ class TemplateTextItemModal(discord.ui.Modal, title="Adicionar Item de Texto"):
             version_id=self.version_id,
             creator_id=self.creator_id,
         )
-        label = item.render_caption or item.internal_title or "item sem legenda"
+        label = item.render_caption or ("item com imagem sem legenda" if item.item_type.value == "IMAGE" else "item sem texto")
         await interaction.followup.send(f"✅ Item adicionado: **{discord.utils.escape_markdown(label[:80])}**", ephemeral=True)
 
 

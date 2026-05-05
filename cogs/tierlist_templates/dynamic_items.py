@@ -1,13 +1,22 @@
 from __future__ import annotations
 
+import logging
 import re
 from typing import TYPE_CHECKING
 
 import discord
 
+from .messages import (
+    SESSION_NOT_AVAILABLE_MESSAGE,
+    SESSION_PERMISSION_DENIED_MESSAGE,
+    inactive_session_message,
+)
+
 if TYPE_CHECKING:
     from .cog import TierTemplateCog
 
+
+LOGGER = logging.getLogger("baphomet.tierlist_templates.dynamic_items")
 
 SESSION_ACTION_RE = re.compile(
     r"^tsess:(?P<session_id>[0-9a-fA-F-]{36}):(?P<action>prev|next|apply|inventory|reset|finalize)$"
@@ -54,16 +63,20 @@ class TierSessionActionDynamicItem(discord.ui.DynamicItem[discord.ui.Button], te
         typed_cog: TierTemplateCog = cog
         session = await typed_cog.session_repository.get_session(self.session_id)
         if session is None:
-            await interaction.response.send_message("⚠️ Essa sessão não existe mais ou expirou.", ephemeral=True)
+            await interaction.response.send_message(SESSION_NOT_AVAILABLE_MESSAGE, ephemeral=True)
             return
         if interaction.user.id != session.owner_id:
-            await interaction.response.send_message(
-                "⚠️ Essa tierlist não é sua, fofoqueira. Crie sua própria sessão com /tierlist-template usar.",
-                ephemeral=True,
+            LOGGER.info(
+                "permission_denied surface=session_dynamic_item user_id=%s owner_id=%s session_id=%s action=%s",
+                interaction.user.id,
+                session.owner_id,
+                self.session_id,
+                self.action,
             )
+            await interaction.response.send_message(SESSION_PERMISSION_DENIED_MESSAGE, ephemeral=True)
             return
         if session.status.value != "ACTIVE":
-            await interaction.response.send_message("⚠️ Essa sessão já foi finalizada ou expirou.", ephemeral=True)
+            await interaction.response.send_message(inactive_session_message(session.status), ephemeral=True)
             return
 
         if self.action == "prev":

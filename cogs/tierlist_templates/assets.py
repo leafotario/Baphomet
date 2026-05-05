@@ -93,6 +93,20 @@ class TierTemplateAssetStore:
         if not target_path.exists():
             await asyncio.to_thread(self._write_file_atomically, target_path, processed.data)
             created_new_file = True
+            LOGGER.info(
+                "asset_created asset_hash=%s storage_path=%s source_type=%s size_bytes=%s",
+                processed.asset_hash,
+                relative_path.as_posix(),
+                source_type,
+                processed.size_bytes,
+            )
+        elif existing is not None:
+            LOGGER.info(
+                "asset_reused asset_id=%s asset_hash=%s storage_path=%s",
+                existing.id,
+                processed.asset_hash,
+                existing.storage_path,
+            )
 
         asset = existing
         if asset is None:
@@ -136,7 +150,16 @@ class TierTemplateAssetStore:
 
     async def load_asset_bytes(self, asset: TierAsset | StoredTemplateAsset) -> bytes:
         path = self.asset_path(asset)
-        return await asyncio.to_thread(path.read_bytes)
+        try:
+            return await asyncio.to_thread(path.read_bytes)
+        except FileNotFoundError:
+            LOGGER.warning(
+                "asset_missing asset_id=%s storage_path=%s path=%s",
+                getattr(asset, "id", None) or getattr(getattr(asset, "asset", None), "id", None),
+                getattr(asset, "storage_path", None),
+                path,
+            )
+            raise
 
     def _process_image_sync(self, raw_bytes: bytes) -> ProcessedImageAsset:
         if not raw_bytes:

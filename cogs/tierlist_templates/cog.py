@@ -19,6 +19,13 @@ from .database import DatabaseManager
 from .downloads import SafeImageDownloader
 from .item_resolver import TierTemplateItemResolver
 from .migrations import DEFAULT_TIERS_JSON
+from .messages import (
+    SESSION_FINALIZED_MESSAGE,
+    SESSION_NOT_AVAILABLE_MESSAGE,
+    TEMPLATE_NOT_FOUND_MESSAGE,
+    TEMPLATE_PRIVATE_MESSAGE,
+    VERSION_LOCKED_MESSAGE,
+)
 from .models import SessionStatus, TemplateVisibility, TierSession, TierTemplate, TierTemplateItem, TierTemplateVersion
 from .preview import TierTemplatePreviewRenderer
 from .repository_utils import normalize_slug
@@ -93,13 +100,20 @@ class TierTemplateCog(commands.Cog):
     @app_commands.describe(template="Slug do template publicado")
     async def usar_template(self, interaction: discord.Interaction, template: str) -> None:
         await interaction.response.defer(thinking=True)
+        created_session: TierSession | None = None
+        message_created = False
         try:
             tier_template = await self.find_template_for_use(template, interaction=interaction)
             if tier_template is None:
-                await interaction.followup.send("⚠️ Não encontrei um template publicado com esse slug.", ephemeral=True)
+                await interaction.followup.send(TEMPLATE_NOT_FOUND_MESSAGE, ephemeral=True)
                 return
             if not self.can_use_template(tier_template, interaction):
-                await interaction.followup.send("⚠️ Você não tem acesso a esse template.", ephemeral=True)
+                self.log_permission_denied(
+                    "template_use",
+                    interaction=interaction,
+                    template=tier_template,
+                )
+                await interaction.followup.send(self.template_access_denied_message(tier_template), ephemeral=True)
                 return
             if not tier_template.current_version_id:
                 await interaction.followup.send("⚠️ Esse template ainda não possui versão publicada.", ephemeral=True)
@@ -125,6 +139,7 @@ class TierTemplateCog(commands.Cog):
                 guild_id=interaction.guild_id,
                 channel_id=interaction.channel_id,
             )
+            created_session = session
             file = await self.render_session_file(session.id, author=interaction.user)
             view = await self.build_session_view(session.id)
             message = await interaction.followup.send(
@@ -133,6 +148,7 @@ class TierTemplateCog(commands.Cog):
                 view=view,
                 wait=True,
             )
+            message_created = True
             await self.session_repository.update_message_id(
                 session_id=session.id,
                 message_id=message.id,
@@ -140,7 +156,7 @@ class TierTemplateCog(commands.Cog):
                 owner_id=interaction.user.id,
             )
             LOGGER.info(
-                "Sessão de template criada user_id=%s guild_id=%s template_id=%s version_id=%s session_id=%s message_id=%s",
+                "template_session_created user_id=%s guild_id=%s template_id=%s version_id=%s session_id=%s message_id=%s",
                 interaction.user.id,
                 interaction.guild_id,
                 tier_template.id,
@@ -150,6 +166,11 @@ class TierTemplateCog(commands.Cog):
             )
         except Exception:
             LOGGER.exception("Falha ao usar template template=%r user_id=%s guild_id=%s.", template, interaction.user.id, interaction.guild_id)
+            if created_session is not None and not message_created:
+                try:
+                    await self.session_repository.abandon_session(created_session.id, owner_id=interaction.user.id)
+                except Exception:
+                    LOGGER.exception("Falha ao abandonar sessão criada sem mensagem session_id=%s.", created_session.id)
             await interaction.followup.send("❌ Não consegui criar a sessão desse template. O erro foi registrado.", ephemeral=True)
 
     @usar_template.autocomplete("template")
@@ -197,7 +218,11 @@ class TierTemplateCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
         tier_template = await self.find_template_for_view(template, interaction=interaction)
         if tier_template is None or not self.can_view_template(tier_template, interaction):
-            await interaction.followup.send("⚠️ Não encontrei um template acessível com esse slug.", ephemeral=True)
+            if tier_template is not None:
+                self.log_permission_denied("template_view", interaction=interaction, template=tier_template)
+                await interaction.followup.send(self.template_access_denied_message(tier_template), ephemeral=True)
+            else:
+                await interaction.followup.send(TEMPLATE_NOT_FOUND_MESSAGE, ephemeral=True)
             return
         await interaction.followup.send(embed=await self.build_template_detail_embed(tier_template), ephemeral=True)
 
@@ -240,15 +265,16 @@ class TierTemplateCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
         tier_template = await self.find_template_for_view(template, interaction=interaction)
         if tier_template is None:
-            await interaction.followup.send("🔎 Não encontrei esse template. Confere o nome/slug e tenta de novo.", ephemeral=True)
+            await interaction.followup.send(TEMPLATE_NOT_FOUND_MESSAGE, ephemeral=True)
             return
         if not await self.can_manage_template(tier_template, interaction):
+            self.log_permission_denied("template_edit", interaction=interaction, template=tier_template)
             await interaction.followup.send("⚠️ Você não tem permissão para editar esse template.", ephemeral=True)
             return
         try:
             version = await self.get_or_create_editable_version(tier_template, interaction=interaction)
         except ValueError as exc:
-            await interaction.followup.send(f"⚠️ {exc}", ephemeral=True)
+            await interaction.followup.send(self.warning_message(exc), ephemeral=True)
             return
         await self.send_editor_panel(
             interaction,
@@ -269,7 +295,11 @@ class TierTemplateCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
         source = await self.find_template_for_view(template, interaction=interaction)
         if source is None or not self.can_view_template(source, interaction):
-            await interaction.followup.send("⚠️ Não encontrei um template acessível com esse slug.", ephemeral=True)
+            if source is not None:
+                self.log_permission_denied("template_clone", interaction=interaction, template=source)
+                await interaction.followup.send(self.template_access_denied_message(source), ephemeral=True)
+            else:
+                await interaction.followup.send(TEMPLATE_NOT_FOUND_MESSAGE, ephemeral=True)
             return
         source_version = await self.template_repository.get_current_version(source.id)
         if source_version is None:
@@ -289,10 +319,10 @@ class TierTemplateCog(commands.Cog):
                 visibility=TemplateVisibility.PRIVATE,
             )
         except ValueError as exc:
-            await interaction.followup.send(f"⚠️ {exc}", ephemeral=True)
+            await interaction.followup.send(self.warning_message(exc), ephemeral=True)
             return
         LOGGER.info(
-            "Template clonado user_id=%s guild_id=%s source_template_id=%s source_version_id=%s clone_template_id=%s clone_version_id=%s",
+            "template_cloned user_id=%s guild_id=%s source_template_id=%s source_version_id=%s clone_template_id=%s clone_version_id=%s",
             interaction.user.id,
             interaction.guild_id,
             source.id,
@@ -319,9 +349,10 @@ class TierTemplateCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
         tier_template = await self.find_template_for_view(template, interaction=interaction)
         if tier_template is None:
-            await interaction.followup.send("🔎 Não encontrei esse template. Confere o nome/slug e tenta de novo.", ephemeral=True)
+            await interaction.followup.send(TEMPLATE_NOT_FOUND_MESSAGE, ephemeral=True)
             return
         if not await self.can_manage_template(tier_template, interaction):
+            self.log_permission_denied("template_delete", interaction=interaction, template=tier_template)
             await interaction.followup.send("⚠️ Você não tem permissão para deletar esse template.", ephemeral=True)
             return
         deleted = await self.template_repository.soft_delete_template(tier_template.id)
@@ -347,7 +378,7 @@ class TierTemplateCog(commands.Cog):
             return
         summary = await self.purge_orphan_assets(dry_run=dry_run)
         LOGGER.info(
-            "Purge de assets executado user_id=%s guild_id=%s dry_run=%s marked=%s deleted=%s",
+            "template_asset_purge user_id=%s guild_id=%s dry_run=%s marked=%s deleted=%s",
             interaction.user.id,
             interaction.guild_id,
             dry_run,
@@ -479,6 +510,42 @@ class TierTemplateCog(commands.Cog):
     def can_view_template(self, template: TierTemplate, interaction: discord.Interaction) -> bool:
         return self.can_use_template(template, interaction)
 
+    def template_access_denied_message(self, template: TierTemplate) -> str:
+        if template.visibility is TemplateVisibility.PRIVATE:
+            return TEMPLATE_PRIVATE_MESSAGE
+        return "⚠️ Você não tem acesso a esse template."
+
+    def log_permission_denied(
+        self,
+        surface: str,
+        *,
+        interaction: discord.Interaction,
+        template: TierTemplate | None = None,
+    ) -> None:
+        LOGGER.info(
+            "permission_denied surface=%s user_id=%s guild_id=%s template_id=%s template_owner_id=%s visibility=%s",
+            surface,
+            interaction.user.id,
+            interaction.guild_id,
+            template.id if template else None,
+            template.creator_id if template else None,
+            template.visibility.value if template else None,
+        )
+
+    def warning_message(self, error: object) -> str:
+        message = str(error)
+        if message.startswith(("⚠️", "🔒", "🔎", "🏁", "❌")):
+            return message
+        return f"⚠️ {message}"
+
+    def session_error_message(self, error: object) -> str:
+        message = str(error)
+        if "ativas" in message.casefold() or "finalizada" in message.casefold():
+            return SESSION_FINALIZED_MESSAGE
+        if "não encontrada" in message.casefold():
+            return SESSION_NOT_AVAILABLE_MESSAGE
+        return self.warning_message(message)
+
     async def user_can_edit(self, interaction: discord.Interaction, creator_id: int) -> bool:
         if interaction.user.id == creator_id:
             return True
@@ -521,7 +588,7 @@ class TierTemplateCog(commands.Cog):
             return await self.template_repository.create_template_version(template_id=template.id, created_by=interaction.user.id)
         cloned = await self.template_repository.clone_version_for_editing(current.id, created_by=interaction.user.id)
         LOGGER.info(
-            "Versão clonada para edição user_id=%s guild_id=%s template_id=%s source_version_id=%s draft_version_id=%s",
+            "template_version_cloned user_id=%s guild_id=%s template_id=%s source_version_id=%s draft_version_id=%s",
             interaction.user.id,
             interaction.guild_id,
             template.id,
@@ -662,7 +729,7 @@ class TierTemplateCog(commands.Cog):
         await self._require_editable_version(version_id)
         await self.template_repository.move_template_item(item_id, direction=direction)
         LOGGER.info(
-            "Item reordenado user_id=%s guild_id=%s template_id=%s version_id=%s item_id=%s direction=%s",
+            "template_item_reordered user_id=%s guild_id=%s template_id=%s version_id=%s item_id=%s direction=%s",
             actor.id,
             guild_id,
             template_id,
@@ -710,7 +777,7 @@ class TierTemplateCog(commands.Cog):
             )
             await interaction.followup.send("✅ Template publicado e congelado.", ephemeral=True)
         except ValueError as exc:
-            await interaction.followup.send(f"⚠️ {exc}", ephemeral=True)
+            await interaction.followup.send(self.warning_message(exc), ephemeral=True)
         except Exception:
             LOGGER.exception("Falha inesperada ao publicar template_id=%s version_id=%s.", template_id, version_id)
             await interaction.followup.send("❌ Não consegui publicar esse template. O erro foi registrado.", ephemeral=True)
@@ -741,7 +808,7 @@ class TierTemplateCog(commands.Cog):
                 ephemeral=True,
             )
         except Exception:
-            LOGGER.exception("Falha ao renderizar preview template_id=%s version_id=%s.", template_id, version_id)
+            LOGGER.exception("render_failed surface=template_preview template_id=%s version_id=%s.", template_id, version_id)
             await interaction.followup.send("❌ Não consegui gerar o preview agora. O erro foi registrado.", ephemeral=True)
 
     async def send_editor_panel(
@@ -848,9 +915,10 @@ class TierTemplateCog(commands.Cog):
         return embed
 
     def item_display_label(self, item: TierTemplateItem, index: int) -> str:
-        label = item.render_caption or item.internal_title or f"Item sem nome #{index + 1}"
         if item.item_type.value == "TEXT_ONLY":
+            label = item.render_caption or f"Item sem texto #{index + 1}"
             return f"Texto: {label}"
+        label = item.render_caption or f"Item com imagem #{index + 1}"
         visible = "com legenda" if item.has_visible_caption else "sem legenda"
         return f"Imagem {visible}: {label}"
 
@@ -859,7 +927,7 @@ class TierTemplateCog(commands.Cog):
         if version is None:
             raise ValueError("Versão de template não encontrada.")
         if version.is_locked:
-            raise ValueError("🔒 Esse template já foi publicado. Para editar, vou criar uma nova versão em rascunho.")
+            raise ValueError(VERSION_LOCKED_MESSAGE)
         return version
 
     def _validate_default_tiers_json(self, raw: str) -> None:
@@ -904,7 +972,7 @@ class TierTemplateCog(commands.Cog):
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=self.SESSION_EXPIRATION_HOURS)).replace(microsecond=0).isoformat()
         expired = await self.session_repository.expire_stale_sessions(updated_before=cutoff, limit=1000)
         if expired:
-            LOGGER.info("Sessões antigas expiradas no startup: %s.", expired)
+            LOGGER.info("template_sessions_expired count=%s reason=startup_stale.", expired)
         return expired
 
     async def restore_persistent_session_views(self) -> None:
@@ -918,7 +986,7 @@ class TierTemplateCog(commands.Cog):
                 restored += 1
             except Exception:
                 LOGGER.exception("Falha ao restaurar view persistente session_id=%s.", session.id)
-        LOGGER.info("Views persistentes de tier template restauradas: %s.", restored)
+        LOGGER.info("template_session_views_restored count=%s.", restored)
 
     async def purge_orphan_assets(self, *, dry_run: bool) -> dict[str, int]:
         now = datetime.now(timezone.utc).replace(microsecond=0)
@@ -953,7 +1021,7 @@ class TierTemplateCog(commands.Cog):
             return
         try:
             await self.session_repository.abandon_session(session.id, owner_id=session.owner_id)
-            LOGGER.info("Sessão marcada como abandonada por mensagem deletada session_id=%s message_id=%s.", session.id, payload.message_id)
+            LOGGER.info("template_session_abandoned session_id=%s message_id=%s reason=message_deleted.", session.id, payload.message_id)
         except ValueError:
             return
 
@@ -962,7 +1030,11 @@ class TierTemplateCog(commands.Cog):
         return f"**{discord.utils.escape_markdown(template.name)}** • sessão {status}"
 
     async def render_session_file(self, session_id: str, *, author: object | None = None) -> discord.File:
-        buffer = await self.session_renderer.render_session(session_id, author=author)
+        try:
+            buffer = await self.session_renderer.render_session(session_id, author=author)
+        except Exception:
+            LOGGER.exception("render_failed surface=session session_id=%s", session_id)
+            raise
         return discord.File(buffer, filename="tierlist.png")
 
     async def build_session_view(self, session_id: str, *, disabled: bool = False) -> discord.ui.View:
@@ -1017,7 +1089,7 @@ class TierTemplateCog(commands.Cog):
     ) -> str:
         if template_item is None:
             return f"Item #{index + 1}"
-        label = template_item.render_caption or template_item.internal_title
+        label = template_item.render_caption
         if label:
             prefix = ""
             if session_item is not None and not session_item.is_unused and session_item.current_tier_id:
@@ -1068,27 +1140,37 @@ class TierTemplateCog(commands.Cog):
             try:
                 session = await self.session_repository.get_session(session_id)
                 if session is None:
-                    await interaction.followup.send("⚠️ Sessão não encontrada.", ephemeral=True)
+                    await interaction.followup.send(SESSION_NOT_AVAILABLE_MESSAGE, ephemeral=True)
                     return
                 if not session.selected_item_id:
                     await interaction.followup.send("⚠️ Escolha um item antes de aplicar.", ephemeral=True)
                     return
                 if session.selected_tier_id is None:
-                    await self.session_repository.move_item_to_inventory(
+                    moved = await self.session_repository.move_item_to_inventory(
                         session_id=session_id,
                         session_item_id=session.selected_item_id,
                         owner_id=interaction.user.id,
                     )
+                    target_tier_id = None
                 else:
-                    await self.session_repository.move_item_to_tier(
+                    moved = await self.session_repository.move_item_to_tier(
                         session_id=session_id,
                         session_item_id=session.selected_item_id,
                         tier_id=session.selected_tier_id,
                         owner_id=interaction.user.id,
                     )
+                    target_tier_id = session.selected_tier_id
+                LOGGER.info(
+                    "template_session_item_moved user_id=%s guild_id=%s session_id=%s session_item_id=%s target_tier_id=%s",
+                    interaction.user.id,
+                    interaction.guild_id,
+                    session_id,
+                    moved.id,
+                    target_tier_id,
+                )
                 await self.edit_session_message(interaction.message, session_id=session_id, author=interaction.user)
             except ValueError as exc:
-                await interaction.followup.send(f"⚠️ {exc}", ephemeral=True)
+                await interaction.followup.send(self.session_error_message(exc), ephemeral=True)
             except Exception:
                 LOGGER.exception("Falha ao aplicar movimento session_id=%s user_id=%s.", session_id, interaction.user.id)
                 await interaction.followup.send("❌ Não consegui mover esse item. O erro foi registrado.", ephemeral=True)
@@ -1105,14 +1187,22 @@ class TierTemplateCog(commands.Cog):
                 if session is None or not session.selected_item_id:
                     await interaction.followup.send("⚠️ Escolha um item antes.", ephemeral=True)
                     return
-                await self.session_repository.move_item_to_inventory(
+                moved = await self.session_repository.move_item_to_inventory(
                     session_id=session_id,
                     session_item_id=session.selected_item_id,
                     owner_id=interaction.user.id,
                 )
+                LOGGER.info(
+                    "template_session_item_moved user_id=%s guild_id=%s session_id=%s session_item_id=%s target_tier_id=%s",
+                    interaction.user.id,
+                    interaction.guild_id,
+                    session_id,
+                    moved.id,
+                    None,
+                )
                 await self.edit_session_message(interaction.message, session_id=session_id, author=interaction.user)
             except ValueError as exc:
-                await interaction.followup.send(f"⚠️ {exc}", ephemeral=True)
+                await interaction.followup.send(self.session_error_message(exc), ephemeral=True)
             except Exception:
                 LOGGER.exception("Falha ao mover item para inventário session_id=%s.", session_id)
                 await interaction.followup.send("❌ Não consegui devolver esse item ao inventário.", ephemeral=True)
@@ -1135,7 +1225,7 @@ class TierTemplateCog(commands.Cog):
                 await self.edit_session_message(session_message, session_id=session_id, author=interaction.user)
                 await interaction.followup.send("🔄 Sessão resetada.", ephemeral=True)
             except ValueError as exc:
-                await interaction.followup.send(f"⚠️ {exc}", ephemeral=True)
+                await interaction.followup.send(self.session_error_message(exc), ephemeral=True)
             except Exception:
                 LOGGER.exception("Falha ao resetar sessão session_id=%s.", session_id)
                 await interaction.followup.send("❌ Não consegui resetar essa sessão.", ephemeral=True)
@@ -1150,10 +1240,10 @@ class TierTemplateCog(commands.Cog):
             try:
                 await self.session_repository.finalize_session(session_id, owner_id=interaction.user.id)
                 await self.edit_session_message(interaction.message, session_id=session_id, author=interaction.user, disabled=True)
-                await interaction.followup.send("🏁 Tierlist finalizada.", ephemeral=True)
-                LOGGER.info("Sessão finalizada user_id=%s guild_id=%s session_id=%s.", interaction.user.id, interaction.guild_id, session_id)
+                await interaction.followup.send(SESSION_FINALIZED_MESSAGE, ephemeral=True)
+                LOGGER.info("template_session_finalized user_id=%s guild_id=%s session_id=%s.", interaction.user.id, interaction.guild_id, session_id)
             except ValueError as exc:
-                await interaction.followup.send(f"⚠️ {exc}", ephemeral=True)
+                await interaction.followup.send(self.session_error_message(exc), ephemeral=True)
             except Exception:
                 LOGGER.exception("Falha ao finalizar sessão session_id=%s.", session_id)
                 await interaction.followup.send("❌ Não consegui finalizar essa sessão.", ephemeral=True)
@@ -1171,11 +1261,29 @@ class TierTemplateCog(commands.Cog):
         snapshot = await self.session_renderer.build_snapshot(session_id)
         file = await self.render_session_file(session_id, author=author)
         view = await self.build_session_view(session_id, disabled=disabled)
-        await message.edit(
-            content=self.session_message_content(snapshot.template, snapshot.session),
-            attachments=[file],
-            view=view,
-        )
+        try:
+            await message.edit(
+                content=self.session_message_content(snapshot.template, snapshot.session),
+                attachments=[file],
+                view=view,
+            )
+        except discord.NotFound:
+            LOGGER.warning(
+                "template_session_message_missing session_id=%s message_id=%s",
+                session_id,
+                getattr(message, "id", None),
+            )
+            if snapshot.session.status is SessionStatus.ACTIVE:
+                try:
+                    await self.session_repository.abandon_session(session_id, owner_id=snapshot.session.owner_id)
+                except Exception:
+                    LOGGER.exception("Falha ao abandonar sessão sem mensagem session_id=%s.", session_id)
+        except discord.HTTPException:
+            LOGGER.exception(
+                "Falha ao editar mensagem de sessão session_id=%s message_id=%s",
+                session_id,
+                getattr(message, "id", None),
+            )
 
     def _session_lock(self, session_id: str) -> asyncio.Lock:
         lock = self.session_locks.get(session_id)

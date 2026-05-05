@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from .messages import EDITOR_PERMISSION_DENIED_MESSAGE, VERSION_LOCKED_MESSAGE
 from .modals import TemplateImageSourceModal, TemplateTextItemModal
 
 if TYPE_CHECKING:
@@ -78,10 +79,14 @@ class TemplateEditorView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if await self.cog.user_can_edit(interaction, self.creator_id):
             return True
-        await interaction.response.send_message(
-            "⚠️ Esse painel não é seu, bestie. Crie ou edite o seu próprio template.",
-            ephemeral=True,
+        LOGGER.info(
+            "permission_denied surface=template_editor user_id=%s creator_id=%s template_id=%s version_id=%s",
+            interaction.user.id,
+            self.creator_id,
+            self.template_id,
+            self.version_id,
         )
+        await interaction.response.send_message(EDITOR_PERMISSION_DENIED_MESSAGE, ephemeral=True)
         return False
 
     async def _ensure_unlocked(self, interaction: discord.Interaction) -> bool:
@@ -90,10 +95,7 @@ class TemplateEditorView(discord.ui.View):
             await interaction.response.send_message("⚠️ Essa versão de template não existe mais.", ephemeral=True)
             return False
         if version.is_locked:
-            await interaction.response.send_message(
-                "🔒 Esse template já foi publicado. Para editar, vou criar uma nova versão em rascunho.",
-                ephemeral=True,
-            )
+            await interaction.response.send_message(VERSION_LOCKED_MESSAGE, ephemeral=True)
             return False
         return True
 
@@ -285,10 +287,14 @@ class _BaseItemManageView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if await self.cog.user_can_edit(interaction, self.creator_id):
             return True
-        await interaction.response.send_message(
-            "⚠️ Esse painel não é seu, bestie. Crie ou edite o seu próprio template.",
-            ephemeral=True,
+        LOGGER.info(
+            "permission_denied surface=template_item_manage user_id=%s creator_id=%s template_id=%s version_id=%s",
+            interaction.user.id,
+            self.creator_id,
+            self.template_id,
+            self.version_id,
         )
+        await interaction.response.send_message(EDITOR_PERMISSION_DENIED_MESSAGE, ephemeral=True)
         return False
 
     async def build_embed(self) -> discord.Embed:
@@ -381,7 +387,7 @@ class TemplateItemRemoveView(_BaseItemManageView):
                 guild_id=interaction.guild_id,
             )
         except ValueError as exc:
-            await interaction.response.send_message(f"⚠️ {exc}", ephemeral=True)
+            await interaction.response.send_message(self.cog.warning_message(exc), ephemeral=True)
             return
         self.selected_item_id = None
         await self.refresh_message(interaction, content="🗑️ Item removido.")
@@ -420,6 +426,6 @@ class TemplateItemReorderView(_BaseItemManageView):
                 guild_id=interaction.guild_id,
             )
         except ValueError as exc:
-            await interaction.response.send_message(f"⚠️ {exc}", ephemeral=True)
+            await interaction.response.send_message(self.cog.warning_message(exc), ephemeral=True)
             return
         await self.refresh_message(interaction, content="🔃 Ordem atualizada.")
