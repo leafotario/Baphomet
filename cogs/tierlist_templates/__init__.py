@@ -4,6 +4,9 @@ from typing import Any
 
 
 async def setup(bot: Any) -> None:
-    from .cog import TierListTemplateCog
+    from .cog import setup as setup_cog
 
-    await bot.add_cog(TierListTemplateCog(bot))
+    await setup_cog(bot)
+
+
+__all__ = ["setup"]

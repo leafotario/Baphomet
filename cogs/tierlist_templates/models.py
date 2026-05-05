@@ -7,131 +7,123 @@ from typing import Any
 
 
 class TemplateVisibility(StrEnum):
-    PRIVATE = "private"
-    GUILD = "guild"
-    PUBLIC = "public"
+    PRIVATE = "PRIVATE"
+    GUILD = "GUILD"
+    GLOBAL = "GLOBAL"
 
 
-class TemplateVersionStatus(StrEnum):
-    PUBLISHED = "published"
+class TemplateItemType(StrEnum):
+    TEXT_ONLY = "TEXT_ONLY"
+    IMAGE = "IMAGE"
+
+
+class TemplateSourceType(StrEnum):
+    TEXT = "TEXT"
+    IMAGE_URL = "IMAGE_URL"
+    DISCORD_AVATAR = "DISCORD_AVATAR"
+    WIKIPEDIA = "WIKIPEDIA"
+    SPOTIFY = "SPOTIFY"
 
 
 class SessionStatus(StrEnum):
-    ACTIVE = "active"
-    FINALIZED = "finalized"
-    EXPIRED = "expired"
-    ABANDONED = "abandoned"
+    ACTIVE = "ACTIVE"
+    FINALIZED = "FINALIZED"
+    EXPIRED = "EXPIRED"
+    ABANDONED = "ABANDONED"
+    DELETED = "DELETED"
 
 
 @dataclass(frozen=True)
-class TierListTemplate:
-    id: int
+class TierTemplate:
+    id: str
+    slug: str
     name: str
-    description: str
+    description: str | None
     creator_id: int
     guild_id: int | None
     visibility: TemplateVisibility
-    current_version_id: int | None
+    current_version_id: str | None
     created_at: str
     updated_at: str
-    deleted_at: str | None = None
+    deleted_at: str | None
 
 
 @dataclass(frozen=True)
-class TemplateVersion:
-    id: int
-    template_id: int
+class TierTemplateVersion:
+    id: str
+    template_id: str
     version_number: int
-    status: TemplateVersionStatus
-    published_by: int
-    published_at: str
+    default_tiers_json: str
+    style_json: str | None
+    is_locked: bool
+    created_by: int
+    created_at: str
+    published_at: str | None
+    deleted_at: str | None
 
 
 @dataclass(frozen=True)
-class TemplateTier:
-    id: int
-    owner_id: int
-    name: str
-    position: int
-    color_hex: str | None = None
-
-
-@dataclass(frozen=True)
-class TemplateItem:
-    id: int
-    owner_id: int
-    name: str | None
-    source_type: str
+class TierTemplateItem:
+    id: str
+    template_version_id: str
+    item_type: TemplateItemType
+    source_type: str | None
+    asset_id: str | None
+    user_caption: str | None
+    render_caption: str | None
+    has_visible_caption: bool
+    internal_title: str | None
     source_query: str | None
-    asset_sha256: str | None
     metadata: dict[str, Any]
-    position: int
-    created_at: str | None = None
+    sort_order: int
+    created_at: str
+    deleted_at: str | None
 
 
 @dataclass(frozen=True)
-class StoredAsset:
-    sha256: str
-    relative_path: str
+class TierAsset:
+    id: str
+    asset_hash: str
+    storage_path: str
     mime_type: str
-    byte_size: int
     width: int
     height: int
-    created_at: str | None = None
+    size_bytes: int
+    source_type: str | None
+    metadata: dict[str, Any]
+    created_at: str
+    marked_orphan_at: str | None
+    deleted_at: str | None
 
 
 @dataclass(frozen=True)
-class TemplateSession:
-    id: int
-    template_version_id: int
+class TierSession:
+    id: str
+    template_version_id: str
     owner_id: int
     guild_id: int | None
     channel_id: int | None
     message_id: int | None
-    title: str
     status: SessionStatus
+    selected_item_id: str | None
+    selected_tier_id: str | None
+    current_inventory_page: int
     created_at: str
     updated_at: str
+    finalized_at: str | None
     expires_at: str | None
-    finalized_at: str | None = None
 
 
 @dataclass(frozen=True)
-class TemplateSessionItem:
-    id: int
-    session_id: int
-    template_item_id: int
-    name: str | None
-    source_type: str
-    asset_sha256: str | None
-    metadata: dict[str, Any]
-    tier_name: str | None
+class TierSessionItem:
+    id: str
+    session_id: str
+    template_item_id: str
+    current_tier_id: str | None
     position: int
-    created_at: str | None = None
-
-
-@dataclass(frozen=True)
-class TemplateDraftSnapshot:
-    template: TierListTemplate
-    tiers: tuple[TemplateTier, ...]
-    items: tuple[TemplateItem, ...]
-
-
-@dataclass(frozen=True)
-class TemplateVersionSnapshot:
-    template: TierListTemplate
-    version: TemplateVersion
-    tiers: tuple[TemplateTier, ...]
-    items: tuple[TemplateItem, ...]
-
-
-@dataclass(frozen=True)
-class TemplateSessionSnapshot:
-    session: TemplateSession
-    template: TierListTemplate
-    version: TemplateVersion
-    tiers: tuple[TemplateTier, ...]
-    items: tuple[TemplateSessionItem, ...]
+    is_unused: bool
+    created_at: str
+    updated_at: str
 
 
 def utc_now_iso() -> str:

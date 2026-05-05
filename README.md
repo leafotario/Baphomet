@@ -5,11 +5,11 @@
 
 ## Tier List Templates
 
-O bot inclui um sistema incremental de templates em `/tierlist-template`.
+Templates reutilizáveis de Tier List em desenvolvimento.
 
-- `/tierlist-template criar` cria um draft de template.
-- `/tierlist-template adicionar-item` adiciona texto ou uma imagem resolvida e salva localmente.
-- `/tierlist-template publicar` cria uma nova versão congelada.
-- `/tierlist-template usar` cria uma sessão própria baseada na versão publicada atual.
+O comando `/tier template criar` abre um editor com botões para adicionar itens
+de texto, URL, avatar, Wikipedia e Spotify, remover/reordenar itens, gerar
+preview e publicar a versão atual. Imagens são baixadas, validadas, convertidas
+para WEBP quando possível e salvas localmente antes de entrarem no template.
 
-As sessões não alteram o template original. Imagens de URL, avatar, Wikipedia/Wikimedia e Spotify são armazenadas como assets locais antes de entrarem em versões publicadas.
+O uso completo de templates em sessões de tier list fica para etapa futura.
