@@ -91,7 +91,7 @@ class TemplateEditorView(discord.ui.View):
             return False
         if version.is_locked:
             await interaction.response.send_message(
-                "🔒 Esse template já foi publicado. Para editar, crie uma nova versão/clonagem.",
+                "🔒 Esse template já foi publicado. Para editar, vou criar uma nova versão em rascunho.",
                 ephemeral=True,
             )
             return False

@@ -241,7 +241,7 @@ class TierTemplateCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
         tier_template = await self.find_template_for_view(template, interaction=interaction)
         if tier_template is None:
-            await interaction.followup.send("⚠️ Não encontrei esse template.", ephemeral=True)
+            await interaction.followup.send("🔎 Não encontrei esse template. Confere o nome/slug e tenta de novo.", ephemeral=True)
             return
         if not await self.can_manage_template(tier_template, interaction):
             await interaction.followup.send("⚠️ Você não tem permissão para editar esse template.", ephemeral=True)
@@ -320,7 +320,7 @@ class TierTemplateCog(commands.Cog):
         await interaction.response.defer(ephemeral=True, thinking=True)
         tier_template = await self.find_template_for_view(template, interaction=interaction)
         if tier_template is None:
-            await interaction.followup.send("⚠️ Não encontrei esse template.", ephemeral=True)
+            await interaction.followup.send("🔎 Não encontrei esse template. Confere o nome/slug e tenta de novo.", ephemeral=True)
             return
         if not await self.can_manage_template(tier_template, interaction):
             await interaction.followup.send("⚠️ Você não tem permissão para deletar esse template.", ephemeral=True)
@@ -570,7 +570,7 @@ class TierTemplateCog(commands.Cog):
         if template is None or version is None:
             raise ValueError("Não consegui gerar um slug único para esse template. Tente outro nome.")
         LOGGER.info(
-            "Template criado user_id=%s guild_id=%s template_id=%s version_id=%s slug=%s visibility=%s",
+            "template_created user_id=%s guild_id=%s template_id=%s version_id=%s slug=%s visibility=%s",
             interaction.user.id,
             interaction.guild_id,
             template.id,
@@ -610,7 +610,7 @@ class TierTemplateCog(commands.Cog):
             **resolved.to_repository_kwargs(),
         )
         LOGGER.info(
-            "Item adicionado user_id=%s guild_id=%s template_id=%s version_id=%s item_id=%s source_type=%s",
+            "template_item_added user_id=%s guild_id=%s template_id=%s version_id=%s item_id=%s source_type=%s",
             interaction.user.id,
             interaction.guild_id,
             template_id,
@@ -634,7 +634,7 @@ class TierTemplateCog(commands.Cog):
         await self._require_editable_version(version_id)
         await self.template_repository.remove_template_item(item_id)
         LOGGER.info(
-            "Item removido user_id=%s guild_id=%s template_id=%s version_id=%s item_id=%s",
+            "template_item_removed user_id=%s guild_id=%s template_id=%s version_id=%s item_id=%s",
             actor.id,
             guild_id,
             template_id,
@@ -696,7 +696,7 @@ class TierTemplateCog(commands.Cog):
             self._validate_default_tiers_json(version.default_tiers_json)
             published = await self.template_repository.lock_version(version_id, published_by=interaction.user.id)
             LOGGER.info(
-                "Template publicado user_id=%s guild_id=%s template_id=%s version_id=%s items=%s",
+                "template_published user_id=%s guild_id=%s template_id=%s version_id=%s items=%s",
                 interaction.user.id,
                 interaction.guild_id,
                 template_id,
@@ -860,7 +860,7 @@ class TierTemplateCog(commands.Cog):
         if version is None:
             raise ValueError("Versão de template não encontrada.")
         if version.is_locked:
-            raise ValueError("🔒 Esse template já foi publicado. Para editar, crie uma nova versão/clonagem.")
+            raise ValueError("🔒 Esse template já foi publicado. Para editar, vou criar uma nova versão em rascunho.")
         return version
 
     def _validate_default_tiers_json(self, raw: str) -> None:
