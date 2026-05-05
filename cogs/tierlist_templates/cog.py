@@ -11,7 +11,7 @@ from typing import Any
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from .asset_repository import TierAssetRepository
 from .assets import TierTemplateAssetStore
@@ -36,6 +36,9 @@ from .template_repository import TierTemplateRepository
 
 LOGGER = logging.getLogger("baphomet.tierlist_templates.cog")
 
+ASSET_PURGE_INTERVAL_HOURS = 128
+ORPHAN_ASSET_GRACE_HOURS = 72
+
 
 @dataclass(frozen=True)
 class EditorState:
@@ -48,7 +51,6 @@ class EditorState:
 
 class TierTemplateCog(commands.Cog):
     template = app_commands.Group(name="tierlist-template", description="Templates reutilizáveis de tier list.")
-    admin = app_commands.Group(name="admin", description="Administração de tier templates.", parent=template)
 
     ITEMS_PER_EDITOR_PAGE = 8
     TEMPLATE_LIST_PAGE_SIZE = 10
@@ -82,10 +84,13 @@ class TierTemplateCog(commands.Cog):
         self.register_dynamic_items()
         await self.expire_stale_active_sessions()
         await self.restore_persistent_session_views()
-        LOGGER.info("Tier templates inicializados com banco, migrations e recovery.")
+        if not self.purge_orphan_assets_periodically.is_running():
+            self.purge_orphan_assets_periodically.start()
+        LOGGER.info("Tier templates inicializados com banco, migrations, recovery e limpeza periódica.")
 
     def cog_unload(self) -> None:
         self.unregister_dynamic_items()
+        self.purge_orphan_assets_periodically.cancel()
         asyncio.create_task(self.db.close())
 
     @template.command(name="criar", description="Cria um template reutilizável de tier list.")
@@ -369,32 +374,6 @@ class TierTemplateCog(commands.Cog):
     async def deletar_template_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         return await self.template_slug_autocomplete(interaction, current, manageable_only=True)
 
-    @admin.command(name="purge-assets", description="Marca ou remove assets órfãos de templates.")
-    @app_commands.describe(dry_run="Se verdadeiro, apenas mostra o que seria feito")
-    async def purge_assets(self, interaction: discord.Interaction, dry_run: bool = True) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        if not await self.can_run_template_admin(interaction):
-            await interaction.followup.send("⚠️ Apenas o dono técnico do bot pode rodar essa limpeza.", ephemeral=True)
-            return
-        summary = await self.purge_orphan_assets(dry_run=dry_run)
-        LOGGER.info(
-            "template_asset_purge user_id=%s guild_id=%s dry_run=%s marked=%s deleted=%s",
-            interaction.user.id,
-            interaction.guild_id,
-            dry_run,
-            summary["marked"],
-            summary["deleted"],
-        )
-        mode = "dry-run" if dry_run else "execução real"
-        await interaction.followup.send(
-            f"🧹 Purge assets ({mode})\n"
-            f"Órfãos encontrados: `{summary['seen']}`\n"
-            f"Seriam marcados/marcados: `{summary['marked']}`\n"
-            f"Seriam deletados/deletados: `{summary['deleted']}`\n"
-            f"Bytes candidatos: `{summary['bytes']}`",
-            ephemeral=True,
-        )
-
     async def template_slug_autocomplete(
         self,
         interaction: discord.Interaction,
@@ -565,13 +544,6 @@ class TierTemplateCog(commands.Cog):
             return bool(permissions and permissions.administrator)
         return False
 
-    async def can_run_template_admin(self, interaction: discord.Interaction) -> bool:
-        try:
-            return bool(await self.bot.is_owner(interaction.user))
-        except Exception:
-            LOGGER.exception("Falha ao verificar admin técnico user_id=%s.", interaction.user.id)
-            return False
-
     async def get_or_create_editable_version(
         self,
         template: TierTemplate,
@@ -602,7 +574,6 @@ class TierTemplateCog(commands.Cog):
         *,
         name: str,
         description: str,
-        visibility: TemplateVisibility,
         interaction: discord.Interaction,
     ) -> tuple[TierTemplate, TierTemplateVersion]:
         clean_name = str(name or "").strip()
@@ -614,7 +585,8 @@ class TierTemplateCog(commands.Cog):
         if clean_description and len(clean_description) > 300:
             raise ValueError("Descrição deve ter no máximo 300 caracteres.")
 
-        guild_id = None if visibility is TemplateVisibility.GLOBAL else interaction.guild_id
+        visibility = TemplateVisibility.GLOBAL
+        guild_id = None
         template: TierTemplate | None = None
         version: TierTemplateVersion | None = None
         for attempt in range(3):
@@ -988,9 +960,26 @@ class TierTemplateCog(commands.Cog):
                 LOGGER.exception("Falha ao restaurar view persistente session_id=%s.", session.id)
         LOGGER.info("template_session_views_restored count=%s.", restored)
 
+    @tasks.loop(hours=ASSET_PURGE_INTERVAL_HOURS)
+    async def purge_orphan_assets_periodically(self) -> None:
+        try:
+            summary = await self.purge_orphan_assets(dry_run=False)
+        except Exception:
+            LOGGER.exception("Falha na limpeza periódica de assets órfãos.")
+            return
+
+        LOGGER.info(
+            "template_asset_periodic_purge interval_hours=%s seen=%s marked=%s deleted=%s bytes=%s",
+            ASSET_PURGE_INTERVAL_HOURS,
+            summary["seen"],
+            summary["marked"],
+            summary["deleted"],
+            summary["bytes"],
+        )
+
     async def purge_orphan_assets(self, *, dry_run: bool) -> dict[str, int]:
         now = datetime.now(timezone.utc).replace(microsecond=0)
-        cutoff = (now - timedelta(hours=72)).isoformat()
+        cutoff = (now - timedelta(hours=ORPHAN_ASSET_GRACE_HOURS)).isoformat()
         assets = await self.asset_repository.list_unreferenced_assets(limit=1000)
         summary = {"seen": len(assets), "marked": 0, "deleted": 0, "bytes": 0}
         for asset in assets:

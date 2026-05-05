@@ -91,7 +91,7 @@ class TierTemplateRepository:
         name: str,
         creator_id: int,
         guild_id: int | None = None,
-        visibility: TemplateVisibility | str = TemplateVisibility.GUILD,
+        visibility: TemplateVisibility | str = TemplateVisibility.GLOBAL,
         description: str | None = None,
         slug: str | None = None,
         default_tiers_json: str = DEFAULT_TIERS_JSON,

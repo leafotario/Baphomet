@@ -9,15 +9,15 @@ EMPTY_ITEM_MESSAGE = (
 CONFLICTING_IMAGE_SOURCES_MESSAGE = (
     "⚠️ Honra e proveito não cabem no mesmo saco estreito.\n\n"
     "Você preencheu mais de uma fonte de imagem ao mesmo tempo. Eu preciso saber qual imagem usar: "
-    "avatar de usuário, link direto, Wikipedia, Spotify ou outra fonte — mas não tudo junto no mesmo item.\n\n"
+    "avatar de usuário, link direto, Wikipedia, Spotify ou outra fonte, mas não tudo junto no mesmo item.\n\n"
     "Escolha só uma fonte de imagem e tente de novo."
 )
 
 SESSION_PERMISSION_DENIED_MESSAGE = (
-    "⚠️ Essa tierlist não é sua, fofoqueira. "
+    "⚠️ Essa tierlist não é sua, beldade. "
     "Crie sua própria sessão com /tierlist-template usar."
 )
-EDITOR_PERMISSION_DENIED_MESSAGE = "⚠️ Esse painel não é seu, bestie. Crie ou edite o seu próprio template."
+EDITOR_PERMISSION_DENIED_MESSAGE = "⚠️ Esse painel não é seu, beldade. Crie ou edite o seu próprio template."
 SESSION_FINALIZED_MESSAGE = "🏁 Essa tierlist já foi finalizada. Ela agora é relíquia histórica."
 SESSION_NOT_AVAILABLE_MESSAGE = "⚠️ Essa sessão não existe mais ou expirou."
 TEMPLATE_PRIVATE_MESSAGE = "🔒 Esse template é privado e só o criador pode usar."

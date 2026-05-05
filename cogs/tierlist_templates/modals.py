@@ -6,8 +6,6 @@ from typing import TYPE_CHECKING, Any
 import discord
 
 from .exceptions import TemplateItemResolveError
-from .item_resolver import normalize_caption
-from .models import TemplateVisibility
 
 if TYPE_CHECKING:
     from .cog import TierTemplateCog
@@ -34,32 +32,16 @@ class TemplateCreateModal(discord.ui.Modal, title="Criar Template de Tier List")
             max_length=300,
             required=False,
         )
-        self.visibility_input = discord.ui.TextInput(
-            label="Visibilidade",
-            placeholder="PRIVATE, GUILD ou GLOBAL",
-            default="GUILD",
-            min_length=1,
-            max_length=12,
-            required=False,
-        )
         self.add_item(self.name_input)
         self.add_item(self.description_input)
-        self.add_item(self.visibility_input)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            visibility_raw = normalize_caption(self.visibility_input.value) or TemplateVisibility.GUILD.value
-            visibility = TemplateVisibility(visibility_raw.strip().upper())
-        except ValueError:
-            await interaction.followup.send("⚠️ Visibilidade inválida. Use PRIVATE, GUILD ou GLOBAL.", ephemeral=True)
-            return
 
         try:
             template, version = await self.cog.create_template_from_user(
                 name=str(self.name_input.value),
                 description=str(self.description_input.value or ""),
-                visibility=visibility,
                 interaction=interaction,
             )
         except ValueError as exc:
