@@ -153,7 +153,7 @@ class TierTemplateItemResolver:
         if not filled_sources:
             if user_caption is None:
                 raise EmptyTemplateItemError(
-                    "Preencha um nome ou escolha uma fonte de imagem.",
+                    "⚠️ Esse item veio tão vazio que nem o abismo respondeu. Preencha um nome ou escolha uma fonte de imagem.",
                     detail="Item sem caption e sem fonte visual.",
                     code="empty_template_item",
                 )
