@@ -40,9 +40,8 @@ class EditorState:
 
 
 class TierTemplateCog(commands.Cog):
-    tier = app_commands.Group(name="tier", description="Ferramentas de tier list.")
-    template = app_commands.Group(name="template", description="Templates reutilizáveis de tier list.", parent=tier)
-    admin = app_commands.Group(name="admin", description="Administração de tier templates.", parent=tier)
+    template = app_commands.Group(name="tierlist-template", description="Templates reutilizáveis de tier list.")
+    admin = app_commands.Group(name="admin", description="Administração de tier templates.", parent=template)
 
     ITEMS_PER_EDITOR_PAGE = 8
     TEMPLATE_LIST_PAGE_SIZE = 10
