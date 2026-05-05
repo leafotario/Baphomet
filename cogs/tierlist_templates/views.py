@@ -14,6 +14,10 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger("baphomet.tierlist_templates.views")
 
 
+def template_component_id(template_id: str, version_id: str, action: str) -> str:
+    return f"ttpl:{template_id}:{version_id}:{action}"
+
+
 class TemplateEditorView(discord.ui.View):
     def __init__(
         self,
@@ -36,21 +40,35 @@ class TemplateEditorView(discord.ui.View):
         self.total_pages = max(1, total_pages)
         self.is_locked = is_locked
         self.item_count = item_count
+        self._apply_custom_ids()
         self._sync_disabled_state()
 
+    def _apply_custom_ids(self) -> None:
+        self.add_text_button.custom_id = template_component_id(self.template_id, self.version_id, "add_text")
+        self.add_url_button.custom_id = template_component_id(self.template_id, self.version_id, "add_url")
+        self.add_avatar_button.custom_id = template_component_id(self.template_id, self.version_id, "add_avatar")
+        self.add_wikipedia_button.custom_id = template_component_id(self.template_id, self.version_id, "add_wiki")
+        self.add_spotify_button.custom_id = template_component_id(self.template_id, self.version_id, "add_spotify")
+        self.remove_item_button.custom_id = template_component_id(self.template_id, self.version_id, "remove")
+        self.reorder_button.custom_id = template_component_id(self.template_id, self.version_id, "reorder")
+        self.preview_button.custom_id = template_component_id(self.template_id, self.version_id, "preview")
+        self.publish_button.custom_id = template_component_id(self.template_id, self.version_id, "publish")
+        self.close_button.custom_id = template_component_id(self.template_id, self.version_id, "close")
+        self.previous_page_button.custom_id = template_component_id(self.template_id, self.version_id, "page_prev")
+        self.next_page_button.custom_id = template_component_id(self.template_id, self.version_id, "page_next")
+
     def _sync_disabled_state(self) -> None:
-        for child in self.children:
-            if isinstance(child, discord.ui.Button) and child.custom_id in {
-                "tier_template:add_text",
-                "tier_template:add_url",
-                "tier_template:add_avatar",
-                "tier_template:add_wikipedia",
-                "tier_template:add_spotify",
-                "tier_template:remove",
-                "tier_template:reorder",
-                "tier_template:publish",
-            }:
-                child.disabled = self.is_locked
+        for child in (
+            self.add_text_button,
+            self.add_url_button,
+            self.add_avatar_button,
+            self.add_wikipedia_button,
+            self.add_spotify_button,
+            self.remove_item_button,
+            self.reorder_button,
+            self.publish_button,
+        ):
+            child.disabled = self.is_locked
         self.remove_item_button.disabled = self.is_locked or self.item_count == 0
         self.reorder_button.disabled = self.is_locked or self.item_count < 2
         self.preview_button.disabled = self.item_count == 0

@@ -317,6 +317,20 @@ class TierTemplateRepository:
         )
         return _version_from_row(row)
 
+    async def get_latest_draft_version(self, template_id: str) -> TierTemplateVersion | None:
+        row = await fetch_one(
+            self.db.conn,
+            """
+            SELECT *
+            FROM tier_template_versions
+            WHERE template_id = ? AND is_locked = 0 AND deleted_at IS NULL
+            ORDER BY version_number DESC
+            LIMIT 1
+            """,
+            (template_id,),
+        )
+        return _version_from_row(row)
+
     async def lock_version(self, version_id: str, *, published_by: int | None = None) -> TierTemplateVersion:
         now = utc_now_iso()
         async with self.db.immediate_transaction() as conn:
@@ -431,6 +445,153 @@ class TierTemplateRepository:
         if version is None:
             raise RuntimeError("Clone de versão não pôde ser recuperado.")
         return version
+
+    async def clone_template(
+        self,
+        *,
+        source_template_id: str,
+        name: str,
+        slug: str,
+        creator_id: int,
+        guild_id: int | None,
+        visibility: TemplateVisibility | str,
+        description: str | None = None,
+        source_version_id: str | None = None,
+    ) -> tuple[TierTemplate, TierTemplateVersion]:
+        clean_name = normalize_optional_text(name)
+        if clean_name is None:
+            raise ValueError("Não é possível clonar template sem nome.")
+        visibility_value = coerce_visibility(visibility)
+        slug_value = normalize_slug(slug)
+        now = utc_now_iso()
+        new_template_id = new_uuid()
+        new_version_id = new_uuid()
+
+        try:
+            async with self.db.immediate_transaction() as conn:
+                source_template = await fetch_one(
+                    conn,
+                    """
+                    SELECT *
+                    FROM tier_templates
+                    WHERE id = ? AND deleted_at IS NULL
+                    """,
+                    (source_template_id,),
+                )
+                if source_template is None:
+                    raise ValueError("Template de origem não encontrado.")
+
+                version_filter = "id = ?" if source_version_id else "id = ?"
+                version_param = source_version_id or source_template["current_version_id"]
+                if version_param is None:
+                    source_version = await fetch_one(
+                        conn,
+                        """
+                        SELECT *
+                        FROM tier_template_versions
+                        WHERE template_id = ? AND deleted_at IS NULL
+                        ORDER BY version_number DESC
+                        LIMIT 1
+                        """,
+                        (source_template_id,),
+                    )
+                else:
+                    source_version = await fetch_one(
+                        conn,
+                        f"""
+                        SELECT *
+                        FROM tier_template_versions
+                        WHERE {version_filter} AND template_id = ? AND deleted_at IS NULL
+                        """,
+                        (version_param, source_template_id),
+                    )
+                if source_version is None:
+                    raise ValueError("Versão de origem não encontrada.")
+
+                await conn.execute(
+                    """
+                    INSERT INTO tier_templates(
+                        id, slug, name, description, creator_id, guild_id, visibility,
+                        current_version_id, created_at, updated_at, deleted_at
+                    )
+                    VALUES(?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
+                    """,
+                    (
+                        new_template_id,
+                        slug_value,
+                        clean_name,
+                        normalize_optional_text(description),
+                        int(creator_id),
+                        guild_id,
+                        visibility_value.value,
+                        now,
+                        now,
+                    ),
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO tier_template_versions(
+                        id, template_id, version_number, default_tiers_json, style_json,
+                        is_locked, created_by, created_at, published_at, deleted_at
+                    )
+                    VALUES(?, ?, 1, ?, ?, 0, ?, ?, NULL, NULL)
+                    """,
+                    (
+                        new_version_id,
+                        new_template_id,
+                        source_version["default_tiers_json"],
+                        source_version["style_json"],
+                        int(creator_id),
+                        now,
+                    ),
+                )
+                item_rows = await conn.execute_fetchall(
+                    """
+                    SELECT *
+                    FROM tier_template_items
+                    WHERE template_version_id = ? AND deleted_at IS NULL
+                    ORDER BY sort_order ASC, created_at ASC
+                    """,
+                    (source_version["id"],),
+                )
+                for item in item_rows:
+                    await conn.execute(
+                        """
+                        INSERT INTO tier_template_items(
+                            id, template_version_id, item_type, source_type, asset_id,
+                            user_caption, render_caption, has_visible_caption, internal_title,
+                            source_query, metadata_json, sort_order, created_at, deleted_at
+                        )
+                        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                        """,
+                        (
+                            new_uuid(),
+                            new_version_id,
+                            item["item_type"],
+                            item["source_type"],
+                            item["asset_id"],
+                            item["user_caption"],
+                            item["render_caption"],
+                            int(item["has_visible_caption"]),
+                            item["internal_title"],
+                            item["source_query"],
+                            item["metadata_json"],
+                            int(item["sort_order"]),
+                            now,
+                        ),
+                    )
+                await conn.execute(
+                    "UPDATE tier_templates SET current_version_id = ?, updated_at = ? WHERE id = ?",
+                    (new_version_id, now, new_template_id),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Já existe um template com esse slug.") from exc
+
+        template = await self.get_template_by_id(new_template_id)
+        version = await self.get_template_version(new_version_id)
+        if template is None or version is None:
+            raise RuntimeError("Template clonado não pôde ser recuperado.")
+        return template, version
 
     async def add_template_item(
         self,
@@ -603,6 +764,24 @@ class TierTemplateRepository:
         template = await self.get_template_by_id(template_id)
         if template is None:
             raise RuntimeError("Template atualizado não pôde ser recuperado.")
+        return template
+
+    async def soft_delete_template(self, template_id: str) -> TierTemplate:
+        now = utc_now_iso()
+        async with self.db.immediate_transaction() as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE tier_templates
+                SET deleted_at = ?, updated_at = ?
+                WHERE id = ? AND deleted_at IS NULL
+                """,
+                (now, now, template_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Template não encontrado.")
+        template = await self.get_template_by_id(template_id, include_deleted=True)
+        if template is None:
+            raise RuntimeError("Template removido não pôde ser recuperado.")
         return template
 
     async def move_template_item(self, item_id: str, *, direction: int) -> TierTemplateItem:

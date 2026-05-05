@@ -252,6 +252,41 @@ class TierSessionRepository:
             raise RuntimeError("Item movido não pôde ser recuperado.")
         return item
 
+    async def reset_session(self, session_id: str, *, owner_id: int | None = None) -> TierSession:
+        now = utc_now_iso()
+        async with self.db.immediate_transaction() as conn:
+            await self._require_active_session(conn, session_id, owner_id=owner_id)
+            rows = await conn.execute_fetchall(
+                """
+                SELECT id FROM tier_session_items
+                WHERE session_id = ?
+                ORDER BY position ASC, created_at ASC
+                """,
+                (session_id,),
+            )
+            for position, row in enumerate(rows):
+                await conn.execute(
+                    """
+                    UPDATE tier_session_items
+                    SET current_tier_id = NULL, is_unused = 1, position = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (position, now, row["id"]),
+                )
+            await conn.execute(
+                """
+                UPDATE tier_sessions
+                SET selected_item_id = NULL, selected_tier_id = NULL,
+                    current_inventory_page = 0, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, session_id),
+            )
+        session = await self.get_session(session_id)
+        if session is None:
+            raise RuntimeError("Sessão resetada não pôde ser recuperada.")
+        return session
+
     async def get_session_item(self, session_item_id: str) -> TierSessionItem | None:
         row = await fetch_one(
             self.db.conn,
@@ -366,6 +401,42 @@ class TierSessionRepository:
         params.append(int(limit))
         rows = await self.db.conn.execute_fetchall(query, tuple(params))
         return [session for row in rows if (session := _session_from_row(row)) is not None]
+
+    async def list_active_sessions(self, *, limit: int = 500) -> list[TierSession]:
+        rows = await self.db.conn.execute_fetchall(
+            """
+            SELECT * FROM tier_sessions
+            WHERE status = ?
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            (SessionStatus.ACTIVE.value, int(limit)),
+        )
+        return [session for row in rows if (session := _session_from_row(row)) is not None]
+
+    async def expire_stale_sessions(self, *, updated_before: str, limit: int = 500) -> int:
+        now = utc_now_iso()
+        async with self.db.immediate_transaction() as conn:
+            rows = await conn.execute_fetchall(
+                """
+                SELECT id
+                FROM tier_sessions
+                WHERE status = ? AND updated_at < ?
+                ORDER BY updated_at ASC
+                LIMIT ?
+                """,
+                (SessionStatus.ACTIVE.value, updated_before, int(limit)),
+            )
+            for row in rows:
+                await conn.execute(
+                    """
+                    UPDATE tier_sessions
+                    SET status = ?, updated_at = ?
+                    WHERE id = ? AND status = ?
+                    """,
+                    (SessionStatus.EXPIRED.value, now, row["id"], SessionStatus.ACTIVE.value),
+                )
+        return len(rows)
 
     async def _update_session_fields(
         self,

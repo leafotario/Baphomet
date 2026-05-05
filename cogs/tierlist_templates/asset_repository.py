@@ -176,6 +176,25 @@ class TierAssetRepository:
         rows = await self.db.conn.execute_fetchall(query, tuple(params))
         return [asset for row in rows if (asset := _asset_from_row(row)) is not None]
 
+    async def list_unreferenced_assets(self, *, limit: int = 500) -> list[TierAsset]:
+        rows = await self.db.conn.execute_fetchall(
+            """
+            SELECT a.*
+            FROM tier_assets a
+            WHERE a.deleted_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM tier_template_items i
+                  WHERE i.asset_id = a.id
+                    AND i.deleted_at IS NULL
+              )
+            ORDER BY a.created_at ASC
+            LIMIT ?
+            """,
+            (int(limit),),
+        )
+        return [asset for row in rows if (asset := _asset_from_row(row)) is not None]
+
     async def soft_delete_asset(self, asset_id: str) -> TierAsset:
         now = utc_now_iso()
         async with self.db.immediate_transaction() as conn:

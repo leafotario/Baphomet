@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import math
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 
 from .asset_repository import TierAssetRepository
 from .assets import TierTemplateAssetStore
 from .models import TierTemplate, TierTemplateItem, TierTemplateVersion, TemplateItemType
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class TierTemplatePreviewRenderer:
@@ -39,6 +43,7 @@ class TierTemplatePreviewRenderer:
             try:
                 asset_bytes[item.id] = await self.asset_store.load_asset_bytes(asset)
             except OSError:
+                LOGGER.exception("Falha ao carregar asset local para preview template_item_id=%s asset_id=%s.", item.id, asset.id)
                 continue
 
         return await self._to_thread(template=template, version=version, items=items, asset_bytes=asset_bytes)
@@ -139,27 +144,39 @@ class TierTemplatePreviewRenderer:
         tiny_font: ImageFont.ImageFont,
     ) -> None:
         x, y, w, h = box
-        draw.rounded_rectangle((x, y, x + w, y + h), radius=8, fill=(47, 51, 62), outline=(72, 78, 94), width=1)
-        media_box = (x + 8, y + 8, x + w - 8, y + 110)
-        if item.item_type == TemplateItemType.IMAGE and image_bytes:
+        caption = self._safe_text(item.render_caption) if item.has_visible_caption else None
+        if item.item_type == TemplateItemType.IMAGE:
+            if image_bytes is None:
+                self._draw_missing_image_card(draw, box, tiny_font)
+                return
+
+            footer_height = 32 if caption else 0
+            image_box = (x, y, x + w, y + h - footer_height)
+            draw.rounded_rectangle((x, y, x + w, y + h), radius=8, fill=(47, 51, 62), outline=(72, 78, 94), width=1)
             try:
                 with Image.open(io.BytesIO(image_bytes)) as raw:
-                    raw = raw.convert("RGBA")
-                    thumb = ImageOps.fit(raw, (media_box[2] - media_box[0], media_box[3] - media_box[1]), method=Image.Resampling.LANCZOS)
-                    canvas.paste(thumb, (media_box[0], media_box[1]), thumb if thumb.mode == "RGBA" else None)
+                    thumb = self._cover_image(raw, (image_box[2] - image_box[0], image_box[3] - image_box[1]))
+                    self._paste_rounded(canvas, thumb, image_box, radius=8 if footer_height == 0 else 6)
             except (UnidentifiedImageError, OSError, ValueError):
-                draw.rectangle(media_box, fill=(67, 73, 89))
-                self._center_text(draw, "imagem", media_box, tiny_font, (200, 205, 214))
-        else:
-            draw.rectangle(media_box, fill=(67, 73, 89))
-            label = item.render_caption or item.internal_title or f"Item {index + 1}"
-            self._draw_wrapped_text(draw, label, media_box, small_font, (236, 239, 244), max_lines=3)
+                LOGGER.exception("Asset local inválido durante preview template_item_id=%s.", item.id)
+                self._draw_missing_image_card(draw, box, tiny_font)
+                return
 
-        caption = item.render_caption
-        if caption:
-            self._draw_wrapped_text(draw, caption, (x + 9, y + 118, x + w - 9, y + h - 8), tiny_font, (236, 239, 244), max_lines=2)
-        elif item.item_type == TemplateItemType.IMAGE:
-            draw.text((x + 9, y + 126), "sem legenda", font=tiny_font, fill=(138, 145, 160))
+            if caption:
+                footer_box = (x, y + h - footer_height, x + w, y + h)
+                draw.rectangle(footer_box, fill=(30, 32, 42))
+                self._draw_single_line(draw, caption, (footer_box[0] + 8, footer_box[1] + 5, footer_box[2] - 8, footer_box[3] - 5), tiny_font, (236, 239, 244))
+            return
+
+        draw.rounded_rectangle((x, y, x + w, y + h), radius=8, fill=(47, 51, 62), outline=(72, 78, 94), width=1)
+        self._draw_wrapped_text(
+            draw,
+            item.render_caption,
+            (x + 12, y + 12, x + w - 12, y + h - 12),
+            small_font,
+            (236, 239, 244),
+            max_lines=5,
+        )
 
     def _tiers(self, raw_json: str) -> list[dict[str, Any]]:
         try:
@@ -197,32 +214,46 @@ class TierTemplatePreviewRenderer:
     def _draw_wrapped_text(
         self,
         draw: ImageDraw.ImageDraw,
-        text: str,
+        text: str | None,
         box: tuple[int, int, int, int],
         font: ImageFont.ImageFont,
         fill: tuple[int, int, int],
         *,
         max_lines: int,
     ) -> None:
-        words = str(text).split()
+        value = self._safe_text(text)
+        if value is None:
+            return
+        words = value.split()
         lines: list[str] = []
         current = ""
         max_width = box[2] - box[0]
+        overflow = False
         for word in words:
             candidate = f"{current} {word}".strip()
-            bbox = draw.textbbox((0, 0), candidate, font=font)
-            if bbox[2] - bbox[0] <= max_width:
+            if self._text_width(draw, candidate, font) <= max_width:
                 current = candidate
             else:
                 if current:
                     lines.append(current)
-                current = word
+                    current = ""
+                    if len(lines) >= max_lines:
+                        overflow = True
+                        break
+                if self._text_width(draw, word, font) <= max_width:
+                    current = word
+                else:
+                    lines.append(self._truncate_to_width(draw, word, font, max_width))
+                    current = ""
             if len(lines) >= max_lines:
+                overflow = True
                 break
         if current and len(lines) < max_lines:
             lines.append(current)
-        if len(lines) == max_lines and len(" ".join(words)) > len(" ".join(lines)):
-            lines[-1] = lines[-1][: max(1, len(lines[-1]) - 1)].rstrip() + "…"
+        elif current:
+            overflow = True
+        if overflow and lines:
+            lines[-1] = self._truncate_to_width(draw, f"{lines[-1].rstrip('.')}...", font, max_width)
         line_height = 16
         total_h = len(lines) * line_height
         y = box[1] + max(0, ((box[3] - box[1]) - total_h) // 2)
@@ -231,6 +262,77 @@ class TierTemplatePreviewRenderer:
             x = box[0] + max(0, (max_width - (bbox[2] - bbox[0])) // 2)
             draw.text((x, y), line, font=font, fill=fill)
             y += line_height
+
+    def _draw_missing_image_card(
+        self,
+        draw: ImageDraw.ImageDraw,
+        box: tuple[int, int, int, int],
+        font: ImageFont.ImageFont,
+    ) -> None:
+        draw.rounded_rectangle(box, radius=8, fill=(48, 53, 65), outline=(92, 74, 74), width=1)
+        self._draw_wrapped_text(draw, "Imagem indisponível", (box[0] + 8, box[1] + 8, box[2] - 8, box[3] - 8), font, (218, 224, 235), max_lines=2)
+
+    def _cover_image(self, source: Image.Image, size: tuple[int, int]) -> Image.Image:
+        image = source.convert("RGBA")
+        return ImageOps.fit(image, size, method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+
+    def _paste_rounded(
+        self,
+        canvas: Image.Image,
+        source: Image.Image,
+        box: tuple[int, int, int, int],
+        *,
+        radius: int,
+    ) -> None:
+        width = box[2] - box[0]
+        height = box[3] - box[1]
+        layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        layer.paste(source, (0, 0), source if source.mode == "RGBA" else None)
+        mask = Image.new("L", (width, height), 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, width, height), radius=radius, fill=255)
+        alpha = ImageChops.multiply(layer.getchannel("A"), mask)
+        canvas.paste(layer, (box[0], box[1]), alpha)
+
+    def _draw_single_line(
+        self,
+        draw: ImageDraw.ImageDraw,
+        text: str | None,
+        box: tuple[int, int, int, int],
+        font: ImageFont.ImageFont,
+        fill: tuple[int, int, int],
+    ) -> None:
+        value = self._safe_text(text)
+        if value is None:
+            return
+        value = self._truncate_to_width(draw, value, font, box[2] - box[0])
+        self._center_text(draw, value, box, font, fill)
+
+    def _truncate_to_width(
+        self,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        font: ImageFont.ImageFont,
+        max_width: int,
+    ) -> str:
+        if self._text_width(draw, text, font) <= max_width:
+            return text
+        suffix = "..."
+        value = text
+        while value and self._text_width(draw, f"{value}{suffix}", font) > max_width:
+            value = value[:-1].rstrip()
+        return f"{value}{suffix}" if value else suffix
+
+    def _text_width(self, draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> int:
+        bbox = draw.textbbox((0, 0), text, font=font)
+        return bbox[2] - bbox[0]
+
+    def _safe_text(self, value: object | None) -> str | None:
+        if not isinstance(value, str):
+            return None
+        text = " ".join(value.split()).strip()
+        if not text or text.casefold() in {"none", "null"}:
+            return None
+        return text
 
     def _hex_to_rgb(self, value: str) -> tuple[int, int, int]:
         cleaned = value.strip().lstrip("#")
