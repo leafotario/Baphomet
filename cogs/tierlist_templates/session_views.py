@@ -129,7 +129,7 @@ class TierSessionView(discord.ui.View):
             return False
         if interaction.user.id != session.owner_id:
             await interaction.response.send_message(
-                "⚠️ Essa tierlist não é sua, fofoqueira. Crie sua própria sessão com /tier template usar.",
+                "⚠️ Essa tierlist não é sua, fofoqueira. Crie sua própria sessão com /tierlist-template usar.",
                 ephemeral=True,
             )
             return False
@@ -198,7 +198,7 @@ class ConfirmResetSessionView(discord.ui.View):
         if interaction.user.id == self.owner_id:
             return True
         await interaction.response.send_message(
-            "⚠️ Essa tierlist não é sua, fofoqueira. Crie sua própria sessão com /tier template usar.",
+            "⚠️ Essa tierlist não é sua, fofoqueira. Crie sua própria sessão com /tierlist-template usar.",
             ephemeral=True,
         )
         return False

@@ -58,7 +58,7 @@ class TierSessionActionDynamicItem(discord.ui.DynamicItem[discord.ui.Button], te
             return
         if interaction.user.id != session.owner_id:
             await interaction.response.send_message(
-                "⚠️ Essa tierlist não é sua, fofoqueira. Crie sua própria sessão com /tier template usar.",
+                "⚠️ Essa tierlist não é sua, fofoqueira. Crie sua própria sessão com /tierlist-template usar.",
                 ephemeral=True,
             )
             return

@@ -3897,11 +3897,11 @@ class TierListCog(
             pass
 
 
+@app_commands.default_permissions(administrator=True)
 class TierListSafetyCog(
     commands.GroupCog,
     group_name="tierlist-safety",
     group_description="Configura o filtro de segurança da tierlist Wikipedia",
-    default_permissions=discord.Permissions(administrator=True),
 ):
     block_term = app_commands.Group(name="block-term", description="Gerencia termos bloqueados.", default_permissions=discord.Permissions(administrator=True))
     allow_term = app_commands.Group(name="allow-term", description="Gerencia termos liberados para busca.", default_permissions=discord.Permissions(administrator=True))
