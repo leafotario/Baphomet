@@ -27,7 +27,6 @@ from .messages import (
     VERSION_LOCKED_MESSAGE,
 )
 from .models import SessionStatus, TemplateVisibility, TierSession, TierTemplate, TierTemplateItem, TierTemplateVersion
-from .preview import TierTemplatePreviewRenderer
 from .repository_utils import normalize_slug
 from .session_renderer import SessionRenderSnapshot, TierSessionRenderer
 from .session_repository import TierSessionRepository
@@ -66,10 +65,6 @@ class TierTemplateCog(commands.Cog):
         self.item_resolver = TierTemplateItemResolver(
             asset_store=self.asset_store,
             downloader=SafeImageDownloader(),
-        )
-        self.preview_renderer = TierTemplatePreviewRenderer(
-            asset_repository=self.asset_repository,
-            asset_store=self.asset_store,
         )
         self.session_renderer = TierSessionRenderer(
             template_repository=self.template_repository,
@@ -145,7 +140,12 @@ class TierTemplateCog(commands.Cog):
                 channel_id=interaction.channel_id,
             )
             created_session = session
-            file = await self.render_session_file(session.id, author=interaction.user)
+            guild_icon_bytes = await self._read_guild_icon_bytes(interaction.guild)
+            file = await self.render_session_file(
+                session.id,
+                author=interaction.user,
+                guild_icon_bytes=guild_icon_bytes,
+            )
             view = await self.build_session_view(session.id)
             message = await interaction.followup.send(
                 content=self.session_message_content(tier_template, session),
@@ -772,11 +772,17 @@ class TierTemplateCog(commands.Cog):
             if not items:
                 await interaction.followup.send("⚠️ Adicione itens antes de gerar o preview.", ephemeral=True)
                 return
-            output = await self.preview_renderer.render_preview(template=template, version=version, items=items)
-            file = discord.File(output, filename="tier_template_preview.png")
+            embed = discord.Embed(
+                title=f"Preview textual: {template.name}",
+                description=template.description or "Sem descrição.",
+                color=discord.Color.green() if version.is_locked else discord.Color.blurple(),
+            )
+            embed.add_field(name="Versão", value=str(version.version_number), inline=True)
+            embed.add_field(name="Itens", value=str(len(items)), inline=True)
+            embed.add_field(name="Tiers", value=self._tiers_summary(version.default_tiers_json), inline=False)
+            embed.set_footer(text="A imagem final usa o mesmo renderer da tierlist padrão quando a sessão é criada.")
             await interaction.followup.send(
-                content=f"👀 Preview de **{discord.utils.escape_markdown(template.name)}** com {len(items)} itens.",
-                file=file,
+                embed=embed,
                 ephemeral=True,
             )
         except Exception:
@@ -1018,13 +1024,31 @@ class TierTemplateCog(commands.Cog):
         status = "finalizada" if session.status is SessionStatus.FINALIZED else "ativa"
         return f"**{discord.utils.escape_markdown(template.name)}** • sessão {status}"
 
-    async def render_session_file(self, session_id: str, *, author: object | None = None) -> discord.File:
+    async def render_session_file(
+        self,
+        session_id: str,
+        *,
+        author: object | None = None,
+        guild_icon_bytes: bytes | None = None,
+    ) -> discord.File:
         try:
-            buffer = await self.session_renderer.render_session(session_id, author=author)
+            buffer = await self.session_renderer.render_session(
+                session_id,
+                author=author,
+                guild_icon_bytes=guild_icon_bytes,
+            )
         except Exception:
             LOGGER.exception("render_failed surface=session session_id=%s", session_id)
             raise
         return discord.File(buffer, filename="tierlist.png")
+
+    async def _read_guild_icon_bytes(self, guild: discord.Guild | None) -> bytes | None:
+        if guild is None or guild.icon is None:
+            return None
+        try:
+            return await guild.icon.replace(format="png", size=128).read()
+        except (discord.HTTPException, ValueError, TypeError):
+            return None
 
     async def build_session_view(self, session_id: str, *, disabled: bool = False) -> discord.ui.View:
         from .session_views import TierSessionView
@@ -1248,7 +1272,12 @@ class TierTemplateCog(commands.Cog):
         if message is None:
             return
         snapshot = await self.session_renderer.build_snapshot(session_id)
-        file = await self.render_session_file(session_id, author=author)
+        guild_icon_bytes = await self._read_guild_icon_bytes(getattr(message, "guild", None))
+        file = await self.render_session_file(
+            session_id,
+            author=author,
+            guild_icon_bytes=guild_icon_bytes,
+        )
         view = await self.build_session_view(session_id, disabled=disabled)
         try:
             await message.edit(
