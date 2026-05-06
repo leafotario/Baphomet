@@ -86,13 +86,13 @@ class ProfileService:
         field_key: str,
         value: Any,
         updated_by: int | None,
-        source_type: ProfileFieldSourceType = ProfileFieldSourceType.USER,
+        source_type: ProfileFieldSourceType = ProfileFieldSourceType.MANUAL,
         source_message_ids: Iterable[int] = (),
     ) -> ProfileFieldValue:
         definition = self.field_registry.get(field_key)
-        if source_type is ProfileFieldSourceType.USER and not definition.user_editable:
+        if source_type is ProfileFieldSourceType.MANUAL and not definition.user_editable:
             raise PermissionError(f"campo nao editavel pelo usuario: {definition.key}")
-        if source_type is ProfileFieldSourceType.AUTO_SYNC and not definition.accepts_auto_sync:
+        if source_type is ProfileFieldSourceType.PRESENTATION_CHANNEL and not definition.accepts_auto_sync:
             raise PermissionError(f"campo nao aceita auto-sync: {definition.key}")
 
         normalized_value = self.normalize_field_value(definition.key, value)

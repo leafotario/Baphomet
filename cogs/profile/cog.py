@@ -8,7 +8,13 @@ from discord.ext import commands
 
 from .field_registry import UnknownProfileFieldError
 from .models import ProfileFieldStatus
-from .services import ProfileFieldNotFoundError, ProfileRenderService, ProfileService, ProfileValidationError
+from .services import (
+    PresentationChannelService,
+    ProfileFieldNotFoundError,
+    ProfileRenderService,
+    ProfileService,
+    ProfileValidationError,
+)
 from .views import ProfileEditorView
 
 
@@ -24,14 +30,42 @@ async def profile_admin_check(interaction: discord.Interaction) -> bool:
     raise app_commands.MissingPermissions(["moderate_members"])
 
 
+async def profile_settings_check(interaction: discord.Interaction) -> bool:
+    user = interaction.user
+    if isinstance(user, discord.Member) and user.guild_permissions.manage_guild:
+        return True
+    raise app_commands.MissingPermissions(["manage_guild"])
+
+
 class ProfileCog(commands.GroupCog, group_name="ficha", group_description="Ficha de usuario por servidor."):
     admin = app_commands.Group(name="admin", description="Moderacao de fichas.")
 
-    def __init__(self, bot: commands.Bot, service: ProfileService, renderer: ProfileRenderService) -> None:
+    def __init__(
+        self,
+        bot: commands.Bot,
+        service: ProfileService,
+        renderer: ProfileRenderService,
+        presentation: PresentationChannelService | None = None,
+    ) -> None:
         super().__init__()
         self.bot = bot
         self.service = service
         self.renderer = renderer
+        self.presentation = presentation or PresentationChannelService(service)
+        self._warned_message_content_guilds: set[int] = set()
+        self._context_menu = app_commands.ContextMenu(
+            name="Usar como informações básicas",
+            callback=self.usar_como_informacoes_basicas,
+        )
+
+    async def cog_load(self) -> None:
+        try:
+            self.bot.tree.add_command(self._context_menu)
+        except app_commands.CommandAlreadyRegistered:
+            LOGGER.warning("profile_context_menu_already_registered name=%s", self._context_menu.name)
+
+    def cog_unload(self) -> None:
+        self.bot.tree.remove_command(self._context_menu.name, type=discord.AppCommandType.message)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.guild is None:
@@ -72,6 +106,20 @@ class ProfileCog(commands.GroupCog, group_name="ficha", group_description="Ficha
         await interaction.response.send_message(
             embed=self.build_editor_embed(),
             view=ProfileEditorView(cog=self, owner_id=interaction.user.id, guild_id=interaction.guild_id),
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="set-apresentacao", description="Define o canal de apresentacao das fichas.")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.check(profile_settings_check)
+    @app_commands.describe(canal="Canal onde apresentacoes alimentam o campo info basica")
+    async def set_apresentacao(self, interaction: discord.Interaction, canal: discord.TextChannel) -> None:
+        await self.presentation.set_presentation_channel(interaction.guild_id, canal.id)
+        warnings = self._presentation_setup_warnings(interaction.guild, canal)
+        suffix = "\n" + "\n".join(warnings) if warnings else ""
+        await interaction.response.send_message(
+            f"Canal de apresentacao definido: {canal.mention}.{suffix}",
             ephemeral=True,
         )
 
@@ -245,6 +293,39 @@ class ProfileCog(commands.GroupCog, group_name="ficha", group_description="Ficha
 
         await interaction.followup.send(content=result.reason, embed=embed, ephemeral=ephemeral)
 
+    async def usar_como_informacoes_basicas(
+        self,
+        interaction: discord.Interaction,
+        message: discord.Message,
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Use isso dentro de um servidor.", ephemeral=True)
+            return
+        if getattr(message.author, "bot", False):
+            await interaction.response.send_message("Bots nao possuem ficha.", ephemeral=True)
+            return
+        if message.author.id != interaction.user.id and not self._can_manage_profiles(interaction):
+            await interaction.response.send_message("Essa mensagem nao e sua.", ephemeral=True)
+            return
+        used = await self.presentation.use_message_as_basic_info(message, actor_id=interaction.user.id)
+        if not used:
+            await interaction.response.send_message("Nao encontrei texto util nessa mensagem.", ephemeral=True)
+            return
+        await interaction.response.send_message("Info basica atualizada.", ephemeral=True)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        await self._warn_if_message_content_unavailable(message)
+        await self.presentation.process_message(message)
+
+    @commands.Cog.listener()
+    async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
+        await self.presentation.process_message_edit(before, after)
+
+    @commands.Cog.listener()
+    async def on_message_delete(self, message: discord.Message) -> None:
+        await self.presentation.process_message_delete(message)
+
     def build_editor_embed(self) -> discord.Embed:
         embed = discord.Embed(
             title="Editar ficha",
@@ -286,6 +367,37 @@ class ProfileCog(commands.GroupCog, group_name="ficha", group_description="Ficha
             return True
         await interaction.response.send_message("Voce nao tem permissao para moderar fichas.", ephemeral=True)
         return False
+
+    def _presentation_setup_warnings(self, guild: discord.Guild, channel: discord.TextChannel) -> list[str]:
+        warnings: list[str] = []
+        if not bool(getattr(getattr(self.bot, "intents", None), "message_content", False)):
+            warnings.append("Ative Message Content Intent no portal do Discord e no bot para ler o texto das apresentacoes.")
+            LOGGER.warning(
+                "profile_presentation_message_content_intent_disabled guild_id=%s channel_id=%s",
+                guild.id,
+                channel.id,
+            )
+        me = guild.me or (guild.get_member(self.bot.user.id) if self.bot.user else None)
+        if me is not None:
+            permissions = channel.permissions_for(me)
+            if not permissions.view_channel or not permissions.read_message_history:
+                warnings.append("Garanta que eu consigo ver o canal e ler o historico de mensagens.")
+        return warnings
+
+    async def _warn_if_message_content_unavailable(self, message: discord.Message) -> None:
+        if message.guild is None or message.guild.id in self._warned_message_content_guilds:
+            return
+        if bool(getattr(getattr(self.bot, "intents", None), "message_content", False)):
+            return
+        settings = await self.service.repository.get_settings(message.guild.id)
+        if settings.presentation_channel_id != getattr(message.channel, "id", None):
+            return
+        self._warned_message_content_guilds.add(message.guild.id)
+        LOGGER.warning(
+            "profile_presentation_message_content_unavailable guild_id=%s channel_id=%s",
+            message.guild.id,
+            settings.presentation_channel_id,
+        )
 
     async def cog_app_command_error(
         self,

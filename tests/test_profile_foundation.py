@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import discord
@@ -18,7 +19,14 @@ from cogs.profile.models import (
     ProfileModerationAction,
     ProfileRecord,
 )
-from cogs.profile.services import NullLevelProvider, ProfileModerationService, ProfileRenderService, ProfileService, ProfileValidationError
+from cogs.profile.services import (
+    NullLevelProvider,
+    PresentationChannelService,
+    ProfileModerationService,
+    ProfileRenderService,
+    ProfileService,
+    ProfileValidationError,
+)
 
 
 class ProfileFoundationTests(unittest.IsolatedAsyncioTestCase):
@@ -38,6 +46,7 @@ class ProfileFoundationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ficha ver", command_names)
         self.assertIn("ficha editar", command_names)
         self.assertIn("ficha resetar", command_names)
+        self.assertIn("ficha set-apresentacao", command_names)
         self.assertIn("ficha admin remover-campo", command_names)
         self.assertIn("ficha admin restaurar-campo", command_names)
         self.assertIn("ficha admin editar-campo", command_names)
@@ -141,6 +150,104 @@ class ProfileServiceValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.repository.events[-1]["action"], ProfileModerationAction.RESET_VISUAL)
 
 
+class PresentationChannelServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.repository = _MemoryProfileRepository()
+        self.service = ProfileService(
+            repository=self.repository,
+            field_registry=PROFILE_FIELD_REGISTRY,
+            level_provider=NullLevelProvider(),
+            moderation_service=ProfileModerationService(PROFILE_FIELD_REGISTRY),
+        )
+        self.presentation = PresentationChannelService(
+            self.service,
+            burst_window_seconds=90,
+            debounce_seconds=0,
+        )
+        self.guild = _fake_guild(1)
+        self.user = _fake_member(2)
+        self.channel = _FakeTextChannel(100)
+        await self.presentation.set_presentation_channel(self.guild.id, self.channel.id)
+
+    async def test_simple_message_updates_basic_info_with_source(self) -> None:
+        message = self._message(10, "Oi, eu sou a Lia.")
+
+        processed = await self.presentation.process_message(message)
+
+        field = await self.repository.get_field(1, 2, "basic_info")
+        self.assertTrue(processed)
+        self.assertEqual(field.value, "Oi, eu sou a Lia.")
+        self.assertEqual(field.source_type, ProfileFieldSourceType.PRESENTATION_CHANNEL)
+        self.assertEqual(field.source_message_ids, (10,))
+
+    async def test_burst_messages_merge_into_one_basic_info_block(self) -> None:
+        await self.presentation.process_message(self._message(10, "Primeira parte.", seconds=0))
+        await self.presentation.process_message(self._message(11, "Segunda parte.", seconds=30))
+
+        field = await self.repository.get_field(1, 2, "basic_info")
+        self.assertEqual(field.value, "Primeira parte.\n\nSegunda parte.")
+        self.assertEqual(field.source_message_ids, (10, 11))
+
+    async def test_edit_recompiles_existing_block(self) -> None:
+        first = self._message(10, "Primeira parte.", seconds=0)
+        second = self._message(11, "Segunda parte.", seconds=30)
+        await self.presentation.process_message(first)
+        await self.presentation.process_message(second)
+
+        edited = self._message(10, "Primeira parte editada.", seconds=0)
+        await self.presentation.process_message_edit(first, edited)
+
+        field = await self.repository.get_field(1, 2, "basic_info")
+        self.assertEqual(field.value, "Primeira parte editada.\n\nSegunda parte.")
+        self.assertEqual(field.source_message_ids, (10, 11))
+
+    async def test_partial_and_total_delete_recompile_or_clear(self) -> None:
+        first = self._message(10, "Primeira parte.", seconds=0)
+        second = self._message(11, "Segunda parte.", seconds=30)
+        await self.presentation.process_message(first)
+        await self.presentation.process_message(second)
+
+        await self.presentation.process_message_delete(first)
+        field = await self.repository.get_field(1, 2, "basic_info")
+        self.assertEqual(field.value, "Segunda parte.")
+        self.assertEqual(field.source_message_ids, (11,))
+
+        await self.presentation.process_message_delete(second)
+        self.assertIsNone(await self.repository.get_field(1, 2, "basic_info"))
+
+    async def test_new_user_content_restores_removed_by_mod_basic_info(self) -> None:
+        await self.service.set_field(guild_id=1, user_id=2, field_key="basic_info", value="velho", updated_by=2)
+        await self.service.moderate_field(
+            guild_id=1,
+            user_id=2,
+            field_key="basic_info",
+            status=ProfileFieldStatus.REMOVED_BY_MOD,
+            actor_id=99,
+            reason="moderado",
+        )
+
+        await self.presentation.process_message(self._message(10, "Novo texto valido."))
+
+        field = await self.repository.get_field(1, 2, "basic_info")
+        self.assertEqual(field.status, ProfileFieldStatus.ACTIVE)
+        self.assertEqual(field.value, "Novo texto valido.")
+        self.assertEqual(field.source_type, ProfileFieldSourceType.PRESENTATION_CHANNEL)
+
+    def _message(self, message_id: int, content: str, *, seconds: int = 0) -> SimpleNamespace:
+        message = SimpleNamespace(
+            id=message_id,
+            guild=self.guild,
+            channel=self.channel,
+            author=self.user,
+            content=content,
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=seconds),
+            webhook_id=None,
+            type=discord.MessageType.default,
+        )
+        self.channel.messages[message_id] = message
+        return message
+
+
 def _fake_guild(guild_id: int) -> SimpleNamespace:
     return SimpleNamespace(id=guild_id)
 
@@ -159,6 +266,7 @@ class _MemoryProfileRepository:
     def __init__(self) -> None:
         self.profiles: dict[tuple[int, int], ProfileRecord] = {}
         self.fields: dict[tuple[int, int, str], ProfileFieldValue] = {}
+        self.settings: dict[int, GuildProfileSettings] = {}
         self.events: list[dict[str, object]] = []
 
     async def ensure_profile(self, guild_id: int, user_id: int) -> ProfileRecord:
@@ -188,12 +296,30 @@ class _MemoryProfileRepository:
         }
 
     async def get_settings(self, guild_id: int) -> GuildProfileSettings:
-        return GuildProfileSettings(
+        return self.settings.get(guild_id, GuildProfileSettings(
             guild_id=guild_id,
             presentation_channel_id=None,
             presentation_mode=PresentationMode.MANUAL,
             auto_sync_enabled=False,
+        ))
+
+    async def update_settings(
+        self,
+        guild_id: int,
+        *,
+        presentation_channel_id: int | None = None,
+        presentation_mode: PresentationMode | None = None,
+        auto_sync_enabled: bool | None = None,
+    ) -> GuildProfileSettings:
+        current = await self.get_settings(guild_id)
+        updated = GuildProfileSettings(
+            guild_id=guild_id,
+            presentation_channel_id=presentation_channel_id if presentation_channel_id is not None else current.presentation_channel_id,
+            presentation_mode=presentation_mode or current.presentation_mode,
+            auto_sync_enabled=current.auto_sync_enabled if auto_sync_enabled is None else auto_sync_enabled,
         )
+        self.settings[guild_id] = updated
+        return updated
 
     async def upsert_field(
         self,
@@ -223,6 +349,23 @@ class _MemoryProfileRepository:
         )
         self.fields[(guild_id, user_id, field_key)] = field
         return field
+
+    async def get_field(self, guild_id: int, user_id: int, field_key: str) -> ProfileFieldValue | None:
+        return self.fields.get((guild_id, user_id, field_key))
+
+    async def find_presentation_basic_info_by_message_id(
+        self,
+        guild_id: int,
+        message_id: int,
+    ) -> ProfileFieldValue | None:
+        for (stored_guild_id, _stored_user_id, field_key), field in self.fields.items():
+            if stored_guild_id != guild_id or field_key != "basic_info":
+                continue
+            if field.source_type is not ProfileFieldSourceType.PRESENTATION_CHANNEL:
+                continue
+            if message_id in field.source_message_ids:
+                return field
+        return None
 
     async def reset_field(
         self,
@@ -336,3 +479,15 @@ class _MemoryProfileRepository:
         reason: str | None,
     ) -> None:
         self.events.append({"field_key": field_key, "action": action, "actor_id": actor_id, "reason": reason})
+
+
+class _FakeTextChannel:
+    def __init__(self, channel_id: int) -> None:
+        self.id = channel_id
+        self.messages: dict[int, SimpleNamespace] = {}
+
+    async def fetch_message(self, message_id: int) -> SimpleNamespace:
+        message = self.messages.get(message_id)
+        if message is None:
+            raise discord.NotFound(response=SimpleNamespace(status=404, reason="not found"), message="not found")
+        return message

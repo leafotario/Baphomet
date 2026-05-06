@@ -91,6 +91,41 @@ class ProfileRepository:
             )
         return {str(row["field_key"]): self._row_to_field(row) for row in rows}
 
+    async def get_field(self, guild_id: int, user_id: int, field_key: str) -> ProfileFieldValue | None:
+        async with self.database.session() as conn:
+            rows = await conn.execute_fetchall(
+                """
+                SELECT *
+                FROM profile_fields
+                WHERE guild_id = ? AND user_id = ? AND field_key = ?
+                """,
+                (guild_id, user_id, field_key),
+            )
+        return self._row_to_field(rows[0]) if rows else None
+
+    async def find_presentation_basic_info_by_message_id(
+        self,
+        guild_id: int,
+        message_id: int,
+    ) -> ProfileFieldValue | None:
+        async with self.database.session() as conn:
+            rows = await conn.execute_fetchall(
+                """
+                SELECT *
+                FROM profile_fields
+                WHERE guild_id = ?
+                  AND field_key = 'basic_info'
+                  AND source_type = ?
+                  AND source_message_ids LIKE ?
+                """,
+                (guild_id, ProfileFieldSourceType.PRESENTATION_CHANNEL.value, f"%{message_id}%"),
+            )
+        for row in rows:
+            field = self._row_to_field(row)
+            if message_id in field.source_message_ids:
+                return field
+        return None
+
     async def get_settings(self, guild_id: int) -> GuildProfileSettings:
         async with self.database.session() as conn:
             rows = await conn.execute_fetchall(
@@ -539,13 +574,18 @@ class ProfileRepository:
         )
 
     def _row_to_field(self, row: aiosqlite.Row) -> ProfileFieldValue:
+        source_type = str(row["source_type"])
+        if source_type == "user":
+            source_type = ProfileFieldSourceType.MANUAL.value
+        elif source_type == "auto_sync":
+            source_type = ProfileFieldSourceType.PRESENTATION_CHANNEL.value
         return ProfileFieldValue(
             guild_id=int(row["guild_id"]),
             user_id=int(row["user_id"]),
             field_key=str(row["field_key"]),
             value=str(row["value"]),
             status=ProfileFieldStatus(str(row["status"])),
-            source_type=ProfileFieldSourceType(str(row["source_type"])),
+            source_type=ProfileFieldSourceType(source_type),
             source_message_ids=_loads_message_ids(row["source_message_ids"]),
             updated_at=str(row["updated_at"]),
             updated_by=int(row["updated_by"]) if row["updated_by"] is not None else None,

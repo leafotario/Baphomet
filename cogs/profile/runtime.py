@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from .db import ProfileDatabase
 from .repositories import ProfileRepository
-from .services import ProfileModerationService, ProfileRenderService, ProfileService
+from .services import PresentationChannelService, ProfileModerationService, ProfileRenderService, ProfileService
 
 
 @dataclass(frozen=True, slots=True)
@@ -13,4 +13,5 @@ class ProfileRuntime:
     repository: ProfileRepository
     service: ProfileService
     moderation: ProfileModerationService
+    presentation: PresentationChannelService
     renderer: ProfileRenderService

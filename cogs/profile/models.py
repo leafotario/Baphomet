@@ -20,9 +20,11 @@ class ProfileFieldStatus(StrEnum):
 
 
 class ProfileFieldSourceType(StrEnum):
-    USER = "user"
-    AUTO_SYNC = "auto_sync"
+    MANUAL = "manual"
+    PRESENTATION_CHANNEL = "presentation_channel"
     MODERATION = "moderation"
+    USER = "manual"
+    AUTO_SYNC = "presentation_channel"
 
 
 class ProfileModerationAction(StrEnum):

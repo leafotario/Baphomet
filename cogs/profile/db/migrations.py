@@ -3,7 +3,7 @@ from __future__ import annotations
 import aiosqlite
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS profile_schema_migrations (
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS profile_fields (
     field_key TEXT NOT NULL,
     value TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
-    source_type TEXT NOT NULL DEFAULT 'user',
+    source_type TEXT NOT NULL DEFAULT 'manual',
     source_message_ids TEXT NOT NULL DEFAULT '[]',
     updated_at TEXT NOT NULL,
     updated_by INTEGER NULL,
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS profile_fields (
         REFERENCES profiles(guild_id, user_id)
         ON DELETE CASCADE,
     CHECK (status IN ('active', 'hidden', 'rejected', 'removed_by_mod')),
-    CHECK (source_type IN ('user', 'auto_sync', 'moderation'))
+    CHECK (source_type IN ('manual', 'presentation_channel', 'moderation'))
 );
 
 CREATE TABLE IF NOT EXISTS guild_profile_settings (
@@ -73,7 +73,7 @@ CREATE INDEX IF NOT EXISTS idx_profile_moderation_events_target
 
 async def run_profile_migrations(conn: aiosqlite.Connection) -> None:
     await conn.executescript(SCHEMA_SQL)
-    await _ensure_removed_by_mod_status(conn)
+    await _ensure_profile_fields_constraints(conn)
     await conn.executescript(
         """
         CREATE INDEX IF NOT EXISTS idx_profile_fields_status
@@ -93,14 +93,16 @@ async def run_profile_migrations(conn: aiosqlite.Connection) -> None:
     await conn.commit()
 
 
-async def _ensure_removed_by_mod_status(conn: aiosqlite.Connection) -> None:
+async def _ensure_profile_fields_constraints(conn: aiosqlite.Connection) -> None:
     rows = await conn.execute_fetchall(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'profile_fields'"
     )
     if not rows:
         return
     table_sql = str(rows[0][0] or "")
-    if "removed_by_mod" in table_sql:
+    if "removed_by_mod" in table_sql and "presentation_channel" in table_sql:
+        await conn.execute("UPDATE profile_fields SET source_type = 'manual' WHERE source_type = 'user'")
+        await conn.execute("UPDATE profile_fields SET source_type = 'presentation_channel' WHERE source_type = 'auto_sync'")
         return
 
     await conn.executescript(
@@ -111,7 +113,7 @@ async def _ensure_removed_by_mod_status(conn: aiosqlite.Connection) -> None:
             field_key TEXT NOT NULL,
             value TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'active',
-            source_type TEXT NOT NULL DEFAULT 'user',
+            source_type TEXT NOT NULL DEFAULT 'manual',
             source_message_ids TEXT NOT NULL DEFAULT '[]',
             updated_at TEXT NOT NULL,
             updated_by INTEGER NULL,
@@ -123,7 +125,7 @@ async def _ensure_removed_by_mod_status(conn: aiosqlite.Connection) -> None:
                 REFERENCES profiles(guild_id, user_id)
                 ON DELETE CASCADE,
             CHECK (status IN ('active', 'hidden', 'rejected', 'removed_by_mod')),
-            CHECK (source_type IN ('user', 'auto_sync', 'moderation'))
+            CHECK (source_type IN ('manual', 'presentation_channel', 'moderation'))
         );
 
         INSERT INTO profile_fields_new(
@@ -132,7 +134,11 @@ async def _ensure_removed_by_mod_status(conn: aiosqlite.Connection) -> None:
             field_key,
             value,
             status,
-            source_type,
+            CASE
+                WHEN source_type = 'user' THEN 'manual'
+                WHEN source_type = 'auto_sync' THEN 'presentation_channel'
+                ELSE source_type
+            END,
             source_message_ids,
             updated_at,
             updated_by,

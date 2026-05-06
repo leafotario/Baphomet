@@ -146,7 +146,7 @@ class ProfileVisualView(discord.ui.View):
                 field_key=field_key,
                 value=value,
                 updated_by=interaction.user.id,
-                source_type=ProfileFieldSourceType.USER,
+                source_type=ProfileFieldSourceType.MANUAL,
             )
         except ProfileValidationError as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
