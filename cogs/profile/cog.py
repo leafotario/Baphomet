@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 import discord
 from discord import app_commands
@@ -19,20 +20,30 @@ from .views import ProfileEditorView
 
 
 LOGGER = logging.getLogger("baphomet.profile.cog")
+PROFILE_VIEW_COOLDOWN_SECONDS = 8.0
+
+
+def _has_profile_admin_permissions(user: object) -> bool:
+    permissions = getattr(user, "guild_permissions", None)
+    return bool(
+        permissions is not None
+        and (getattr(permissions, "manage_guild", False) or getattr(permissions, "moderate_members", False))
+    )
+
+
+def _has_profile_settings_permissions(user: object) -> bool:
+    permissions = getattr(user, "guild_permissions", None)
+    return bool(permissions is not None and getattr(permissions, "manage_guild", False))
 
 
 async def profile_admin_check(interaction: discord.Interaction) -> bool:
-    user = interaction.user
-    if isinstance(user, discord.Member):
-        permissions = user.guild_permissions
-        if permissions.manage_guild or permissions.moderate_members:
-            return True
+    if _has_profile_admin_permissions(interaction.user):
+        return True
     raise app_commands.MissingPermissions(["moderate_members"])
 
 
 async def profile_settings_check(interaction: discord.Interaction) -> bool:
-    user = interaction.user
-    if isinstance(user, discord.Member) and user.guild_permissions.manage_guild:
+    if _has_profile_settings_permissions(interaction.user):
         return True
     raise app_commands.MissingPermissions(["manage_guild"])
 
@@ -53,6 +64,7 @@ class ProfileCog(commands.GroupCog, group_name="ficha", group_description="Ficha
         self.renderer = renderer
         self.presentation = presentation or PresentationChannelService(service)
         self._warned_message_content_guilds: set[int] = set()
+        self._view_cooldowns: dict[tuple[int, int], float] = {}
         self._context_menu = app_commands.ContextMenu(
             name="Usar como informações básicas",
             callback=self.usar_como_informacoes_basicas,
@@ -95,6 +107,13 @@ class ProfileCog(commands.GroupCog, group_name="ficha", group_description="Ficha
             return
         if target.bot:
             await interaction.response.send_message("Bots nao possuem ficha de usuario.", ephemeral=True)
+            return
+        retry_after = self._consume_view_cooldown(interaction.guild_id, interaction.user.id)
+        if retry_after > 0:
+            await interaction.response.send_message(
+                f"Aguarde {retry_after:.0f}s para ver outra ficha.",
+                ephemeral=True,
+            )
             return
 
         await self.send_profile_preview(interaction, target=target, ephemeral=False)
@@ -251,6 +270,21 @@ class ProfileCog(commands.GroupCog, group_name="ficha", group_description="Ficha
 
         await interaction.response.send_message(message, ephemeral=True)
 
+    @app_commands.command(name="excluir-meus-dados", description="Apaga seus dados persistidos da ficha neste servidor.")
+    @app_commands.guild_only()
+    async def excluir_meus_dados(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        await self.presentation.forget_user(interaction.guild_id, interaction.user.id)
+        result = await self.service.delete_user_data(interaction.guild_id, interaction.user.id)
+        self.renderer.invalidate_user(interaction.guild_id, interaction.user.id)
+        if result.profile_deleted or result.fields_deleted or result.moderation_events_deleted:
+            await interaction.followup.send(
+                "Seus dados persistidos da ficha neste servidor foram apagados.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send("Nao havia dados persistidos da sua ficha neste servidor.", ephemeral=True)
+
     @resetar.autocomplete("campo")
     async def resetar_campo_autocomplete(
         self,
@@ -279,8 +313,23 @@ class ProfileCog(commands.GroupCog, group_name="ficha", group_description="Ficha
             await interaction.response.defer(thinking=True, ephemeral=ephemeral)
 
         snapshot = await self.service.get_profile_snapshot(interaction.guild, member)
-        result = await self.renderer.render_profile(snapshot)
         embed = self.renderer.build_preview_embed(snapshot)
+        try:
+            result = await self.renderer.render_profile(snapshot)
+        except Exception:
+            LOGGER.exception(
+                "profile_render_failed guild_id=%s user_id=%s revision=%s command_user_id=%s",
+                interaction.guild.id,
+                member.id,
+                snapshot.profile.render_revision,
+                interaction.user.id,
+            )
+            await interaction.followup.send(
+                content="Nao consegui renderizar a imagem agora. Tente novamente em instantes.",
+                embed=embed,
+                ephemeral=ephemeral,
+            )
+            return
 
         if result.image is not None:
             result.image.seek(0)
@@ -315,16 +364,37 @@ class ProfileCog(commands.GroupCog, group_name="ficha", group_description="Ficha
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        await self._warn_if_message_content_unavailable(message)
-        await self.presentation.process_message(message)
+        try:
+            await self._warn_if_message_content_unavailable(message)
+            await self.presentation.process_message(message)
+        except Exception:
+            LOGGER.exception(
+                "profile_presentation_listener_failed event=on_message guild_id=%s channel_id=%s",
+                getattr(getattr(message, "guild", None), "id", None),
+                getattr(getattr(message, "channel", None), "id", None),
+            )
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message) -> None:
-        await self.presentation.process_message_edit(before, after)
+        try:
+            await self.presentation.process_message_edit(before, after)
+        except Exception:
+            LOGGER.exception(
+                "profile_presentation_listener_failed event=on_message_edit guild_id=%s channel_id=%s",
+                getattr(getattr(after, "guild", None), "id", None),
+                getattr(getattr(after, "channel", None), "id", None),
+            )
 
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message) -> None:
-        await self.presentation.process_message_delete(message)
+        try:
+            await self.presentation.process_message_delete(message)
+        except Exception:
+            LOGGER.exception(
+                "profile_presentation_listener_failed event=on_message_delete guild_id=%s channel_id=%s",
+                getattr(getattr(message, "guild", None), "id", None),
+                getattr(getattr(message, "channel", None), "id", None),
+            )
 
     def build_editor_embed(self) -> discord.Embed:
         embed = discord.Embed(
@@ -357,10 +427,7 @@ class ProfileCog(commands.GroupCog, group_name="ficha", group_description="Ficha
             return None
 
     def _can_manage_profiles(self, interaction: discord.Interaction) -> bool:
-        user = interaction.user
-        return isinstance(user, discord.Member) and (
-            user.guild_permissions.manage_guild or user.guild_permissions.moderate_members
-        )
+        return _has_profile_admin_permissions(interaction.user)
 
     async def _ensure_can_moderate_profiles(self, interaction: discord.Interaction) -> bool:
         if self._can_manage_profiles(interaction):
@@ -383,6 +450,18 @@ class ProfileCog(commands.GroupCog, group_name="ficha", group_description="Ficha
             if not permissions.view_channel or not permissions.read_message_history:
                 warnings.append("Garanta que eu consigo ver o canal e ler o historico de mensagens.")
         return warnings
+
+    def _consume_view_cooldown(self, guild_id: int, user_id: int) -> float:
+        now = time.monotonic()
+        key = (guild_id, user_id)
+        ready_at = self._view_cooldowns.get(key, 0.0)
+        if ready_at > now:
+            return ready_at - now
+        self._view_cooldowns[key] = now + PROFILE_VIEW_COOLDOWN_SECONDS
+        stale_keys = [stored_key for stored_key, stored_ready_at in self._view_cooldowns.items() if stored_ready_at <= now]
+        for stored_key in stale_keys[:50]:
+            self._view_cooldowns.pop(stored_key, None)
+        return 0.0
 
     async def _warn_if_message_content_unavailable(self, message: discord.Message) -> None:
         if message.guild is None or message.guild.id in self._warned_message_content_guilds:

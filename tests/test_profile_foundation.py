@@ -1,24 +1,34 @@
 from __future__ import annotations
 
+import asyncio
+import io
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import discord
+from discord import app_commands
 from discord.ext import commands
+from PIL import Image, ImageStat
 
 from cogs.profile.cog import ProfileCog
+from cogs.profile.cog import profile_admin_check, profile_settings_check
 from cogs.profile.field_registry import PROFILE_FIELD_REGISTRY
+from cogs.profile.field_registry import FieldRegistry, UnknownProfileFieldError
 from cogs.profile.models import (
+    FieldDefinition,
     GuildProfileSettings,
     PresentationMode,
+    ProfileDeletionResult,
     ProfileFieldSourceType,
     ProfileFieldStatus,
+    ProfileFieldType,
     ProfileFieldValue,
     ProfileModerationAction,
     ProfileRecord,
 )
+from cogs.profile.schemas import LevelSnapshot
 from cogs.profile.services import (
     NullLevelProvider,
     PresentationChannelService,
@@ -26,6 +36,7 @@ from cogs.profile.services import (
     ProfileRenderService,
     ProfileService,
     ProfileValidationError,
+    XpRuntimeLevelProvider,
 )
 
 
@@ -46,6 +57,7 @@ class ProfileFoundationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ficha ver", command_names)
         self.assertIn("ficha editar", command_names)
         self.assertIn("ficha resetar", command_names)
+        self.assertIn("ficha excluir-meus-dados", command_names)
         self.assertIn("ficha set-apresentacao", command_names)
         self.assertIn("ficha admin remover-campo", command_names)
         self.assertIn("ficha admin restaurar-campo", command_names)
@@ -56,12 +68,116 @@ class ProfileFoundationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("name", PROFILE_FIELD_REGISTRY.keys())
         self.assertEqual(PROFILE_FIELD_REGISTRY.get("pronouns").key, "pronouns")
 
+    async def test_admin_permission_checks_are_explicit(self) -> None:
+        allowed_admin = SimpleNamespace(user=SimpleNamespace(guild_permissions=SimpleNamespace(manage_guild=False, moderate_members=True)))
+        allowed_settings = SimpleNamespace(user=SimpleNamespace(guild_permissions=SimpleNamespace(manage_guild=True, moderate_members=False)))
+        denied = SimpleNamespace(user=SimpleNamespace(guild_permissions=SimpleNamespace(manage_guild=False, moderate_members=False)))
+
+        self.assertTrue(await profile_admin_check(allowed_admin))
+        self.assertTrue(await profile_settings_check(allowed_settings))
+        with self.assertRaises(app_commands.MissingPermissions):
+            await profile_admin_check(denied)
+        with self.assertRaises(app_commands.MissingPermissions):
+            await profile_settings_check(denied)
+
+    async def test_admin_commands_keep_permission_guards(self) -> None:
+        await self.bot.add_cog(ProfileCog(self.bot, self.service, ProfileRenderService()))
+        commands_by_name = {command.qualified_name: command for command in self.bot.tree.walk_commands()}
+
+        for name in ("ficha admin remover-campo", "ficha admin restaurar-campo", "ficha admin editar-campo"):
+            command = commands_by_name[name]
+            self.assertTrue(command.checks)
+            self.assertIsNotNone(command.default_permissions)
+
+    async def test_view_cooldown_blocks_immediate_reuse(self) -> None:
+        cog = ProfileCog(self.bot, self.service, ProfileRenderService())
+
+        self.assertEqual(cog._consume_view_cooldown(1, 2), 0.0)
+        self.assertGreater(cog._consume_view_cooldown(1, 2), 0.0)
+
+
+class ProfileFieldRegistryTests(unittest.TestCase):
+    def test_unknown_field_and_duplicate_keys_are_rejected(self) -> None:
+        with self.assertRaises(UnknownProfileFieldError):
+            PROFILE_FIELD_REGISTRY.get("campo-inexistente")
+        with self.assertRaises(ValueError):
+            FieldRegistry(
+                (
+                    FieldDefinition("x", "X", ProfileFieldType.TEXT_SHORT, 10, False, "", True, True, True),
+                    FieldDefinition("X", "X2", ProfileFieldType.TEXT_SHORT, 10, False, "", True, True, True),
+                )
+            )
+
 
 class _FakeProfileService:
     field_registry = PROFILE_FIELD_REGISTRY
 
     async def ensure_profile(self, guild_id: int, user_id: int) -> None:
         return None
+
+
+class _RichLevelProvider:
+    provider_name = "test"
+
+    async def get_level_snapshot(self, guild, member) -> LevelSnapshot:
+        return LevelSnapshot(
+            guild_id=guild.id,
+            user_id=member.id,
+            total_xp=12450,
+            level=17,
+            xp_into_level=450,
+            xp_for_next_level=900,
+            remaining_to_next=450,
+            progress_ratio=0.5,
+            position=4,
+            badge_role_id=123,
+            badge_role_name="Guardia do Arquivo",
+            badge_role_color=0xB58900,
+            provider_name=self.provider_name,
+            available=True,
+            unavailable_reason=None,
+        )
+
+
+class _CountingRenderService(ProfileRenderService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.render_calls = 0
+
+    def render_profile_card(self, snapshot, *, avatar_image=None) -> bytes:
+        self.render_calls += 1
+        return super().render_profile_card(snapshot, avatar_image=avatar_image)
+
+    async def _fetch_avatar(self, avatar_url: str | None) -> Image.Image | None:
+        return None
+
+
+class _FailingXpService:
+    async def get_rank_snapshot(self, guild, member):
+        raise RuntimeError("xp indisponivel")
+
+
+class _WorkingXpService:
+    async def get_rank_snapshot(self, guild, member):
+        return SimpleNamespace(
+            total_xp=3200,
+            level=7,
+            xp_into_level=200,
+            xp_for_next_level=500,
+            remaining_to_next=300,
+            progress_ratio=0.4,
+            position=3,
+        )
+
+    async def get_guild_config(self, guild_id: int):
+        return SimpleNamespace(level_roles={5: 55})
+
+
+class _ExplodingLevelProvider:
+    provider_name = "exploding"
+
+    async def get_level_snapshot(self, guild, member):
+        raise RuntimeError("falha controlada")
 
 
 class ProfileServiceValidationTests(unittest.IsolatedAsyncioTestCase):
@@ -149,6 +265,205 @@ class ProfileServiceValidationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.repository.events[-2]["action"], ProfileModerationAction.EDIT)
         self.assertEqual(self.repository.events[-1]["action"], ProfileModerationAction.RESET_VISUAL)
 
+    async def test_delete_user_data_removes_profile_fields_and_events(self) -> None:
+        await self.service.set_field(guild_id=1, user_id=2, field_key="basic_info", value="origem", updated_by=2, source_message_ids=(10, 11))
+        await self.service.moderate_field(
+            guild_id=1,
+            user_id=2,
+            field_key="basic_info",
+            status=ProfileFieldStatus.REMOVED_BY_MOD,
+            actor_id=99,
+            reason="teste",
+        )
+
+        result = await self.service.delete_user_data(guild_id=1, user_id=2)
+
+        self.assertTrue(result.profile_deleted)
+        self.assertEqual(result.fields_deleted, 1)
+        self.assertGreaterEqual(result.moderation_events_deleted, 1)
+        self.assertIsNone(await self.repository.get_profile(1, 2))
+        self.assertEqual(await self.repository.list_fields(1, 2), {})
+
+    async def test_snapshot_degrades_when_level_provider_raises(self) -> None:
+        service = ProfileService(
+            repository=self.repository,
+            field_registry=PROFILE_FIELD_REGISTRY,
+            level_provider=_ExplodingLevelProvider(),
+            moderation_service=ProfileModerationService(PROFILE_FIELD_REGISTRY),
+        )
+
+        with self.assertLogs("baphomet.profile.service", level="ERROR") as logs:
+            snapshot = await service.get_profile_snapshot(_fake_guild(1), _fake_member(2))
+
+        self.assertFalse(snapshot.level.available)
+        self.assertIn("nao configurado", snapshot.level.unavailable_reason)
+        self.assertTrue(any("xp_snapshot_failed" in line for line in logs.output))
+
+
+class ProfileRenderServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.repository = _MemoryProfileRepository()
+        self.service = ProfileService(
+            repository=self.repository,
+            field_registry=PROFILE_FIELD_REGISTRY,
+            level_provider=_RichLevelProvider(),
+            moderation_service=ProfileModerationService(PROFILE_FIELD_REGISTRY),
+        )
+
+    async def test_renderer_outputs_png_with_required_ratio_and_texture(self) -> None:
+        snapshot = await self._snapshot(theme="classic", charm="laurels")
+        avatar = Image.new("RGB", (320, 220), (90, 35, 145))
+
+        data = ProfileRenderService().render_profile_card(snapshot, avatar_image=avatar)
+        image = Image.open(io.BytesIO(data))
+
+        self.assertEqual(image.size, (1500, 1000))
+        self.assertEqual(image.format, "PNG")
+        sampled = image.convert("RGB").resize((75, 50)).tobytes()
+        colors = {sampled[index:index + 3] for index in range(0, len(sampled), 3)}
+        self.assertGreater(len(colors), 100)
+
+    async def test_renderer_snapshot_statistics_remain_in_expected_band(self) -> None:
+        snapshot = await self._snapshot(theme="minimal", charm="vinyl")
+
+        data = ProfileRenderService().render_profile_card(snapshot)
+        image = Image.open(io.BytesIO(data)).convert("RGB").resize((32, 32))
+        stat = ImageStat.Stat(image)
+        mean_luma = sum(stat.mean) / 3
+        variance = sum(stat.var) / 3
+
+        self.assertGreater(mean_luma, 65)
+        self.assertLess(mean_luma, 225)
+        self.assertGreater(variance, 450)
+
+    async def test_renderer_keeps_template_cache_per_theme(self) -> None:
+        renderer = ProfileRenderService()
+        snapshot = await self._snapshot(theme="celestial", charm="stars")
+
+        renderer.render_profile_card(snapshot)
+        cached_template = renderer._template_cache["celestial"]
+        renderer.render_profile_card(snapshot)
+
+        self.assertIs(renderer._template_cache["celestial"], cached_template)
+
+    async def test_async_renderer_deduplicates_concurrent_renders_and_uses_revision_cache(self) -> None:
+        renderer = _CountingRenderService()
+        snapshot = await self._snapshot(theme="classic", charm="none")
+        snapshot = replace(snapshot, live=replace(snapshot.live, avatar_url=None))
+
+        await asyncio.gather(renderer.render_profile(snapshot), renderer.render_profile(snapshot))
+        self.assertEqual(renderer.render_calls, 1)
+
+        await self.service.set_field(guild_id=1, user_id=2, field_key="headline", value="novo titulo", updated_by=2)
+        updated_snapshot = await self.service.get_profile_snapshot(_fake_guild(1), _fake_member_without_avatar(2))
+        await renderer.render_profile(updated_snapshot)
+
+        self.assertEqual(renderer.render_calls, 2)
+
+    async def test_renderer_pixel_wrap_does_not_exceed_width(self) -> None:
+        renderer = ProfileRenderService()
+        font = renderer._fonts.ui_20
+        lines = renderer._wrap_text_pixels(
+            "uma frase deliberadamente comprida para validar quebra por largura real de pixel",
+            font,
+            180,
+            max_lines=3,
+        )
+
+        self.assertLessEqual(len(lines), 3)
+        self.assertTrue(all(renderer._text_width(line, font) <= 180 for line in lines))
+
+    async def test_renderer_accepts_moderated_placeholder_and_unavailable_xp(self) -> None:
+        service = ProfileService(
+            repository=self.repository,
+            field_registry=PROFILE_FIELD_REGISTRY,
+            level_provider=NullLevelProvider(),
+            moderation_service=ProfileModerationService(PROFILE_FIELD_REGISTRY),
+        )
+        await service.set_field(guild_id=1, user_id=2, field_key="basic_info", value="original", updated_by=2)
+        await service.set_field(guild_id=1, user_id=2, field_key="interests", value=["musica"], updated_by=2)
+        await service.moderate_field(
+            guild_id=1,
+            user_id=2,
+            field_key="basic_info",
+            status=ProfileFieldStatus.REMOVED_BY_MOD,
+            actor_id=99,
+            reason="teste",
+        )
+        await service.moderate_field(
+            guild_id=1,
+            user_id=2,
+            field_key="interests",
+            status=ProfileFieldStatus.REMOVED_BY_MOD,
+            actor_id=99,
+            reason="teste",
+        )
+        snapshot = await service.get_profile_snapshot(_fake_guild(1), _fake_member(2))
+        renderer = ProfileRenderService()
+
+        self.assertEqual(snapshot.rendered_fields()["basic_info"], "[Conteúdo removido]")
+        self.assertEqual(renderer._field_list(snapshot, "interests"), ["[Conteúdo removido]"])
+        data = renderer.render_profile_card(snapshot)
+
+        self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
+
+    async def _snapshot(self, *, theme: str, charm: str):
+        await self.service.set_field(guild_id=1, user_id=2, field_key="pronouns", value="ela/dela", updated_by=2)
+        await self.service.set_field(guild_id=1, user_id=2, field_key="headline", value="Curadora de caos elegante", updated_by=2)
+        await self.service.set_field(
+            guild_id=1,
+            user_id=2,
+            field_key="basic_info",
+            value="Gosto de comunidades pequenas, rituais de cafe e sistemas bem cuidados.",
+            updated_by=2,
+        )
+        await self.service.set_field(
+            guild_id=1,
+            user_id=2,
+            field_key="bio",
+            value="Construo pontes entre pessoas, ferramentas e historias. Sempre procurando um jeito mais bonito de organizar ideias.",
+            updated_by=2,
+        )
+        await self.service.set_field(guild_id=1, user_id=2, field_key="ask_me_about", value="musica, RPG e automacoes", updated_by=2)
+        await self.service.set_field(guild_id=1, user_id=2, field_key="mood", value="concentrada", updated_by=2)
+        await self.service.set_field(guild_id=1, user_id=2, field_key="interests", value=["design", "python", "lore"], updated_by=2)
+        await self.service.set_field(guild_id=1, user_id=2, field_key="theme_preset", value=theme, updated_by=2)
+        await self.service.set_field(guild_id=1, user_id=2, field_key="charm_preset", value=charm, updated_by=2)
+        await self.service.set_field(
+            guild_id=1,
+            user_id=2,
+            field_key="accent_palette",
+            value=["#7A5CFF", "#FFB000", "#2E2E2E"],
+            updated_by=2,
+        )
+        return await self.service.get_profile_snapshot(_fake_guild(1), _fake_member(2))
+
+
+class ProfileXpAdapterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_xp_adapter_returns_degraded_snapshot_when_runtime_fails(self) -> None:
+        provider = XpRuntimeLevelProvider(SimpleNamespace(xp_runtime=SimpleNamespace(service=_FailingXpService())))
+
+        with self.assertLogs("baphomet.profile.level_provider", level="ERROR") as logs:
+            snapshot = await provider.get_level_snapshot(_fake_guild(1), _fake_member(2))
+
+        self.assertFalse(snapshot.available)
+        self.assertEqual(snapshot.provider_name, "xp_runtime")
+        self.assertIn("falhou", snapshot.unavailable_reason)
+        self.assertTrue(any("xp_snapshot_failed" in line for line in logs.output))
+
+    async def test_xp_adapter_resolves_badge_role_from_live_member_roles(self) -> None:
+        role = SimpleNamespace(id=55, name="Insignia Viva", color=SimpleNamespace(value=0x123456))
+        guild = SimpleNamespace(id=1, get_role=lambda role_id: role if role_id == 55 else None)
+        member = SimpleNamespace(id=2, roles=[role])
+        provider = XpRuntimeLevelProvider(SimpleNamespace(xp_runtime=SimpleNamespace(service=_WorkingXpService())))
+
+        snapshot = await provider.get_level_snapshot(guild, member)
+
+        self.assertTrue(snapshot.available)
+        self.assertEqual(snapshot.level, 7)
+        self.assertEqual(snapshot.badge_role_id, 55)
+        self.assertEqual(snapshot.badge_role_name, "Insignia Viva")
+
 
 class PresentationChannelServiceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -187,6 +502,39 @@ class PresentationChannelServiceTests(unittest.IsolatedAsyncioTestCase):
         field = await self.repository.get_field(1, 2, "basic_info")
         self.assertEqual(field.value, "Primeira parte.\n\nSegunda parte.")
         self.assertEqual(field.source_message_ids, (10, 11))
+
+    async def test_debounce_flush_writes_latest_burst_once(self) -> None:
+        presentation = PresentationChannelService(
+            self.service,
+            burst_window_seconds=90,
+            debounce_seconds=60,
+        )
+        await presentation.set_presentation_channel(self.guild.id, self.channel.id)
+
+        await presentation.process_message(self._message(20, "Primeira.", seconds=0))
+        await presentation.process_message(self._message(21, "Segunda.", seconds=30))
+        self.assertIsNone(await self.repository.get_field(1, 2, "basic_info"))
+
+        await presentation.flush_pending(1, 2)
+
+        field = await self.repository.get_field(1, 2, "basic_info")
+        self.assertEqual(field.value, "Primeira.\n\nSegunda.")
+        self.assertEqual(field.source_message_ids, (20, 21))
+        self.assertEqual(self.repository.upsert_calls, 1)
+
+    async def test_forget_user_clears_pending_sources_before_privacy_delete(self) -> None:
+        presentation = PresentationChannelService(
+            self.service,
+            burst_window_seconds=90,
+            debounce_seconds=60,
+        )
+        await presentation.set_presentation_channel(self.guild.id, self.channel.id)
+        await presentation.process_message(self._message(30, "Privado.", seconds=0))
+
+        await presentation.forget_user(1, 2)
+        await presentation.flush_pending(1, 2)
+
+        self.assertIsNone(await self.repository.get_field(1, 2, "basic_info"))
 
     async def test_edit_recompiles_existing_block(self) -> None:
         first = self._message(10, "Primeira parte.", seconds=0)
@@ -262,12 +610,19 @@ def _fake_member(user_id: int) -> SimpleNamespace:
     )
 
 
+def _fake_member_without_avatar(user_id: int) -> SimpleNamespace:
+    member = _fake_member(user_id)
+    member.display_avatar = None
+    return member
+
+
 class _MemoryProfileRepository:
     def __init__(self) -> None:
         self.profiles: dict[tuple[int, int], ProfileRecord] = {}
         self.fields: dict[tuple[int, int, str], ProfileFieldValue] = {}
         self.settings: dict[int, GuildProfileSettings] = {}
         self.events: list[dict[str, object]] = []
+        self.upsert_calls = 0
 
     async def ensure_profile(self, guild_id: int, user_id: int) -> ProfileRecord:
         key = (guild_id, user_id)
@@ -282,11 +637,37 @@ class _MemoryProfileRepository:
             )
         return self.profiles[key]
 
+    async def get_profile(self, guild_id: int, user_id: int) -> ProfileRecord | None:
+        return self.profiles.get((guild_id, user_id))
+
     async def mark_onboarding_completed(self, guild_id: int, user_id: int, completed: bool = True) -> ProfileRecord:
         profile = await self.ensure_profile(guild_id, user_id)
         updated = replace(profile, onboarding_completed=completed, render_revision=profile.render_revision + 1)
         self.profiles[(guild_id, user_id)] = updated
         return updated
+
+    async def delete_user_profile_data(self, guild_id: int, user_id: int) -> ProfileDeletionResult:
+        field_keys = [key for key in self.fields if key[0] == guild_id and key[1] == user_id]
+        for key in field_keys:
+            self.fields.pop(key)
+        events = [
+            event
+            for event in self.events
+            if event.get("guild_id") == guild_id and event.get("user_id") == user_id
+        ]
+        self.events = [
+            event
+            for event in self.events
+            if not (event.get("guild_id") == guild_id and event.get("user_id") == user_id)
+        ]
+        profile_deleted = self.profiles.pop((guild_id, user_id), None) is not None
+        return ProfileDeletionResult(
+            guild_id=guild_id,
+            user_id=user_id,
+            profile_deleted=profile_deleted,
+            fields_deleted=len(field_keys),
+            moderation_events_deleted=len(events),
+        )
 
     async def list_fields(self, guild_id: int, user_id: int) -> dict[str, ProfileFieldValue]:
         return {
@@ -332,6 +713,7 @@ class _MemoryProfileRepository:
         source_message_ids: tuple[int, ...],
         updated_by: int | None,
     ) -> ProfileFieldValue:
+        self.upsert_calls += 1
         await self.ensure_profile(guild_id, user_id)
         field = ProfileFieldValue(
             guild_id=guild_id,
@@ -348,6 +730,7 @@ class _MemoryProfileRepository:
             moderation_reason=None,
         )
         self.fields[(guild_id, user_id, field_key)] = field
+        self._touch(guild_id, user_id)
         return field
 
     async def get_field(self, guild_id: int, user_id: int, field_key: str) -> ProfileFieldValue | None:
@@ -378,7 +761,8 @@ class _MemoryProfileRepository:
     ) -> bool:
         removed = self.fields.pop((guild_id, user_id, field_key), None) is not None
         if removed:
-            self.events.append({"field_key": field_key, "action": ProfileModerationAction.RESET, "actor_id": actor_id})
+            self._touch(guild_id, user_id)
+            self.events.append({"guild_id": guild_id, "user_id": user_id, "field_key": field_key, "action": ProfileModerationAction.RESET, "actor_id": actor_id})
         return removed
 
     async def reset_profile_fields(
@@ -392,7 +776,9 @@ class _MemoryProfileRepository:
         keys = [key for key in self.fields if key[0] == guild_id and key[1] == user_id]
         for key in keys:
             self.fields.pop(key)
-        self.events.append({"field_key": "*", "action": ProfileModerationAction.RESET_ALL, "actor_id": actor_id})
+        if keys:
+            self._touch(guild_id, user_id)
+        self.events.append({"guild_id": guild_id, "user_id": user_id, "field_key": "*", "action": ProfileModerationAction.RESET_ALL, "actor_id": actor_id})
         return len(keys)
 
     async def reset_fields(
@@ -409,7 +795,9 @@ class _MemoryProfileRepository:
         for field_key in field_keys:
             if self.fields.pop((guild_id, user_id, field_key), None) is not None:
                 removed_count += 1
-        self.events.append({"field_key": ",".join(field_keys), "action": action, "actor_id": actor_id})
+        if removed_count:
+            self._touch(guild_id, user_id)
+        self.events.append({"guild_id": guild_id, "user_id": user_id, "field_key": ",".join(field_keys), "action": action, "actor_id": actor_id})
         return removed_count
 
     async def moderate_field(
@@ -447,8 +835,9 @@ class _MemoryProfileRepository:
             moderated_at="2026-01-01T00:00:00+00:00",
             moderation_reason=reason,
         )
+        self._touch(guild_id, user_id)
         action = ProfileModerationAction.REMOVE if status is ProfileFieldStatus.REMOVED_BY_MOD else ProfileModerationAction.HIDE
-        self.events.append({"field_key": field_key, "action": action, "actor_id": actor_id})
+        self.events.append({"guild_id": guild_id, "user_id": user_id, "field_key": field_key, "action": action, "actor_id": actor_id})
         return True
 
     async def restore_field(
@@ -465,7 +854,8 @@ class _MemoryProfileRepository:
         if current is None:
             return False
         self.fields[key] = replace(current, status=ProfileFieldStatus.ACTIVE, moderated_by=None, moderated_at=None, moderation_reason=None)
-        self.events.append({"field_key": field_key, "action": ProfileModerationAction.RESTORE, "actor_id": actor_id})
+        self._touch(guild_id, user_id)
+        self.events.append({"guild_id": guild_id, "user_id": user_id, "field_key": field_key, "action": ProfileModerationAction.RESTORE, "actor_id": actor_id})
         return True
 
     async def record_moderation_event(
@@ -478,7 +868,15 @@ class _MemoryProfileRepository:
         actor_id: int,
         reason: str | None,
     ) -> None:
-        self.events.append({"field_key": field_key, "action": action, "actor_id": actor_id, "reason": reason})
+        self.events.append({"guild_id": guild_id, "user_id": user_id, "field_key": field_key, "action": action, "actor_id": actor_id, "reason": reason})
+
+    def _touch(self, guild_id: int, user_id: int) -> None:
+        profile = self.profiles[(guild_id, user_id)]
+        self.profiles[(guild_id, user_id)] = replace(
+            profile,
+            render_revision=profile.render_revision + 1,
+            updated_at="2026-01-01T00:00:01+00:00",
+        )
 
 
 class _FakeTextChannel:

@@ -103,3 +103,14 @@ class ProfileModerationEvent:
     actor_id: int
     reason: str | None
     created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileDeletionResult:
+    """Resumo da limpeza dos dados persistidos de uma ficha em um servidor."""
+
+    guild_id: int
+    user_id: int
+    profile_deleted: bool
+    fields_deleted: int
+    moderation_events_deleted: int

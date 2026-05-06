@@ -13,6 +13,7 @@ from ..models import (
     ProfileFieldSourceType,
     ProfileFieldStatus,
     ProfileFieldValue,
+    ProfileDeletionResult,
     ProfileModerationAction,
     ProfileRecord,
 )
@@ -77,6 +78,34 @@ class ProfileRepository:
         if not rows:
             return None
         return self._row_to_profile(rows[0])
+
+    async def delete_user_profile_data(self, guild_id: int, user_id: int) -> ProfileDeletionResult:
+        """Remove todos os dados persistidos da ficha do usuario neste servidor.
+
+        Dados vivos como nome, avatar, XP, level e cargos nunca sao persistidos
+        aqui; esta limpeza cobre apenas `profiles`, `profile_fields` e eventos
+        de moderacao/auditoria associados ao par `(guild_id, user_id)`.
+        """
+        async with self.database.transaction() as conn:
+            field_cur = await conn.execute(
+                "DELETE FROM profile_fields WHERE guild_id = ? AND user_id = ?",
+                (guild_id, user_id),
+            )
+            events_cur = await conn.execute(
+                "DELETE FROM profile_moderation_events WHERE guild_id = ? AND user_id = ?",
+                (guild_id, user_id),
+            )
+            profile_cur = await conn.execute(
+                "DELETE FROM profiles WHERE guild_id = ? AND user_id = ?",
+                (guild_id, user_id),
+            )
+        return ProfileDeletionResult(
+            guild_id=guild_id,
+            user_id=user_id,
+            profile_deleted=profile_cur.rowcount > 0,
+            fields_deleted=max(0, field_cur.rowcount),
+            moderation_events_deleted=max(0, events_cur.rowcount),
+        )
 
     async def list_fields(self, guild_id: int, user_id: int) -> dict[str, ProfileFieldValue]:
         async with self.database.session() as conn:

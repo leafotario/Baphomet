@@ -37,6 +37,13 @@ class PendingPresentationBlock:
 
 
 class PresentationChannelService:
+    """Sincroniza o canal de apresentacao sem gravar uma linha por mensagem.
+
+    Cada `(guild_id, user_id)` tem um bloco pendente protegido por lock. Novas
+    mensagens dentro da janela de burst substituem a task de debounce anterior,
+    e somente o bloco mais recente e gravado.
+    """
+
     def __init__(
         self,
         profile_service: ProfileService,
@@ -58,6 +65,11 @@ class PresentationChannelService:
             presentation_channel_id=channel_id,
             presentation_mode=PresentationMode.MANUAL,
             auto_sync_enabled=True,
+        )
+        LOGGER.info(
+            "presentation_channel_configured guild_id=%s user_id=0 revision=settings channel_id=%s",
+            guild_id,
+            channel_id,
         )
 
     async def process_message(self, message: discord.Message) -> bool:
@@ -140,12 +152,13 @@ class PresentationChannelService:
     async def flush_pending(self, guild_id: int, user_id: int) -> None:
         key = (guild_id, user_id)
         task = self._tasks.pop(key, None)
-        if task and not task.done():
+        current_task = asyncio.current_task()
+        if task and task is not current_task and not task.done():
             task.cancel()
-        block = self._pending.pop(key, None)
-        if block is None:
-            return
         async with self._lock_for(guild_id, user_id):
+            block = self._pending.pop(key, None)
+            if block is None:
+                return
             await self._write_block(
                 guild_id=block.guild_id,
                 user_id=block.user_id,
@@ -153,6 +166,21 @@ class PresentationChannelService:
                 message_ids=block.message_ids,
                 updated_by=block.user_id,
             )
+
+    async def forget_user(self, guild_id: int, user_id: int) -> None:
+        key = (guild_id, user_id)
+        task = self._tasks.pop(key, None)
+        if task and not task.done():
+            task.cancel()
+        async with self._lock_for(guild_id, user_id):
+            self._pending.pop(key, None)
+            stale_message_ids = [
+                message_id
+                for message_id, source in self._message_cache.items()
+                if source.guild_id == guild_id and source.user_id == user_id
+            ]
+            for message_id in stale_message_ids:
+                self._message_cache.pop(message_id, None)
 
     async def _queue_block(self, guild_id: int, user_id: int, channel_id: int, message_ids: list[int]) -> None:
         key = (guild_id, user_id)
@@ -181,9 +209,29 @@ class PresentationChannelService:
     async def _debounced_flush(self, guild_id: int, user_id: int) -> None:
         try:
             await asyncio.sleep(self.debounce_seconds)
-            await self.flush_pending(guild_id, user_id)
+            key = (guild_id, user_id)
+            async with self._lock_for(guild_id, user_id):
+                if self._tasks.get(key) is asyncio.current_task():
+                    self._tasks.pop(key, None)
+                block = self._pending.pop(key, None)
+                if block is None:
+                    return
+                await self._write_block(
+                    guild_id=block.guild_id,
+                    user_id=block.user_id,
+                    channel_id=block.channel_id,
+                    message_ids=block.message_ids,
+                    updated_by=block.user_id,
+                )
         except asyncio.CancelledError:
             return
+        except Exception:
+            LOGGER.exception(
+                "presentation_synced_failed guild_id=%s user_id=%s revision=%s",
+                guild_id,
+                user_id,
+                await self._current_revision(guild_id, user_id),
+            )
 
     async def _write_block(
         self,
@@ -211,6 +259,12 @@ class PresentationChannelService:
                     actor_id=updated_by,
                     reason="todas as mensagens de apresentacao foram apagadas",
                 )
+                LOGGER.info(
+                    "presentation_synced guild_id=%s user_id=%s revision=%s source_message_count=0 action=clear",
+                    guild_id,
+                    user_id,
+                    await self._current_revision(guild_id, user_id),
+                )
             return
 
         content = "\n\n".join(source.content for source in sources)
@@ -222,6 +276,13 @@ class PresentationChannelService:
             updated_by=updated_by,
             source_type=ProfileFieldSourceType.PRESENTATION_CHANNEL,
             source_message_ids=tuple(source.message_id for source in sources),
+        )
+        LOGGER.info(
+            "presentation_synced guild_id=%s user_id=%s revision=%s source_message_count=%s action=upsert",
+            guild_id,
+            user_id,
+            await self._current_revision(guild_id, user_id),
+            len(sources),
         )
 
     async def _message_ids_for_new_source(self, source: PresentationSourceMessage, channel: Any) -> list[int]:
@@ -351,3 +412,10 @@ class PresentationChannelService:
             seen.add(normalized)
             unique.append(normalized)
         return unique
+
+    async def _current_revision(self, guild_id: int, user_id: int) -> int | str:
+        get_profile = getattr(self.profile_service.repository, "get_profile", None)
+        if get_profile is None:
+            return "unknown"
+        profile = await get_profile(guild_id, user_id)
+        return profile.render_revision if profile is not None else "unknown"

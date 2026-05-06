@@ -134,11 +134,7 @@ async def _ensure_profile_fields_constraints(conn: aiosqlite.Connection) -> None
             field_key,
             value,
             status,
-            CASE
-                WHEN source_type = 'user' THEN 'manual'
-                WHEN source_type = 'auto_sync' THEN 'presentation_channel'
-                ELSE source_type
-            END,
+            source_type,
             source_message_ids,
             updated_at,
             updated_by,
@@ -152,7 +148,11 @@ async def _ensure_profile_fields_constraints(conn: aiosqlite.Connection) -> None
             field_key,
             value,
             status,
-            source_type,
+            CASE
+                WHEN source_type = 'user' THEN 'manual'
+                WHEN source_type = 'auto_sync' THEN 'presentation_channel'
+                ELSE source_type
+            END,
             source_message_ids,
             updated_at,
             updated_by,

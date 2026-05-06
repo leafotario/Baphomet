@@ -57,9 +57,10 @@ class XpRuntimeLevelProvider:
             config = await runtime.service.get_guild_config(guild.id)
         except Exception:
             LOGGER.exception(
-                "profile_level_snapshot_failed guild_id=%s user_id=%s",
+                "xp_snapshot_failed guild_id=%s user_id=%s revision=unknown provider=%s",
                 guild.id,
                 member.id,
+                self.provider_name,
             )
             snapshot = await NullLevelProvider().get_level_snapshot(guild, member)
             return replace(

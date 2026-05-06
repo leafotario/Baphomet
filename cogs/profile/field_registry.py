@@ -10,8 +10,21 @@ class UnknownProfileFieldError(ValueError):
 
 
 class FieldRegistry:
+    """Catalogo declarativo dos campos persistidos da ficha.
+
+    O registry e a fonte unica para validacao, UX, moderacao e renderizacao.
+    Campos vivos como nome, avatar, XP, level e cargos nao entram aqui.
+    """
+
     def __init__(self, definitions: Iterable[FieldDefinition]) -> None:
-        self._definitions = {definition.key: definition for definition in definitions}
+        self._definitions: dict[str, FieldDefinition] = {}
+        for definition in definitions:
+            normalized_key = definition.key.strip().casefold()
+            if not normalized_key:
+                raise ValueError("profile field key nao pode ser vazio")
+            if normalized_key in self._definitions:
+                raise ValueError(f"profile field duplicado: {normalized_key}")
+            self._definitions[normalized_key] = definition
 
     def get(self, key: str) -> FieldDefinition:
         normalized_key = key.strip().casefold()

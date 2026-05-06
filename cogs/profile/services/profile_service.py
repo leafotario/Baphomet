@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import unicodedata
 from collections.abc import Iterable
@@ -15,13 +16,17 @@ from ..models import (
     ProfileFieldStatus,
     ProfileFieldType,
     ProfileFieldValue,
+    ProfileDeletionResult,
     ProfileModerationAction,
     ProfileRecord,
 )
 from ..repositories import ProfileRepository
 from ..schemas import LiveProfileData, ProfileFieldSnapshot, ProfileSnapshot
-from .level_provider import LevelProvider
+from .level_provider import LevelProvider, NullLevelProvider
 from .profile_moderation_service import ProfileModerationService
+
+
+LOGGER = logging.getLogger("baphomet.profile.service")
 
 
 class ProfileValidationError(ValueError):
@@ -39,6 +44,13 @@ MAX_CONSECUTIVE_BLANK_LINES = 1
 
 
 class ProfileService:
+    """Orquestra dados persistidos da ficha com dados vivos do Discord/XP.
+
+    Persistimos apenas campos autorais e visuais (`profile_fields`) e metadados
+    da ficha (`profiles`). Nome, avatar, username, XP, level e cargos sao lidos
+    ao vivo no snapshot para evitar guardar uma verdade desatualizada.
+    """
+
     def __init__(
         self,
         *,
@@ -53,16 +65,44 @@ class ProfileService:
         self.moderation_service = moderation_service
 
     async def ensure_profile(self, guild_id: int, user_id: int) -> ProfileRecord:
-        return await self.repository.ensure_profile(guild_id, user_id)
+        existing = await self._get_existing_profile(guild_id, user_id)
+        profile = await self.repository.ensure_profile(guild_id, user_id)
+        if existing is None:
+            LOGGER.info(
+                "profile_created guild_id=%s user_id=%s revision=%s",
+                guild_id,
+                user_id,
+                profile.render_revision,
+            )
+        return profile
 
     async def mark_onboarding_completed(self, guild_id: int, user_id: int, completed: bool = True) -> ProfileRecord:
-        return await self.repository.mark_onboarding_completed(guild_id, user_id, completed)
+        existing = await self._get_existing_profile(guild_id, user_id)
+        profile = await self.repository.mark_onboarding_completed(guild_id, user_id, completed)
+        if existing is None:
+            LOGGER.info(
+                "profile_created guild_id=%s user_id=%s revision=%s",
+                guild_id,
+                user_id,
+                profile.render_revision,
+            )
+        return profile
 
     async def get_profile_snapshot(self, guild: discord.Guild, member: discord.Member) -> ProfileSnapshot:
         profile = await self.ensure_profile(guild.id, member.id)
         stored_fields = await self.repository.list_fields(guild.id, member.id)
         settings = await self.repository.get_settings(guild.id)
-        level = await self.level_provider.get_level_snapshot(guild, member)
+        try:
+            level = await self.level_provider.get_level_snapshot(guild, member)
+        except Exception:
+            LOGGER.exception(
+                "xp_snapshot_failed guild_id=%s user_id=%s revision=%s provider=%s",
+                guild.id,
+                member.id,
+                profile.render_revision,
+                getattr(self.level_provider, "provider_name", type(self.level_provider).__name__),
+            )
+            level = await NullLevelProvider().get_level_snapshot(guild, member)
         live = self._build_live_data(guild, member)
 
         fields: dict[str, ProfileFieldSnapshot] = {}
@@ -98,7 +138,7 @@ class ProfileService:
         normalized_value = self.normalize_field_value(definition.key, value)
         encoded_value = self._encode_value(definition, normalized_value)
         message_ids = tuple(int(message_id) for message_id in source_message_ids)
-        return await self.repository.upsert_field(
+        field = await self.repository.upsert_field(
             guild_id=guild_id,
             user_id=user_id,
             field_key=definition.key,
@@ -107,6 +147,16 @@ class ProfileService:
             source_message_ids=message_ids,
             updated_by=updated_by,
         )
+        LOGGER.info(
+            "field_updated guild_id=%s user_id=%s revision=%s field_key=%s source_type=%s source_message_count=%s",
+            guild_id,
+            user_id,
+            await self._current_revision(guild_id, user_id),
+            definition.key,
+            source_type.value,
+            len(message_ids),
+        )
+        return field
 
     async def admin_set_field(
         self,
@@ -135,6 +185,15 @@ class ProfileService:
             actor_id=actor_id,
             reason=reason,
         )
+        LOGGER.info(
+            "field_moderated guild_id=%s user_id=%s revision=%s field_key=%s action=%s actor_id=%s",
+            guild_id,
+            user_id,
+            await self._current_revision(guild_id, user_id),
+            definition.key,
+            ProfileModerationAction.EDIT.value,
+            actor_id,
+        )
         return field
 
     async def reset_field(
@@ -147,13 +206,22 @@ class ProfileService:
         reason: str | None = None,
     ) -> bool:
         definition = self.field_registry.get(field_key)
-        return await self.repository.reset_field(
+        removed = await self.repository.reset_field(
             guild_id=guild_id,
             user_id=user_id,
             field_key=definition.key,
             actor_id=actor_id,
             reason=reason,
         )
+        if removed:
+            LOGGER.info(
+                "field_updated guild_id=%s user_id=%s revision=%s field_key=%s source_type=reset source_message_count=0",
+                guild_id,
+                user_id,
+                await self._current_revision(guild_id, user_id),
+                definition.key,
+            )
+        return removed
 
     async def reset_profile(
         self,
@@ -163,12 +231,20 @@ class ProfileService:
         actor_id: int,
         reason: str | None = None,
     ) -> int:
-        return await self.repository.reset_profile_fields(
+        removed_count = await self.repository.reset_profile_fields(
             guild_id=guild_id,
             user_id=user_id,
             actor_id=actor_id,
             reason=reason,
         )
+        LOGGER.info(
+            "field_updated guild_id=%s user_id=%s revision=%s field_key=* source_type=reset_all source_message_count=0 removed_count=%s",
+            guild_id,
+            user_id,
+            await self._current_revision(guild_id, user_id),
+            removed_count,
+        )
+        return removed_count
 
     async def reset_visual_fields(
         self,
@@ -178,7 +254,7 @@ class ProfileService:
         actor_id: int,
         reason: str | None = None,
     ) -> int:
-        return await self.repository.reset_fields(
+        removed_count = await self.repository.reset_fields(
             guild_id=guild_id,
             user_id=user_id,
             field_keys=VISUAL_FIELD_KEYS,
@@ -186,6 +262,15 @@ class ProfileService:
             action=ProfileModerationAction.RESET_VISUAL,
             reason=reason,
         )
+        LOGGER.info(
+            "field_updated guild_id=%s user_id=%s revision=%s field_key=%s source_type=reset_visual source_message_count=0 removed_count=%s",
+            guild_id,
+            user_id,
+            await self._current_revision(guild_id, user_id),
+            ",".join(VISUAL_FIELD_KEYS),
+            removed_count,
+        )
+        return removed_count
 
     async def moderate_field(
         self,
@@ -210,6 +295,15 @@ class ProfileService:
         )
         if not updated:
             raise ProfileFieldNotFoundError(f"campo sem valor persistido: {definition.key}")
+        LOGGER.info(
+            "field_moderated guild_id=%s user_id=%s revision=%s field_key=%s action=%s actor_id=%s",
+            guild_id,
+            user_id,
+            await self._current_revision(guild_id, user_id),
+            definition.key,
+            status.value,
+            actor_id,
+        )
 
     async def restore_field(
         self,
@@ -230,6 +324,27 @@ class ProfileService:
         )
         if not restored:
             raise ProfileFieldNotFoundError(f"campo sem valor persistido: {definition.key}")
+        LOGGER.info(
+            "field_moderated guild_id=%s user_id=%s revision=%s field_key=%s action=%s actor_id=%s",
+            guild_id,
+            user_id,
+            await self._current_revision(guild_id, user_id),
+            definition.key,
+            ProfileModerationAction.RESTORE.value,
+            actor_id,
+        )
+
+    async def delete_user_data(self, guild_id: int, user_id: int) -> ProfileDeletionResult:
+        result = await self.repository.delete_user_profile_data(guild_id, user_id)
+        LOGGER.info(
+            "profile_user_data_deleted guild_id=%s user_id=%s revision=deleted profile_deleted=%s fields_deleted=%s moderation_events_deleted=%s",
+            guild_id,
+            user_id,
+            result.profile_deleted,
+            result.fields_deleted,
+            result.moderation_events_deleted,
+        )
+        return result
 
     def _build_live_data(self, guild: discord.Guild, member: discord.Member) -> LiveProfileData:
         display_avatar = getattr(member, "display_avatar", None)
@@ -387,3 +502,13 @@ class ProfileService:
         if definition.field_type is ProfileFieldType.TAG_LIST:
             return list(fallback or [])
         return fallback
+
+    async def _get_existing_profile(self, guild_id: int, user_id: int) -> ProfileRecord | None:
+        get_profile = getattr(self.repository, "get_profile", None)
+        if get_profile is None:
+            return None
+        return await get_profile(guild_id, user_id)
+
+    async def _current_revision(self, guild_id: int, user_id: int) -> int | str:
+        profile = await self._get_existing_profile(guild_id, user_id)
+        return profile.render_revision if profile is not None else "unknown"
