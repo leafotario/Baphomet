@@ -15,37 +15,44 @@ from discord.ext import commands, tasks
 
 SPAM_MESSAGE_LIMIT = 7
 SPAM_WINDOW_SECONDS = 3
-GHOST_USER_WINDOW_MINUTES = 10
 SPAM_TRACKER_CLEANUP_INTERVAL_MINUTES = 5
 SETTINGS_FILE = Path("guild_settings.json")
+
+DEFAULT_GUILD_SETTINGS: dict = {
+    "geral": None,
+    "antispam_enabled": True,
+    "permanencia_minutos": 10,
+    "invite_max_age": 0,    # 0 = nunca expira
+    "invite_max_uses": 0,   # 0 = usos ilimitados
+}
 
 log = logging.getLogger(__name__)
 
 
 # =========================================================
-# persistência leve de configurações
+# persistência
 # =========================================================
 
-def _load_settings() -> dict[str, dict[str, int | None]]:
+def _load_settings() -> dict:
     if SETTINGS_FILE.exists():
         try:
             with SETTINGS_FILE.open("r", encoding="utf-8") as f:
                 return json.load(f)
         except (json.JSONDecodeError, OSError):
-            log.warning("falha ao carregar %s, usando configuração vazia", SETTINGS_FILE)
+            log.warning("falha ao carregar %s — usando configuração vazia", SETTINGS_FILE)
     return {}
 
 
 def _save_settings(data: dict) -> None:
     try:
         with SETTINGS_FILE.open("w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+            json.dump(data, f, indent=2, ensure_ascii=False)
     except OSError:
         log.exception("falha ao salvar %s", SETTINGS_FILE)
 
 
 # =========================================================
-# cog principal
+# cog
 # =========================================================
 
 class ModerationCog(commands.Cog):
@@ -55,33 +62,69 @@ class ModerationCog(commands.Cog):
         # anti-spam: chave = (guild_id, channel_id, user_id)
         self.spam_tracker: defaultdict[tuple[int, int, int], deque[datetime]] = defaultdict(deque)
 
-        # horário de entrada registrado via evento (fallback: member.joined_at)
+        # rastreia horário de entrada para checar permanência mínima
         self.join_times: defaultdict[int, dict[int, datetime]] = defaultdict(dict)
 
-        # configuração persistida: chave no JSON é str(guild_id)
+        # carrega configurações persistidas
         raw = _load_settings()
-        self.guild_settings: defaultdict[int, dict[str, int | None]] = defaultdict(
-            lambda: {"geral": None, "entrada": None}
+        self.guild_settings: defaultdict[int, dict] = defaultdict(
+            lambda: dict(DEFAULT_GUILD_SETTINGS)
         )
         for guild_id_str, cfg in raw.items():
-            self.guild_settings[int(guild_id_str)] = cfg
+            merged = dict(DEFAULT_GUILD_SETTINGS)
+            merged.update(cfg)
+            self.guild_settings[int(guild_id_str)] = merged
 
     # =========================================================
-    # task de limpeza periódica do spam_tracker
+    # helpers internos
+    # =========================================================
+
+    def _get_me(self, guild: discord.Guild) -> discord.Member | None:
+        if guild.me is not None:
+            return guild.me
+        if self.bot.user is not None:
+            return guild.get_member(self.bot.user.id)
+        return None
+
+    def _persist(self) -> None:
+        _save_settings({
+            str(gid): cfg for gid, cfg in self.guild_settings.items()
+        })
+
+    def _settings(self, guild_id: int) -> dict:
+        return self.guild_settings[guild_id]
+
+    async def _send_to_geral(
+        self,
+        guild: discord.Guild,
+        content: str
+    ) -> None:
+        channel_id = self._settings(guild.id).get("geral")
+        if channel_id is None:
+            return
+        channel = guild.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            return
+        me = self._get_me(guild)
+        if me and not channel.permissions_for(me).send_messages:
+            return
+        try:
+            await channel.send(content)
+        except discord.HTTPException:
+            log.exception("falha ao enviar mensagem no canal geral guild_id=%d", guild.id)
+
+    # =========================================================
+    # task de limpeza do spam_tracker
     # =========================================================
 
     @tasks.loop(minutes=SPAM_TRACKER_CLEANUP_INTERVAL_MINUTES)
     async def _cleanup_spam_tracker(self) -> None:
-        """Remove entradas expiradas do spam_tracker para evitar vazamento de memória."""
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=SPAM_WINDOW_SECONDS)
-        stale_keys = [
-            key for key, ts in self.spam_tracker.items()
-            if not ts or ts[-1] < cutoff
-        ]
-        for key in stale_keys:
-            self.spam_tracker.pop(key, None)
-        if stale_keys:
-            log.debug("spam_tracker: %d entradas expiradas removidas", len(stale_keys))
+        stale = [k for k, ts in self.spam_tracker.items() if not ts or ts[-1] < cutoff]
+        for k in stale:
+            self.spam_tracker.pop(k, None)
+        if stale:
+            log.debug("spam_tracker: %d entradas expiradas removidas", len(stale))
 
     async def cog_load(self) -> None:
         self._cleanup_spam_tracker.start()
@@ -96,73 +139,42 @@ class ModerationCog(commands.Cog):
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member) -> None:
         self.join_times[member.guild.id][member.id] = datetime.now(timezone.utc)
-        log.info(
-            "entrada registrada: user_id=%d guild_id=%d guild=%s",
-            member.id, member.guild.id, member.guild.name
-        )
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member) -> None:
-        # preferir o horário registrado pelo evento; fallback para member.joined_at
         joined_at = self.join_times[member.guild.id].pop(member.id, None)
 
         if joined_at is None:
-            if member.joined_at is not None:
-                joined_at = member.joined_at
-                log.debug(
-                    "join_times sem registro para user_id=%d, usando member.joined_at",
-                    member.id
-                )
-            else:
-                log.warning(
-                    "sem horário de entrada para user_id=%d guild_id=%d, pulando limpeza",
-                    member.id, member.guild.id
-                )
-                return
+            joined_at = member.joined_at
+
+        if joined_at is None:
+            return
 
         left_at = datetime.now(timezone.utc)
         time_in_guild = left_at - joined_at
+        minutos = self._settings(member.guild.id)["permanencia_minutos"]
 
-        if time_in_guild >= timedelta(minutes=GHOST_USER_WINDOW_MINUTES):
+        if time_in_guild < timedelta(minutes=minutos):
+            minutos_reais = round(time_in_guild.total_seconds() / 60, 1)
             log.info(
-                "user_id=%d saiu após %s — não é ghost user",
-                member.id, time_in_guild
+                "saída antecipada: user_id=%d ficou %.1f min (mínimo=%d) em guild_id=%d",
+                member.id, minutos_reais, minutos, member.guild.id
             )
-            return
-
-        log.info(
-            "ghost user detectado: user_id=%d ficou %s em guild_id=%d",
-            member.id, time_in_guild, member.guild.id
-        )
-
-        deleted_member = await self.cleanup_member_messages(
-            guild=member.guild,
-            member_id=member.id,
-            joined_at=joined_at,
-            left_at=left_at
-        )
-
-        # aguarda bots de boas-vindas/saída postarem suas mensagens
-        await asyncio.sleep(2)
-
-        deleted_system = await self.cleanup_system_messages(
-            guild=member.guild,
-            member=member,
-            joined_at=joined_at,
-            left_at=datetime.now(timezone.utc)
-        )
-
-        log.info(
-            "limpeza ghost user finalizada: user_id=%d | msgs membro=%d | msgs sistema=%d",
-            member.id, deleted_member, deleted_system
-        )
+            await self._send_to_geral(
+                member.guild,
+                f"⚠️ **{discord.utils.escape_markdown(str(member))}** "
+                f"entrou e saiu em **{minutos_reais} min** "
+                f"(mínimo configurado: {minutos} min)."
+            )
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         if message.guild is None or message.author.bot:
             return
 
-        await self.check_spam_and_kick(message)
+        if self._settings(message.guild.id)["antispam_enabled"]:
+            await self.check_spam_and_kick(message)
+
         await self.bot.process_commands(message)
 
     # =========================================================
@@ -176,20 +188,18 @@ class ModerationCog(commands.Cog):
 
         timestamps.append(now)
 
-        # remove timestamps fora da janela deslizante
         while timestamps and (now - timestamps[0]).total_seconds() > SPAM_WINDOW_SECONDS:
             timestamps.popleft()
 
         if len(timestamps) <= SPAM_MESSAGE_LIMIT:
             return
 
-        # limpa o tracker antes de qualquer operação I/O para evitar duplo-kick
         self.spam_tracker.pop(key, None)
         author = message.author
         channel = message.channel
 
         log.warning(
-            "spam detectado: user_id=%d channel_id=%d guild_id=%d",
+            "spam: user_id=%d channel_id=%d guild_id=%d",
             author.id, channel.id, message.guild.id
         )
 
@@ -201,19 +211,14 @@ class ModerationCog(commands.Cog):
                 )
             )
         except discord.Forbidden:
-            await channel.send(
-                "não consegui expulsar o usuário por spam: sem permissão."
-            )
+            await channel.send("Não consegui expulsar o usuário por spam: sem permissão.")
             log.error("sem permissão para kickar user_id=%d", author.id)
             return
         except discord.HTTPException:
-            await channel.send(
-                "tentei expulsar o usuário por spam, mas a API do Discord retornou um erro."
-            )
+            await channel.send("Erro ao expulsar o usuário por spam.")
             log.exception("erro HTTP ao kickar user_id=%d", author.id)
             return
 
-        # aviso no canal + limpeza das mensagens de spam
         await channel.send(f"{author.mention} foi expulso(a) automaticamente por spam.")
 
         try:
@@ -222,223 +227,37 @@ class ModerationCog(commands.Cog):
                 limit=SPAM_MESSAGE_LIMIT + 5,
                 check=lambda m: m.author.id == author.id,
                 after=spam_start,
-                bulk=True
+                bulk=True,
             )
         except (discord.Forbidden, discord.HTTPException):
             log.warning("não foi possível limpar mensagens de spam de user_id=%d", author.id)
 
     # =========================================================
-    # limpeza ghost user
+    # helper de convite
     # =========================================================
 
-    def _get_me(self, guild: discord.Guild) -> discord.Member | None:
-        """Retorna o membro do bot no servidor de forma segura."""
-        if guild.me is not None:
-            return guild.me
-        if self.bot.user is not None:
-            return guild.get_member(self.bot.user.id)
-        return None
-
-    async def cleanup_member_messages(
+    def _find_invite_channel(
         self,
         guild: discord.Guild,
-        member_id: int,
-        joined_at: datetime,
-        left_at: datetime
-    ) -> int:
-        me = self._get_me(guild)
-        if me is None:
-            return 0
-
-        deleted_count = 0
-        after = joined_at - timedelta(seconds=1)
-        before = left_at + timedelta(seconds=1)
-        cutoff_bulk = datetime.now(timezone.utc) - timedelta(days=13, hours=23)
-
-        for channel in guild.text_channels:
-            perms = channel.permissions_for(me)
-            if not (perms.view_channel and perms.read_message_history and perms.manage_messages):
-                continue
-
-            try:
-                to_delete_bulk: list[discord.Message] = []
-                to_delete_single: list[discord.Message] = []
-
-                async for msg in channel.history(
-                    limit=None,
-                    after=after,
-                    before=before,
-                    oldest_first=True
-                ):
-                    if msg.author.id != member_id:
-                        continue
-                    if msg.created_at >= cutoff_bulk:
-                        to_delete_bulk.append(msg)
-                    else:
-                        to_delete_single.append(msg)
-
-                # bulk delete (até 100 por chamada)
-                for i in range(0, len(to_delete_bulk), 100):
-                    chunk = to_delete_bulk[i:i + 100]
-                    try:
-                        await channel.delete_messages(chunk)
-                        deleted_count += len(chunk)
-                    except (discord.Forbidden, discord.HTTPException):
-                        log.warning(
-                            "falha no bulk delete em channel_id=%d", channel.id
-                        )
-
-                # delete individual para mensagens antigas
-                for msg in to_delete_single:
-                    try:
-                        await msg.delete()
-                        deleted_count += 1
-                    except (discord.Forbidden, discord.NotFound):
-                        continue
-                    except discord.HTTPException:
-                        log.exception(
-                            "falha ao deletar mensagem msg_id=%d channel_id=%d",
-                            msg.id, channel.id
-                        )
-
-            except discord.Forbidden:
-                continue
-            except discord.HTTPException:
-                log.exception("falha ao percorrer histórico de channel_id=%d", channel.id)
-
-        return deleted_count
-
-    async def cleanup_system_messages(
-        self,
-        guild: discord.Guild,
-        member: discord.Member,
-        joined_at: datetime,
-        left_at: datetime
-    ) -> int:
-        me = self._get_me(guild)
-        if me is None:
-            return 0
-
-        deleted_count = 0
-        settings = self.guild_settings[guild.id]
-        target_channel_ids: set[int] = {
-            cid for cid in (settings.get("geral"), settings.get("entrada"))
-            if cid is not None
-        }
-
-        for channel_id in target_channel_ids:
-            channel = guild.get_channel(channel_id)
-            if not isinstance(channel, discord.TextChannel):
-                continue
-
-            perms = channel.permissions_for(me)
-            if not (perms.view_channel and perms.read_message_history and perms.manage_messages):
-                continue
-
-            try:
-                async for msg in channel.history(
-                    limit=200,
-                    after=joined_at - timedelta(minutes=1),
-                    before=left_at + timedelta(seconds=10),
-                    oldest_first=True
-                ):
-                    if not self.is_related_system_message(msg, member):
-                        continue
-                    try:
-                        await msg.delete()
-                        deleted_count += 1
-                    except (discord.Forbidden, discord.NotFound):
-                        continue
-                    except discord.HTTPException:
-                        log.exception(
-                            "falha ao deletar mensagem de sistema msg_id=%d", msg.id
-                        )
-
-            except discord.Forbidden:
-                continue
-            except discord.HTTPException:
-                log.exception("falha ao varrer channel_id=%d", channel_id)
-
-        return deleted_count
-
-    def is_related_system_message(
-        self,
-        message: discord.Message,
-        member: discord.Member
-    ) -> bool:
-        """
-        Identifica mensagens de bots/webhooks relacionadas ao membro.
-        Prioriza menção direta e ID; usa nome apenas como critério complementar.
-        """
-        is_system_like = (
-            message.author.bot
-            or message.webhook_id is not None
-            or message.type != discord.MessageType.default
-        )
-        if not is_system_like:
-            return False
-
-        # critério forte: menção direta ou ID na mensagem
-        has_mention = any(u.id == member.id for u in message.mentions)
-        has_member_id = str(member.id) in message.content
-
-        if has_mention or has_member_id:
-            return True
-
-        # critério fraco: busca por nome (mínimo 4 chars para evitar falsos positivos)
-        text_parts = [message.content]
-        for embed in message.embeds:
-            text_parts += [
-                embed.title or "",
-                embed.description or "",
-                getattr(embed.footer, "text", "") or "",
-            ]
-        combined = " ".join(text_parts).lower()
-
-        possible_names = {
-            name.lower()
-            for name in (member.name, member.display_name, member.global_name)
-            if name and len(name) >= 4
-        }
-
-        return any(name in combined for name in possible_names)
-
-    # =========================================================
-    # helper do convite
-    # =========================================================
-
-    def find_invite_channel(
-        self,
-        guild: discord.Guild,
-        preferred_channel: discord.abc.GuildChannel | None
+        preferred: discord.abc.GuildChannel | None,
     ) -> discord.TextChannel | None:
         me = self._get_me(guild)
         if me is None:
             return None
-
-        if preferred_channel is not None:
-            if preferred_channel.permissions_for(me).create_instant_invite:
-                return preferred_channel  # type: ignore[return-value]
-
+        if preferred is not None and preferred.permissions_for(me).create_instant_invite:
+            return preferred  # type: ignore[return-value]
         return next(
-            (ch for ch in guild.text_channels
-             if ch.permissions_for(me).create_instant_invite),
-            None
+            (ch for ch in guild.text_channels if ch.permissions_for(me).create_instant_invite),
+            None,
         )
 
     # =========================================================
-    # slash commands
+    # slash commands — canal geral
     # =========================================================
-
-    def _persist_settings(self, guild_id: int) -> None:
-        serializable = {
-            str(gid): cfg for gid, cfg in self.guild_settings.items()
-        }
-        _save_settings(serializable)
 
     @app_commands.command(
         name="set_geral",
-        description="Define o canal geral monitorado para limpar mensagens de sistema"
+        description="Define o canal onde o bot posta avisos de moderação",
     )
     @app_commands.describe(canal="Canal que será monitorado")
     @app_commands.guild_only()
@@ -447,89 +266,176 @@ class ModerationCog(commands.Cog):
     async def set_geral(
         self,
         interaction: discord.Interaction,
-        canal: discord.TextChannel
+        canal: discord.TextChannel,
     ) -> None:
         assert interaction.guild is not None
-        self.guild_settings[interaction.guild.id]["geral"] = canal.id
-        self._persist_settings(interaction.guild.id)
+        self._settings(interaction.guild.id)["geral"] = canal.id
+        self._persist()
         await interaction.response.send_message(
-            f"Canal `geral` configurado: {canal.mention}", ephemeral=True
+            f"Canal de avisos definido: {canal.mention}", ephemeral=True
         )
 
+    # =========================================================
+    # slash commands — permanência mínima
+    # =========================================================
+
     @app_commands.command(
-        name="set_entrada",
-        description="Define o canal de entrada monitorado para limpar mensagens de sistema"
+        name="set_permanencia",
+        description="Define o tempo mínimo (em minutos) que um novo membro deve ficar no servidor",
     )
-    @app_commands.describe(canal="Canal que será monitorado")
+    @app_commands.describe(minutos="Tempo mínimo em minutos (ex: 10)")
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
-    async def set_entrada(
+    async def set_permanencia(
         self,
         interaction: discord.Interaction,
-        canal: discord.TextChannel
+        minutos: app_commands.Range[int, 1, 10080],  # 1 min até 7 dias
     ) -> None:
         assert interaction.guild is not None
-        self.guild_settings[interaction.guild.id]["entrada"] = canal.id
-        self._persist_settings(interaction.guild.id)
+        self._settings(interaction.guild.id)["permanencia_minutos"] = minutos
+        self._persist()
         await interaction.response.send_message(
-            f"Canal `entrada` configurado: {canal.mention}", ephemeral=True
+            f"Permanência mínima definida: **{minutos} minuto(s)**.", ephemeral=True
+        )
+
+    # =========================================================
+    # slash commands — convite
+    # =========================================================
+
+    @app_commands.command(
+        name="set_convite",
+        description="Configura os parâmetros do convite gerado pelo /convite",
+    )
+    @app_commands.describe(
+        max_age="Validade em horas (0 = nunca expira)",
+        max_uses="Número máximo de usos (0 = ilimitado)",
+    )
+    @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def set_convite(
+        self,
+        interaction: discord.Interaction,
+        max_age: app_commands.Range[int, 0, 720],   # 0 até 30 dias em horas
+        max_uses: app_commands.Range[int, 0, 1000],
+    ) -> None:
+        assert interaction.guild is not None
+        cfg = self._settings(interaction.guild.id)
+        cfg["invite_max_age"] = max_age * 3600  # Discord usa segundos
+        cfg["invite_max_uses"] = max_uses
+        self._persist()
+
+        age_str = f"{max_age}h" if max_age > 0 else "nunca expira"
+        uses_str = str(max_uses) if max_uses > 0 else "ilimitado"
+        await interaction.response.send_message(
+            f"Configuração de convite atualizada:\n"
+            f"• Validade: **{age_str}**\n"
+            f"• Usos máximos: **{uses_str}**",
+            ephemeral=True,
         )
 
     @app_commands.command(
         name="convite",
-        description="Gera um convite privado do servidor"
+        description="Gera um convite privado com as configurações definidas",
     )
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def convite(self, interaction: discord.Interaction) -> None:
         assert interaction.guild is not None
+        cfg = self._settings(interaction.guild.id)
 
         preferred = (
             interaction.channel
             if isinstance(interaction.channel, discord.abc.GuildChannel)
             else None
         )
-        invite_channel = self.find_invite_channel(interaction.guild, preferred)
+        invite_channel = self._find_invite_channel(interaction.guild, preferred)
 
         if invite_channel is None:
             await interaction.response.send_message(
-                "Não encontrei nenhum canal onde eu tenha permissão para criar convite.",
-                ephemeral=True
+                "Não encontrei canal com permissão para criar convite.", ephemeral=True
             )
             return
 
         try:
             invite = await invite_channel.create_invite(
-                max_age=0,
-                max_uses=0,
-                unique=False,
-                reason=f"Convite privado solicitado por {interaction.user}"
+                max_age=cfg["invite_max_age"],
+                max_uses=cfg["invite_max_uses"],
+                unique=True,
+                reason=f"Convite solicitado por {interaction.user}",
             )
+
+            age_val = cfg["invite_max_age"]
+            uses_val = cfg["invite_max_uses"]
+            age_str = f"{age_val // 3600}h" if age_val > 0 else "permanente"
+            uses_str = str(uses_val) if uses_val > 0 else "ilimitado"
+
             await interaction.response.send_message(
-                f"Aqui está seu convite privado:\n{invite.url}", ephemeral=True
+                f"🔗 {invite.url}\n"
+                f"-# Validade: {age_str} · Usos: {uses_str}",
+                ephemeral=True,
             )
         except discord.Forbidden:
             await interaction.response.send_message(
-                "Não consegui criar o convite: sem permissão.", ephemeral=True
+                "Sem permissão para criar convite.", ephemeral=True
             )
         except discord.HTTPException:
             await interaction.response.send_message(
-                "Erro ao criar o convite na API do Discord.", ephemeral=True
+                "Erro na API do Discord ao criar convite.", ephemeral=True
             )
 
     # =========================================================
-    # tratamento de erros dos slash commands
+    # slash commands — anti-spam (grupo)
+    # =========================================================
+
+    antispam_group = app_commands.Group(
+        name="antispam",
+        description="Gerencia o anti-spam do servidor",
+        guild_only=True,
+        default_permissions=discord.Permissions(administrator=True),
+    )
+
+    @antispam_group.command(name="toggle", description="Ativa ou desativa o anti-spam")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def antispam_toggle(self, interaction: discord.Interaction) -> None:
+        assert interaction.guild is not None
+        cfg = self._settings(interaction.guild.id)
+        cfg["antispam_enabled"] = not cfg["antispam_enabled"]
+        self._persist()
+
+        estado = "✅ ativado" if cfg["antispam_enabled"] else "🔴 desativado"
+        await interaction.response.send_message(
+            f"Anti-spam **{estado}**.", ephemeral=True
+        )
+
+    @antispam_group.command(name="status", description="Mostra o estado atual do anti-spam")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def antispam_status(self, interaction: discord.Interaction) -> None:
+        assert interaction.guild is not None
+        cfg = self._settings(interaction.guild.id)
+        enabled = cfg["antispam_enabled"]
+
+        estado = "✅ Ativo" if enabled else "🔴 Inativo"
+        await interaction.response.send_message(
+            f"Anti-spam: **{estado}**\n"
+            f"-# Limite: {SPAM_MESSAGE_LIMIT} msgs em {SPAM_WINDOW_SECONDS}s → kick",
+            ephemeral=True,
+        )
+
+    # =========================================================
+    # tratamento de erros
     # =========================================================
 
     @set_geral.error
-    @set_entrada.error
+    @set_permanencia.error
+    @set_convite.error
     @convite.error
-    async def admin_command_error(
+    async def _command_error(
         self,
         interaction: discord.Interaction,
-        error: app_commands.AppCommandError
+        error: app_commands.AppCommandError,
     ) -> None:
         if isinstance(error, app_commands.MissingPermissions):
             msg = "Você precisa ser administrador(a) para usar esse comando."
@@ -547,4 +453,6 @@ class ModerationCog(commands.Cog):
 
 
 async def setup(bot: commands.Bot) -> None:
-    await bot.add_cog(ModerationCog(bot))
+    cog = ModerationCog(bot)
+    await bot.add_cog(cog)
+    bot.tree.add_command(cog.antispam_group)
