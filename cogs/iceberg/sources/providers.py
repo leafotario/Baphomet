@@ -199,6 +199,41 @@ class WikipediaImageProvider(ImageUrlProvider):
         self.asset_store = asset_store
         self.wikipedia_service = wikipedia_service
 
+    async def search_candidates(self, query: str, locale: str | None = None) -> list[dict[str, Any]]:
+        normalized_query = normalize_text(query, max_length=100)
+        if not normalized_query:
+            return []
+
+        # Prioritize locale from context, with fallback to pt and en
+        requested_locales = [locale] if locale else []
+        requested_locales.extend(["pt-BR", "pt", "en"])
+
+        # Deduplicate to unique language codes to avoid redundant API calls
+        unique_lang_codes = []
+        for lang in requested_locales:
+            if lang:
+                lang_code = lang.split("-")[0]
+                if lang_code not in unique_lang_codes:
+                    unique_lang_codes.append(lang_code)
+
+        for lang_code in unique_lang_codes:
+            try:
+                results = await self.wikipedia_service.search(normalized_query, language=lang_code)
+                if results and results.candidates:
+                    return [
+                        {
+                            "pageid": c.pageid,
+                            "title": c.title,
+                            "description": c.description,
+                            "thumbnail_url": c.thumbnail_url,
+                        }
+                        for c in results.candidates
+                    ]
+            except WikipediaUserError:
+                continue
+
+        return []
+
     async def resolve(
         self,
         *,
@@ -206,21 +241,32 @@ class WikipediaImageProvider(ImageUrlProvider):
         value: str | None = None,
         guild_id: int | None = None,
         user_id: int | None = None,
+        candidate: Any | None = None,
         **_: Any,
     ) -> ResolvedIcebergSource:
         query = normalize_text(value, max_length=100)
-        if query is None:
-            raise IcebergUserError("⚠️ Informe um termo para pesquisar na Wikipedia.", code="wiki_empty")
+
         try:
-            resolution = await self.wikipedia_service.resolve(
-                query,
-                allow_ambiguous=False,
-                guild_id=guild_id,
-                user_id=user_id,
-            )
+            if candidate is not None:
+                resolution = await self.wikipedia_service.resolve_candidate(
+                    candidate,
+                    guild_id=guild_id,
+                    user_id=user_id,
+                    term=query or "",
+                )
+            else:
+                if query is None:
+                    raise IcebergUserError("⚠️ Informe um termo para pesquisar na Wikipedia.", code="wiki_empty")
+                resolution = await self.wikipedia_service.resolve(
+                    query,
+                    allow_ambiguous=False,
+                    guild_id=guild_id,
+                    user_id=user_id,
+                )
         except WikipediaUserError as exc:
             raise IcebergUserError(exc.user_message, code=exc.code, detail=str(exc)) from exc
-        item = resolution.item
+
+        item = resolution.item if not candidate else resolution
         if item is None:
             raise IcebergUserError("⚠️ Não consegui escolher uma imagem da Wikipedia para esse termo.", code="wiki_no_resolved_item")
         metadata = {
@@ -321,9 +367,32 @@ class IcebergSourceProviderRegistry:
             ItemSourceType.WIKIPEDIA: WikipediaImageProvider(asset_store=asset_store, wikipedia_service=wikipedia_service),
             ItemSourceType.ATTACHMENT: AttachmentImageProvider(downloader=downloader, asset_store=asset_store),
         }
+        self._cache: dict[tuple[ItemSourceType, Any], ResolvedIcebergSource] = {}
 
     async def resolve(self, source_type: ItemSourceType, **kwargs: Any) -> ResolvedIcebergSource:
         provider = self.providers.get(source_type)
         if provider is None:
             raise IcebergUserError("⚠️ Essa fonte de item ainda não é suportada.", code="source_unsupported")
-        return await provider.resolve(**kwargs)
+
+        # Determine the cache key based on the primary input value
+        cache_value = kwargs.get("value")
+        if source_type == ItemSourceType.ATTACHMENT and "attachment" in kwargs:
+            attachment = kwargs["attachment"]
+            if attachment is not None:
+                # Use attachment ID or URL as the unique identifier for caching
+                cache_value = getattr(attachment, "id", getattr(attachment, "url", cache_value))
+
+        cache_key = (source_type, cache_value)
+
+        # Prevent caching if we cannot identify a consistent cache value
+        if cache_value is not None and cache_key in self._cache:
+            return self._cache[cache_key]
+
+        resolved = await provider.resolve(**kwargs)
+
+        if cache_value is not None:
+            if len(self._cache) > 100:
+                self._cache.pop(next(iter(self._cache)))
+            self._cache[cache_key] = resolved
+
+        return resolved
