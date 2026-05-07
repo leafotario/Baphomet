@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 from collections import defaultdict, deque
@@ -22,7 +21,7 @@ DEFAULT_GUILD_SETTINGS: dict = {
     "geral": None,
     "antispam_enabled": True,
     "permanencia_minutos": 10,
-    "invite_max_age": 0,    # 0 = nunca expira
+    "invite_max_age": 0,    # 0 = nunca expira (em segundos internamente)
     "invite_max_uses": 0,   # 0 = usos ilimitados
 }
 
@@ -94,11 +93,7 @@ class ModerationCog(commands.Cog):
     def _settings(self, guild_id: int) -> dict:
         return self.guild_settings[guild_id]
 
-    async def _send_to_geral(
-        self,
-        guild: discord.Guild,
-        content: str
-    ) -> None:
+    async def _send_to_geral(self, guild: discord.Guild, content: str) -> None:
         channel_id = self._settings(guild.id).get("geral")
         if channel_id is None:
             return
@@ -119,6 +114,7 @@ class ModerationCog(commands.Cog):
 
     @tasks.loop(minutes=SPAM_TRACKER_CLEANUP_INTERVAL_MINUTES)
     async def _cleanup_spam_tracker(self) -> None:
+        """Remove entradas expiradas do spam_tracker para evitar vazamento de memória."""
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=SPAM_WINDOW_SECONDS)
         stale = [k for k, ts in self.spam_tracker.items() if not ts or ts[-1] < cutoff]
         for k in stale:
@@ -158,13 +154,13 @@ class ModerationCog(commands.Cog):
             minutos_reais = round(time_in_guild.total_seconds() / 60, 1)
             log.info(
                 "saída antecipada: user_id=%d ficou %.1f min (mínimo=%d) em guild_id=%d",
-                member.id, minutos_reais, minutos, member.guild.id
+                member.id, minutos_reais, minutos, member.guild.id,
             )
             await self._send_to_geral(
                 member.guild,
                 f"⚠️ **{discord.utils.escape_markdown(str(member))}** "
                 f"entrou e saiu em **{minutos_reais} min** "
-                f"(mínimo configurado: {minutos} min)."
+                f"(mínimo configurado: {minutos} min).",
             )
 
     @commands.Cog.listener()
@@ -200,7 +196,7 @@ class ModerationCog(commands.Cog):
 
         log.warning(
             "spam: user_id=%d channel_id=%d guild_id=%d",
-            author.id, channel.id, message.guild.id
+            author.id, channel.id, message.guild.id,
         )
 
         try:
@@ -283,7 +279,7 @@ class ModerationCog(commands.Cog):
         name="set_permanencia",
         description="Define o tempo mínimo (em minutos) que um novo membro deve ficar no servidor",
     )
-    @app_commands.describe(minutos="Tempo mínimo em minutos (ex: 10)")
+    @app_commands.describe(minutos="Tempo mínimo em minutos (1–10080)")
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
@@ -308,8 +304,8 @@ class ModerationCog(commands.Cog):
         description="Configura os parâmetros do convite gerado pelo /convite",
     )
     @app_commands.describe(
-        max_age="Validade em horas (0 = nunca expira)",
-        max_uses="Número máximo de usos (0 = ilimitado)",
+        max_age="Validade em horas (0 = nunca expira, máx. 720h)",
+        max_uses="Número máximo de usos (0 = ilimitado, máx. 1000)",
     )
     @app_commands.guild_only()
     @app_commands.default_permissions(administrator=True)
@@ -317,7 +313,7 @@ class ModerationCog(commands.Cog):
     async def set_convite(
         self,
         interaction: discord.Interaction,
-        max_age: app_commands.Range[int, 0, 720],   # 0 até 30 dias em horas
+        max_age: app_commands.Range[int, 0, 720],
         max_uses: app_commands.Range[int, 0, 1000],
     ) -> None:
         assert interaction.guild is not None
@@ -425,7 +421,7 @@ class ModerationCog(commands.Cog):
         )
 
     # =========================================================
-    # tratamento de erros
+    # tratamento de erros dos slash commands soltos
     # =========================================================
 
     @set_geral.error
@@ -452,7 +448,9 @@ class ModerationCog(commands.Cog):
             await interaction.response.send_message(msg, ephemeral=True)
 
 
+# =========================================================
+# setup
+# =========================================================
+
 async def setup(bot: commands.Bot) -> None:
-    cog = ModerationCog(bot)
-    await bot.add_cog(cog)
-    bot.tree.add_command(cog.antispam_group)
+    await bot.add_cog(ModerationCog(bot))
