@@ -123,6 +123,53 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
         self.assertEqual(imported.layers[2].height_weight, 1.8)
 
 
+
+    def test_renderer_layout_modes(self) -> None:
+        from cogs.iceberg.models import LayerLayoutMode
+        project = make_project()
+
+        # Test SCATTER layout deterministic bounds
+        project.layers[0].layout_mode = LayerLayoutMode.SCATTER
+        buffer_scatter1 = IcebergRenderer().render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
+        buffer_scatter2 = IcebergRenderer().render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
+        self.assertEqual(buffer_scatter1.getvalue(), buffer_scatter2.getvalue())
+
+        # Test GRID layout
+        project.layers[0].layout_mode = LayerLayoutMode.GRID
+        buffer_grid = IcebergRenderer().render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
+        self.assertIsNotNone(buffer_grid)
+
+        # Test MASONRY layout
+        project.layers[0].layout_mode = LayerLayoutMode.MASONRY
+        buffer_masonry = IcebergRenderer().render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
+        self.assertIsNotNone(buffer_masonry)
+
+    def test_renderer_overflow_raises_error(self) -> None:
+        from cogs.iceberg.models import LayerLayoutMode, ItemConfig, ItemSource, ItemSourceType, ItemDisplayStyle
+        project = make_project()
+        project.layers[0].layout_mode = LayerLayoutMode.GRID
+
+        # Add 1000 large items to the first layer to cause an overflow
+        items = []
+        for i in range(1000):
+            items.append(
+                ItemConfig(
+                    id=f"item-{i}",
+                    layer_id="layer-1",
+                    title="Muito grande para caber",
+                    source=ItemSource(type=ItemSourceType.TEXT, value="Enorme"),
+                    display_style=ItemDisplayStyle.CARD,
+                    sort_order=i,
+                    created_at="2026-01-01T00:00:00+00:00",
+                    updated_at="2026-01-01T00:00:00+00:00",
+                )
+            )
+        project.items = items
+
+        renderer = IcebergRenderer()
+        with self.assertRaisesRegex(ValueError, "A camada não comporta os itens"):
+            renderer.render_project(project)
+
 class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_text_provider_requires_real_text(self) -> None:
         provider = TextItemProvider()
