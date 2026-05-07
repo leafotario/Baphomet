@@ -6,6 +6,7 @@ import sys
 import time
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
@@ -56,15 +57,14 @@ def log_discord(msg: str) -> None:
 def get_token() -> str:
     log_info("Carregando variáveis de ambiente...")
     load_dotenv()
-    
-    # Suporte flexível às nomenclaturas mais comuns de token
+
     token = os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN") or os.getenv("TOKEN")
-    
+
     if not token:
         print_separator()
         log_error("Nenhum token encontrado! Verifique se o arquivo .env existe e possui a chave DISCORD_TOKEN.")
         sys.exit(1)
-        
+
     masked_token = f"{token[:4]}****************{token[-4:]}" if len(token) > 8 else "********"
     log_success(f"Token detectado com segurança: {masked_token}")
     return token
@@ -75,37 +75,35 @@ def get_token() -> str:
 class MyBot(commands.Bot):
     def __init__(self) -> None:
         self.start_time = time.time()
-        
-        # Preservando Intents originais rigorosamente
+
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        
+
         super().__init__(
-            command_prefix="!", 
+            command_prefix="!",
             intents=intents
         )
-        
+
     async def load_all_extensions(self) -> tuple[int, int]:
-        """Varre o diretório /cogs e carrega as extensões com base na lógica original."""
+        """Varre o diretório /cogs e carrega as extensões."""
         log_info("Iniciando o carregamento de extensões (Cogs)...")
         loaded, failed = 0, 0
-        
+
         if not os.path.exists("./cogs"):
             log_warn("Diretório './cogs' não encontrado. Pulando o carregamento de extensões.")
             return loaded, failed
 
         for filename in sorted(os.listdir("./cogs")):
-            # Preserva os skips de arquivos internos e sufixos 'xp_'
             if filename.startswith("__") or filename.startswith("xp_"):
                 continue
-                
+
             extension = None
             if filename.endswith(".py"):
                 extension = f"cogs.{filename[:-3]}"
             elif os.path.isdir(f"./cogs/{filename}") and os.path.isfile(f"./cogs/{filename}/__init__.py"):
                 extension = f"cogs.{filename}"
-                
+
             if not extension:
                 continue
 
@@ -116,19 +114,17 @@ class MyBot(commands.Bot):
             except Exception as exc:
                 log_cog(f"{extension} falhou: {type(exc).__name__}: {exc}", success=False)
                 failed += 1
-                
+
         return loaded, failed
 
     async def setup_hook(self) -> None:
         """Chamado pelo discord.py antes de logar o bot."""
-        # 1. Carregar Cogs
         loaded, failed = await self.load_all_extensions()
-        
+
         print_separator()
         log_info(f"Resumo de Cogs: {loaded} carregados com sucesso | {failed} falharam.")
         print_separator()
 
-        # 2. Sincronização Global da Tree de Slash Commands
         log_sync("Sincronizando slash commands globalmente...")
         try:
             synced = await self.tree.sync()
@@ -137,10 +133,9 @@ class MyBot(commands.Bot):
             log_error(f"Falha ao sincronizar comandos: {exc}")
 
     async def close(self) -> None:
-        """Desligamento gracioso do Bot, garantindo fechamento de conexões abertas."""
+        """Desligamento gracioso do Bot."""
         log_warn("Iniciando processo de desligamento seguro...")
-        
-        # Lógica original: Finalizar Repositório de XP caso exista
+
         runtime = getattr(self, "xp_runtime", None)
         if runtime is not None:
             try:
@@ -149,7 +144,7 @@ class MyBot(commands.Bot):
                 log_success("Repositório XP encerrado com sucesso.")
             except Exception as exc:
                 log_error(f"Erro ao fechar repositório XP: {exc}")
-                
+
         log_discord("Bot desconectado da API.")
         await super().close()
 
@@ -162,7 +157,7 @@ bot = MyBot()
 async def on_ready() -> None:
     boot_time = round(time.time() - bot.start_time, 2)
     users_count = sum(guild.member_count for guild in bot.guilds if guild.member_count)
-    
+
     print_separator()
     print(f"{Colors.GREEN}{Colors.BOLD}🟢 BOT ONLINE E OPERACIONAL{Colors.RESET}")
     print(f"🤖 Usuário:           {bot.user} (ID: {bot.user.id})")
@@ -172,17 +167,57 @@ async def on_ready() -> None:
     print_separator()
     log_info("Aguardando interações dos usuários...")
 
+
 @bot.event
 async def on_command_error(ctx: commands.Context, error: commands.CommandError) -> None:
-    """Evita o poluição brutal do console e dá logs formatados para erros básicos de prefix commands."""
+    """Trata erros de prefix commands sem poluir o console."""
     if isinstance(error, commands.CommandNotFound):
-        return  # Erro benigno, não precisa poluir
-        
+        return
+
     if isinstance(error, commands.NotOwner):
         log_warn(f"O usuário {ctx.author} tentou usar comando restrito (!{ctx.command}).")
         return
-        
+
     log_error(f"Erro na execução do comando '!{ctx.command}' por {ctx.author}: {error}")
+
+
+@bot.tree.error
+async def on_tree_error(
+    interaction: discord.Interaction,
+    error: app_commands.AppCommandError,
+) -> None:
+    """
+    Handler global para erros de slash commands e grupos de comandos (app_commands.Group).
+    Cobre casos que os handlers .error das Cogs não alcançam, como o grupo /antispam.
+    """
+    # Erros já tratados pelas Cogs chegam aqui com AppCommandError genérico —
+    # evitamos duplicar respostas checando se a interação já foi respondida.
+    msg: str
+
+    if isinstance(error, app_commands.MissingPermissions):
+        msg = "Você precisa ser administrador(a) para usar esse comando."
+    elif isinstance(error, app_commands.BotMissingPermissions):
+        missing = ", ".join(error.missing_permissions)
+        msg = f"Estou sem as permissões necessárias: {missing}."
+    elif isinstance(error, app_commands.CommandOnCooldown):
+        msg = f"Aguarde {error.retry_after:.1f}s antes de usar esse comando novamente."
+    elif isinstance(error, app_commands.NoPrivateMessage):
+        msg = "Esse comando só pode ser usado dentro de um servidor."
+    else:
+        msg = "Ocorreu um erro inesperado ao executar esse comando."
+        log_error(
+            f"Erro não tratado em slash command "
+            f"'{interaction.command.name if interaction.command else '?'}' "
+            f"por {interaction.user}: {type(error).__name__}: {error}"
+        )
+
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except discord.HTTPException:
+        log_warn("Não foi possível enviar resposta de erro ao usuário (interação expirada?).")
 
 # ==============================================================================
 # 6. COMANDOS GLOBAIS (PREFIXO)
@@ -212,22 +247,19 @@ async def main() -> None:
     print(f"📦 discord.py:   {discord.__version__}")
     print(f"🖥️ Sistema:      {platform.system()} {platform.release()}")
     print_separator()
-    
-    # Configura o Logger nativo do Discord, mas mantendo a poluição de websocket oculta (WARNING level)
+
     discord.utils.setup_logging(level=logging.WARNING)
-    
+
     token = get_token()
-    
+
     log_discord("Conectando aos servidores Gateway do Discord...")
     try:
-        # A API recomenda utilizar o método assíncrono start() caso gerenciemos o asyncio manualmente
         await bot.start(token)
     except discord.LoginFailure:
         log_error("Falha no login: O token fornecido no .env é inválido ou foi revogado.")
     except Exception as e:
         log_error(f"Erro fatal inesperado durante o tempo de execução: {e}")
     finally:
-        # Assegura o fechamento da pool de conexão HTTP ao fechar o loop
         if not bot.is_closed():
             await bot.close()
 
