@@ -123,6 +123,53 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
         self.assertEqual(imported.layers[2].height_weight, 1.8)
 
 
+
+    def test_renderer_layout_modes(self) -> None:
+        from cogs.iceberg.models import LayerLayoutMode
+        project = make_project()
+
+        # Test SCATTER layout deterministic bounds
+        project.layers[0].layout_mode = LayerLayoutMode.SCATTER
+        buffer_scatter1 = IcebergRenderer().render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
+        buffer_scatter2 = IcebergRenderer().render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
+        self.assertEqual(buffer_scatter1.getvalue(), buffer_scatter2.getvalue())
+
+        # Test GRID layout
+        project.layers[0].layout_mode = LayerLayoutMode.GRID
+        buffer_grid = IcebergRenderer().render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
+        self.assertIsNotNone(buffer_grid)
+
+        # Test MASONRY layout
+        project.layers[0].layout_mode = LayerLayoutMode.MASONRY
+        buffer_masonry = IcebergRenderer().render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
+        self.assertIsNotNone(buffer_masonry)
+
+    def test_renderer_overflow_raises_error(self) -> None:
+        from cogs.iceberg.models import LayerLayoutMode, ItemConfig, ItemSource, ItemSourceType, ItemDisplayStyle
+        project = make_project()
+        project.layers[0].layout_mode = LayerLayoutMode.GRID
+
+        # Add 1000 large items to the first layer to cause an overflow
+        items = []
+        for i in range(1000):
+            items.append(
+                ItemConfig(
+                    id=f"item-{i}",
+                    layer_id="layer-1",
+                    title="Muito grande para caber",
+                    source=ItemSource(type=ItemSourceType.TEXT, value="Enorme"),
+                    display_style=ItemDisplayStyle.CARD,
+                    sort_order=i,
+                    created_at="2026-01-01T00:00:00+00:00",
+                    updated_at="2026-01-01T00:00:00+00:00",
+                )
+            )
+        project.items = items
+
+        renderer = IcebergRenderer()
+        with self.assertRaisesRegex(ValueError, "A camada não comporta os itens"):
+            renderer.render_project(project)
+
 class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_text_provider_requires_real_text(self) -> None:
         provider = TextItemProvider()
@@ -165,6 +212,130 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolved.source.type, ItemSourceType.ATTACHMENT)
         self.assertEqual(store.source_type, ItemSourceType.ATTACHMENT.value)
 
+
+
+    async def test_image_url_invalid(self) -> None:
+        from cogs.iceberg.sources.providers import ImageUrlProvider
+        from cogs.tierlist_templates.exceptions import AssetDownloadError
+
+        class FakeDownloader:
+            async def download(self, url: str) -> None:
+                raise AssetDownloadError("Acesso bloqueado por segurança", code="ssrf_blocked")
+
+        provider = ImageUrlProvider(downloader=FakeDownloader(), asset_store=SimpleNamespace())
+        with self.assertRaisesRegex(IcebergUserError, "Acesso bloqueado"):
+            await provider.resolve(value="http://127.0.0.1/image.png")
+
+    async def test_discord_avatar_user_not_found(self) -> None:
+        from cogs.iceberg.sources.providers import DiscordAvatarProvider
+
+        class FakeClient:
+            async def fetch_user(self, user_id: int):
+                raise discord.HTTPException(SimpleNamespace(status=404, reason="Not Found"), "Not Found")
+
+        provider = DiscordAvatarProvider(downloader=SimpleNamespace(), asset_store=SimpleNamespace())
+        with self.assertRaises(IcebergUserError) as cm:
+            await provider.resolve(value="123456789012345678", client=FakeClient())
+        self.assertEqual(cm.exception.code, "avatar_user_not_found")
+
+    async def test_wikipedia_without_thumbnail(self) -> None:
+        from cogs.iceberg.sources.providers import WikipediaImageProvider
+        from cogs.tierlist_wikipedia.wikipedia import WikipediaUserError
+
+        class FakeWikipediaService:
+            async def resolve(self, query: str, **kwargs):
+                raise WikipediaUserError("Nenhuma imagem encontrada", code="wikipedia_no_image")
+
+        provider = WikipediaImageProvider(asset_store=SimpleNamespace(), wikipedia_service=FakeWikipediaService())
+        with self.assertRaises(IcebergUserError) as cm:
+            await provider.resolve(value="Teste sem imagem")
+        self.assertEqual(cm.exception.code, "wikipedia_no_image")
+
+    async def test_attachment_too_large(self) -> None:
+        from cogs.iceberg.sources.providers import AttachmentImageProvider
+
+        class FakeAttachment:
+            size = 10 * 1024 * 1024 # 10MB
+
+        provider = AttachmentImageProvider(downloader=SimpleNamespace(), asset_store=SimpleNamespace())
+        with self.assertRaises(IcebergUserError) as cm:
+            await provider.resolve(attachment=FakeAttachment())
+        self.assertEqual(cm.exception.code, "attachment_too_large")
+
+    async def test_attachment_fake_content_type(self) -> None:
+        from cogs.iceberg.sources.providers import AttachmentImageProvider
+
+        class FakeAttachment:
+            size = 1024
+            content_type = "application/pdf"
+
+        provider = AttachmentImageProvider(downloader=SimpleNamespace(), asset_store=SimpleNamespace())
+        with self.assertRaises(IcebergUserError) as cm:
+            await provider.resolve(attachment=FakeAttachment())
+        self.assertEqual(cm.exception.code, "attachment_not_image")
+
+    async def test_attachment_invalid_truncated_image(self) -> None:
+        from cogs.iceberg.sources.providers import AttachmentImageProvider
+        from cogs.tierlist_templates.exceptions import AssetValidationError
+
+        class FakeAssetStore:
+            async def store_image_bytes(self, raw_bytes: bytes, **kwargs):
+                raise AssetValidationError("Imagem corrompida", code="image_invalid")
+
+        class FakeAttachment:
+            size = 1024
+            content_type = "image/png"
+            filename = "test.png"
+            url = "http://test.com/test.png"
+            async def read(self, **kwargs):
+                return b"not an image"
+
+        provider = AttachmentImageProvider(downloader=SimpleNamespace(), asset_store=FakeAssetStore())
+        with self.assertRaises(IcebergUserError) as cm:
+            await provider.resolve(attachment=FakeAttachment())
+        self.assertEqual(cm.exception.code, "image_invalid")
+
+
+    async def test_wikipedia_search_candidates(self) -> None:
+        from cogs.iceberg.sources.providers import WikipediaImageProvider
+
+        class FakeCandidate:
+            def __init__(self, pageid, title, description, thumbnail_url):
+                self.pageid = pageid
+                self.title = title
+                self.description = description
+                self.thumbnail_url = thumbnail_url
+
+        class FakeResults:
+            def __init__(self, candidates):
+                self.candidates = candidates
+
+        class FakeWikipediaService:
+            async def search(self, query: str, language: str):
+                if language == "pt":
+                    return FakeResults([FakeCandidate(1, "Teste", "Desc pt", "http://pt")])
+                elif language == "en":
+                    return FakeResults([FakeCandidate(2, "Test", "Desc en", "http://en")])
+                return None
+
+        provider = WikipediaImageProvider(asset_store=SimpleNamespace(), wikipedia_service=FakeWikipediaService())
+
+        # Test pt-BR fallback to pt
+        candidates = await provider.search_candidates("teste", locale="pt-BR")
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["title"], "Teste")
+
+        # Test en fallback if pt doesn't exist
+        class FakeWikipediaServiceEnFallback:
+            async def search(self, query: str, language: str):
+                if language == "en":
+                    return FakeResults([FakeCandidate(2, "Test", "Desc en", "http://en")])
+                return None
+
+        provider_en = WikipediaImageProvider(asset_store=SimpleNamespace(), wikipedia_service=FakeWikipediaServiceEnFallback())
+        candidates_en = await provider_en.search_candidates("teste", locale="pt-BR")
+        self.assertEqual(len(candidates_en), 1)
+        self.assertEqual(candidates_en[0]["title"], "Test")
 
 @unittest.skipIf(not AIOSQLITE_AVAILABLE, "aiosqlite não está instalado neste Python")
 class IcebergRepositoryServiceTests(unittest.IsolatedAsyncioTestCase):

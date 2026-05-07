@@ -5,13 +5,14 @@ import logging
 import math
 import pathlib
 import re
+import random
 import textwrap
 from dataclasses import dataclass
 from typing import Iterable
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps, UnidentifiedImageError
 
-from .models import IcebergProject, ItemConfig, ItemDisplayStyle, ItemSourceType, LayerConfig, ThemeConfig
+from .models import IcebergProject, ItemConfig, ItemDisplayStyle, ItemSourceType, LayerConfig, LayerLayoutMode, ThemeConfig
 
 
 LOGGER = logging.getLogger("baphomet.iceberg.renderer")
@@ -55,6 +56,7 @@ class IcebergRenderer:
         project: IcebergProject,
         *,
         asset_bytes_by_item_id: dict[str, bytes] | None = None,
+        preview: bool = False,
     ) -> io.BytesIO:
         asset_bytes_by_item_id = asset_bytes_by_item_id or {}
         theme = project.theme
@@ -74,6 +76,9 @@ class IcebergRenderer:
             items = project.ordered_items_for_layer(layer_box.layer.id)
             self._draw_items_for_layer(image, project, layer_box, items, asset_bytes_by_item_id)
         self._draw_footer(image, project)
+
+        if preview:
+            image = image.resize((theme.canvas_width // 2, theme.canvas_height // 2), resample=Image.Resampling.LANCZOS)
 
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
@@ -139,8 +144,13 @@ class IcebergRenderer:
     ) -> None:
         if not items:
             return
-        auto_positions = self._auto_positions(project.theme, layer_box, items)
-        for index, item in enumerate(items):
+
+        # Sort items by z_index first, then by sort_order before calculating layout
+        sorted_items = sorted(items, key=lambda i: (i.placement.z_index, i.sort_order))
+
+        auto_positions = self._auto_positions(project, layer_box, sorted_items)
+
+        for item in sorted_items:
             box = auto_positions.get(item.id)
             if item.placement.x is not None and item.placement.y is not None:
                 box = self._manual_item_box(project.theme, layer_box, item)
@@ -152,32 +162,162 @@ class IcebergRenderer:
 
     def _auto_positions(
         self,
-        theme: ThemeConfig,
+        project: IcebergProject,
         layer_box: LayerRenderBox,
         items: list[ItemConfig],
     ) -> dict[str, tuple[int, int, int, int]]:
+        scales = [1.0, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3]
+        layout_mode = getattr(layer_box.layer, "layout_mode", LayerLayoutMode.SCATTER)
+
+        for scale in scales:
+            if layout_mode == LayerLayoutMode.GRID:
+                result = self._grid_layout(project.theme, layer_box, items, scale)
+            elif layout_mode == LayerLayoutMode.MASONRY:
+                result = self._masonry_layout(project.theme, layer_box, items, scale)
+            else:
+                result = self._scatter_layout(project.id, project.theme, layer_box, items, scale)
+
+            if result is not None:
+                return result
+
+        raise ValueError("A camada não comporta os itens. Diminua a quantidade ou mude o layout.")
+
+    def _grid_layout(
+        self,
+        theme: ThemeConfig,
+        layer_box: LayerRenderBox,
+        items: list[ItemConfig],
+        scale: float,
+    ) -> dict[str, tuple[int, int, int, int]] | None:
         content_left = layer_box.min_left + theme.layer_inner_padding_x
         content_right = layer_box.max_right - theme.layer_inner_padding_x
         content_top = layer_box.top_y + theme.layer_inner_padding_y
         content_bottom = layer_box.bottom_y - theme.layer_inner_padding_y
         if content_right <= content_left or content_bottom <= content_top:
-            return {}
+            return None
+
         result: dict[str, tuple[int, int, int, int]] = {}
         cursor_x = content_left
         cursor_y = content_top
         line_height = 0
+
         for item in items:
-            item_w, item_h = self._item_size(theme, item)
+            orig_w, orig_h = self._item_size(theme, item)
+            item_w = max(10, int(orig_w * scale))
+            item_h = max(10, int(orig_h * scale))
+
             if cursor_x > content_left and cursor_x + item_w > content_right:
                 cursor_x = content_left
-                cursor_y += line_height + theme.item_gap_y
+                cursor_y += line_height + int(theme.item_gap_y * scale)
                 line_height = 0
+
             if cursor_y + item_h > content_bottom:
-                item_w = max(60, min(item_w, content_right - content_left))
-                item_h = max(42, min(item_h, content_bottom - content_top))
+                return None
+
             result[item.id] = (cursor_x, cursor_y, cursor_x + item_w, cursor_y + item_h)
-            cursor_x += item_w + theme.item_gap_x
+            cursor_x += item_w + int(theme.item_gap_x * scale)
             line_height = max(line_height, item_h)
+
+        return result
+
+    def _masonry_layout(
+        self,
+        theme: ThemeConfig,
+        layer_box: LayerRenderBox,
+        items: list[ItemConfig],
+        scale: float,
+    ) -> dict[str, tuple[int, int, int, int]] | None:
+        content_left = layer_box.min_left + theme.layer_inner_padding_x
+        content_right = layer_box.max_right - theme.layer_inner_padding_x
+        content_top = layer_box.top_y + theme.layer_inner_padding_y
+        content_bottom = layer_box.bottom_y - theme.layer_inner_padding_y
+        available_width = content_right - content_left
+        if available_width <= 0 or content_bottom <= content_top:
+            return None
+
+        # Determine number of columns based on average item width
+        avg_w = sum(max(10, int(self._item_size(theme, i)[0] * scale)) for i in items) / len(items) if items else 100
+        cols = max(1, available_width // (int(avg_w) + int(theme.item_gap_x * scale)))
+
+        col_heights = [content_top] * cols
+        col_widths = available_width // cols
+        gap_x = int(theme.item_gap_x * scale)
+        gap_y = int(theme.item_gap_y * scale)
+
+        result: dict[str, tuple[int, int, int, int]] = {}
+        for item in items:
+            orig_w, orig_h = self._item_size(theme, item)
+            item_w = max(10, int(orig_w * scale))
+            item_h = max(10, int(orig_h * scale))
+
+            # Find shortest column
+            min_col_idx = col_heights.index(min(col_heights))
+            x1 = content_left + min_col_idx * col_widths + (col_widths - item_w) // 2
+            y1 = col_heights[min_col_idx]
+
+            # Constrain to box
+            x1 = max(content_left, min(content_right - item_w, x1))
+            if y1 + item_h > content_bottom:
+                return None
+
+            result[item.id] = (x1, y1, x1 + item_w, y1 + item_h)
+            col_heights[min_col_idx] = y1 + item_h + gap_y
+
+        return result
+
+    def _scatter_layout(
+        self,
+        project_id: str,
+        theme: ThemeConfig,
+        layer_box: LayerRenderBox,
+        items: list[ItemConfig],
+        scale: float,
+    ) -> dict[str, tuple[int, int, int, int]] | None:
+        content_left = layer_box.min_left + theme.layer_inner_padding_x
+        content_right = layer_box.max_right - theme.layer_inner_padding_x
+        content_top = layer_box.top_y + theme.layer_inner_padding_y
+        content_bottom = layer_box.bottom_y - theme.layer_inner_padding_y
+        available_width = content_right - content_left
+        available_height = content_bottom - content_top
+
+        if available_width <= 0 or available_height <= 0:
+            return None
+
+        result: dict[str, tuple[int, int, int, int]] = {}
+        placed_boxes: list[tuple[int, int, int, int]] = []
+
+        for item in items:
+            orig_w, orig_h = self._item_size(theme, item)
+            item_w = max(10, int(orig_w * scale))
+            item_h = max(10, int(orig_h * scale))
+
+            if item_w > available_width or item_h > available_height:
+                return None
+
+            rng = random.Random(f"{project_id}-{layer_box.layer.id}-{item.id}")
+            placed = False
+            for _ in range(100):  # max attempts per item
+                x1 = rng.randint(content_left, content_right - item_w)
+                y1 = rng.randint(content_top, content_bottom - item_h)
+                x2 = x1 + item_w
+                y2 = y1 + item_h
+
+                # Check collision with already placed boxes
+                collision = False
+                for bx1, by1, bx2, by2 in placed_boxes:
+                    if not (x2 <= bx1 or x1 >= bx2 or y2 <= by1 or y1 >= by2):
+                        collision = True
+                        break
+
+                if not collision:
+                    placed_boxes.append((x1, y1, x2, y2))
+                    result[item.id] = (x1, y1, x2, y2)
+                    placed = True
+                    break
+
+            if not placed:
+                return None
+
         return result
 
     def _manual_item_box(self, theme: ThemeConfig, layer_box: LayerRenderBox, item: ItemConfig) -> tuple[int, int, int, int]:
@@ -236,7 +376,7 @@ class IcebergRenderer:
         card = self._rounded(card, theme.item_radius)
         border = ImageDraw.Draw(card, "RGBA")
         border.rounded_rectangle((0, 0, width - 1, height - 1), radius=theme.item_radius, outline=theme.item_outline_color, width=2)
-        image.paste(card, (x1, y1), card)
+        self._paste_transformed(image, card, item.placement, (x1, y1))
 
     def _draw_sticker_item(
         self,
@@ -253,17 +393,23 @@ class IcebergRenderer:
             raw = self._open_image(image_bytes)
             sticker = ImageOps.fit(raw, (width, max(1, height - caption_h)), method=Image.Resampling.LANCZOS)
             sticker = self._rounded(sticker, theme.item_radius)
-            image.paste(sticker, (x1, y1), sticker)
+
+            if caption_h:
+                # If there's a caption, we need to compose the sticker and text together first
+                composed = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+                composed.paste(sticker, (0, 0), sticker)
+                draw = ImageDraw.Draw(composed, "RGBA")
+                font = self._fit_font(draw, item.title, theme, start_size=theme.item_caption_font_size, max_width=width, min_size=11, bold=True)
+                clipped = self._clip_text(draw, item.title, font, width)
+                self._draw_centered_text(draw, (0, height - caption_h, width, height), clipped, font, theme.item_text_color, stroke_width=theme.item_stroke_width, stroke_fill=theme.item_stroke_color)
+                self._paste_transformed(image, composed, item.placement, (x1, y1))
+            else:
+                self._paste_transformed(image, sticker, item.placement, (x1, y1))
+
         except (OSError, ValueError, UnidentifiedImageError) as exc:
             LOGGER.warning("iceberg_sticker_fallback item_id=%s error=%s", item.id, exc)
             self._draw_chip_item(image, theme, item, box, None)
             return
-        if caption_h:
-            draw = ImageDraw.Draw(image, "RGBA")
-            font = self._fit_font(draw, item.title, theme, start_size=theme.item_caption_font_size, max_width=width, min_size=11, bold=True)
-            clipped = self._clip_text(draw, item.title, font, width)
-            self._draw_centered_text(draw, (x1, y2 - caption_h, x2, y2), clipped, font, theme.item_text_color)
-
     def _draw_chip_item(
         self,
         image: Image.Image,
@@ -292,8 +438,24 @@ class IcebergRenderer:
         lines = self._wrap_lines(draw, item.title, font, max(20, width - text_left - theme.item_padding_x), max_lines=2)
         text = "\n".join(lines)
         _, top, _, bottom = draw.multiline_textbbox((0, 0), text, font=font, spacing=3)
-        draw.multiline_text((text_left, (height - (bottom - top)) / 2 - top), text, font=font, fill=theme.item_text_color, spacing=3, align="left")
-        image.paste(chip, (x1, y1), chip)
+        draw.multiline_text((text_left, (height - (bottom - top)) / 2 - top), text, font=font, fill=theme.item_text_color, spacing=3, align="left", stroke_width=theme.item_stroke_width, stroke_fill=theme.item_stroke_color)
+        self._paste_transformed(image, chip, item.placement, (x1, y1))
+
+    def _paste_transformed(self, target: Image.Image, source: Image.Image, placement: Any, position: tuple[int, int]) -> None:
+        result = source
+        if placement.rotation != 0.0:
+            result = result.rotate(-placement.rotation, resample=Image.Resampling.BICUBIC, expand=True)
+            # Adjust position so it rotates around its center
+            offset_x = (result.width - source.width) // 2
+            offset_y = (result.height - source.height) // 2
+            position = (position[0] - offset_x, position[1] - offset_y)
+
+        if placement.opacity < 1.0:
+            alpha = result.getchannel("A")
+            alpha = alpha.point(lambda p: int(p * placement.opacity))
+            result.putalpha(alpha)
+
+        target.paste(result, position, result)
 
     def _draw_missing_image(self, draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], theme: ThemeConfig) -> None:
         draw.rectangle(box, fill=(205, 231, 242, 255))
@@ -459,9 +621,15 @@ class IcebergRenderer:
         text: str,
         font: ImageFont.ImageFont,
         fill: tuple[int, int, int, int],
+        stroke_width: int = 0,
+        stroke_fill: tuple[int, int, int, int] | None = None,
     ) -> None:
         x, y = self._centered_text_pos(draw, box, text, font)
-        draw.text((x, y), text, font=font, fill=fill)
+        kwargs = {"font": font, "fill": fill}
+        if stroke_width > 0 and stroke_fill:
+            kwargs["stroke_width"] = stroke_width
+            kwargs["stroke_fill"] = stroke_fill
+        draw.text((x, y), text, **kwargs)
 
     def _centered_text_pos(
         self,

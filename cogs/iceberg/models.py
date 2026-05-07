@@ -29,6 +29,13 @@ class ItemSourceType(StrEnum):
     ATTACHMENT = "ATTACHMENT"
 
 
+class LayerLayoutMode(StrEnum):
+    SCATTER = "SCATTER"
+    GRID = "GRID"
+    MASONRY = "MASONRY"
+    MANUAL = "MANUAL"
+
+
 class ItemDisplayStyle(StrEnum):
     CHIP = "CHIP"
     CARD = "CARD"
@@ -66,6 +73,8 @@ class PlacementConfig:
     y: float | None = None
     scale: float = 1.0
     rotation: float = 0.0
+    opacity: float = 1.0
+    z_index: int = 0
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "PlacementConfig":
@@ -77,6 +86,8 @@ class PlacementConfig:
             y=None if raw_y is None else clamp_float(raw_y, default=0.5, minimum=0.0, maximum=1.0),
             scale=clamp_float(payload.get("scale"), default=1.0, minimum=0.35, maximum=2.5),
             rotation=clamp_float(payload.get("rotation"), default=0.0, minimum=-35.0, maximum=35.0),
+            opacity=clamp_float(payload.get("opacity"), default=1.0, minimum=0.0, maximum=1.0),
+            z_index=int(payload.get("z_index") or 0),
         )
 
 
@@ -133,16 +144,19 @@ class LayerConfig:
     order: int
     height_weight: float = 1.0
     color: tuple[int, int, int, int] | None = None
+    layout_mode: LayerLayoutMode = LayerLayoutMode.SCATTER
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any], *, fallback_order: int = 0) -> "LayerConfig":
         color = payload.get("color")
+        layout_mode_raw = payload.get("layout_mode") or LayerLayoutMode.SCATTER.value
         return cls(
             id=normalize_text(payload.get("id"), max_length=64, fallback=f"layer-{fallback_order + 1}") or f"layer-{fallback_order + 1}",
             name=normalize_text(payload.get("name"), max_length=MAX_LAYER_NAME_LENGTH, fallback=f"Camada {fallback_order + 1}") or f"Camada {fallback_order + 1}",
             order=int(payload.get("order") if payload.get("order") is not None else fallback_order),
             height_weight=clamp_float(payload.get("height_weight"), default=1.0, minimum=0.15, maximum=8.0),
             color=coerce_rgba(color) if color is not None else None,
+            layout_mode=LayerLayoutMode(str(layout_mode_raw).upper()),
         )
 
 
@@ -191,10 +205,13 @@ class ThemeConfig:
     layer_inner_padding_x: int
     layer_inner_padding_y: int
     footer_height: int
+    item_stroke_width: int = 0
+    item_stroke_color: tuple[int, int, int, int] | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ThemeConfig":
         ratios = payload.get("iceberg_boundary_width_ratios") or (0.18, 0.38, 0.58, 0.76, 0.94, 0.82)
+        stroke_color = payload.get("item_stroke_color")
         return cls(
             id=normalize_text(payload.get("id"), max_length=64, fallback="classic_iceberg") or "classic_iceberg",
             name=normalize_text(payload.get("name"), max_length=80, fallback="Iceberg classico") or "Iceberg classico",
@@ -239,6 +256,8 @@ class ThemeConfig:
             layer_inner_padding_x=int(payload.get("layer_inner_padding_x") or 46),
             layer_inner_padding_y=int(payload.get("layer_inner_padding_y") or 24),
             footer_height=int(payload.get("footer_height") or 70),
+            item_stroke_width=int(payload.get("item_stroke_width") or 0),
+            item_stroke_color=coerce_rgba(stroke_color) if stroke_color is not None else None,
         )
 
 
@@ -297,6 +316,9 @@ class IcebergProject:
         payload["status"] = self.status.value
         payload["default_item_style"] = self.default_item_style.value
         payload["theme"] = theme_to_dict(self.theme)
+        for layer in payload["layers"]:
+            if "layout_mode" in layer and isinstance(layer["layout_mode"], LayerLayoutMode):
+                layer["layout_mode"] = layer["layout_mode"].value
         for item in payload["items"]:
             item["display_style"] = item["display_style"].value if isinstance(item["display_style"], ItemDisplayStyle) else str(item["display_style"])
             item["source"]["type"] = item["source"]["type"].value if isinstance(item["source"]["type"], ItemSourceType) else str(item["source"]["type"])
