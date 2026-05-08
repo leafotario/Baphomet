@@ -97,6 +97,42 @@ def make_project() -> IcebergProject:
     )
 
 
+class IcebergManageItemsViewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pagination_options_slice(self) -> None:
+        from cogs.iceberg.views import IcebergManageItemsView
+        project = make_project()
+
+        project.items = []
+        # Populate project with 30 items
+        for i in range(30):
+            item = ItemConfig(
+                id=f"item-{i}",
+                layer_id="layer-1",
+                title=f"Item Title {i}",
+                source=ItemSource(type=ItemSourceType.TEXT, value=f"text {i}", metadata={}),
+                display_style=ItemDisplayStyle.CHIP,
+                placement=PlacementConfig(),
+                sort_order=i,
+                created_at="now",
+                updated_at="now"
+            )
+            project.items.append(item)
+
+        view = IcebergManageItemsView(cog=SimpleNamespace(), project=project, panel_message=None)
+
+        # Page 0
+        view.current_page = 0
+        options_page0 = view.options()
+        self.assertEqual(len(options_page0), 25)
+        self.assertEqual(options_page0[0].label, "Item Title 0")
+
+        # Page 1
+        view.current_page = 1
+        options_page1 = view.options()
+        self.assertEqual(len(options_page1), 5)
+        self.assertEqual(options_page1[0].label, "Item Title 25")
+
+
 class IcebergRendererSnapshotTests(unittest.TestCase):
     def test_default_renderer_snapshot_signature(self) -> None:
         project = make_project()
@@ -294,6 +330,45 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(IcebergUserError) as cm:
             await provider.resolve(attachment=FakeAttachment())
         self.assertEqual(cm.exception.code, "image_invalid")
+
+
+    async def test_wikipedia_modal_returns_candidate_view(self) -> None:
+        from cogs.iceberg.modals import IcebergAddItemModal
+        from cogs.iceberg.views import IcebergWikipediaCandidateView
+
+        async def mock_search(q):
+            return [{"title": "Teste", "pageid": 1, "description": "", "thumbnail_url": ""}]
+
+        class FakeCog:
+            class FakeRegistry:
+                providers = {
+                    ItemSourceType.WIKIPEDIA: SimpleNamespace(
+                        search_candidates=mock_search
+                    )
+                }
+            service = SimpleNamespace(source_registry=FakeRegistry)
+
+        cog = FakeCog()
+        modal = IcebergAddItemModal(cog, project_id="p1", owner_id=1, source_type=ItemSourceType.WIKIPEDIA, panel_message=None)
+
+        class FakeInteraction:
+            class Response:
+                async def defer(self, **kwargs): pass
+            class Followup:
+                async def send(self, content, view=None, ephemeral=True):
+                    self.content = content
+                    self.view = view
+            response = Response()
+            followup = Followup()
+
+        modal.title_input._value = "My Title"
+        modal.source_input._value = "Teste"
+        modal.layer_input._value = "layer-1"
+
+        interaction = FakeInteraction()
+        await modal.on_submit(interaction)
+        self.assertIsInstance(interaction.followup.view, IcebergWikipediaCandidateView)
+        self.assertEqual(interaction.followup.view.candidates[0]["title"], "Teste")
 
 
     async def test_wikipedia_search_candidates(self) -> None:

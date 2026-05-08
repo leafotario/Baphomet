@@ -176,6 +176,32 @@ class IcebergAddItemModal(discord.ui.Modal):
         raw_value = str(self.source_input.value or "")
         if self.source_type is ItemSourceType.TEXT and not raw_value.strip():
             raw_value = raw_title
+
+        if self.source_type is ItemSourceType.WIKIPEDIA:
+            try:
+                candidates = await self.cog.service.source_registry.providers[ItemSourceType.WIKIPEDIA].search_candidates(raw_value)
+                if not candidates:
+                    await interaction.followup.send("⚠️ Nenhum resultado encontrado na Wikipedia para essa busca.", ephemeral=True)
+                    return
+
+                from .views import IcebergWikipediaCandidateView
+                view = IcebergWikipediaCandidateView(
+                    cog=self.cog,
+                    project_id=self.project_id,
+                    owner_id=self.owner_id,
+                    layer_ref=str(self.layer_input.value),
+                    title=raw_title,
+                    value=raw_value,
+                    candidates=candidates,
+                    panel_message=self.panel_message,
+                )
+                await interaction.followup.send("Selecione o candidato correto:", view=view, ephemeral=True)
+                return
+            except Exception:
+                LOGGER.exception("iceberg_wiki_search_failed project_id=%s", self.project_id)
+                await interaction.followup.send("❌ Erro ao buscar na Wikipedia. O erro foi registrado.", ephemeral=True)
+                return
+
         try:
             project = await self.cog.service.add_item(
                 self.project_id,
