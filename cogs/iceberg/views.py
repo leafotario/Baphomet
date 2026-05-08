@@ -175,6 +175,81 @@ class IcebergItemSelect(discord.ui.Select):
         await interaction.response.edit_message(embed=embed, view=self.parent_view)
 
 
+class IcebergWikipediaCandidateSelect(discord.ui.Select):
+    def __init__(self, parent: "IcebergWikipediaCandidateView") -> None:
+        options = []
+        for index, candidate in enumerate(parent.candidates[:25]):
+            desc = candidate.get("description", "")
+            if len(desc) > 90:
+                desc = desc[:87] + "..."
+            options.append(
+                discord.SelectOption(
+                    label=candidate["title"][:100],
+                    value=str(index),
+                    description=desc or "Sem descrição",
+                )
+            )
+        super().__init__(
+            placeholder="Escolha uma página da Wikipedia",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+        self.parent_view = parent
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            index = int(self.values[0])
+            candidate = self.parent_view.candidates[index]
+        except (ValueError, IndexError):
+            await interaction.followup.send("⚠️ Candidato inválido.", ephemeral=True)
+            return
+
+        try:
+            from .models import ItemSourceType
+
+            project = await self.parent_view.cog.service.add_item(
+                self.parent_view.project_id,
+                owner_id=self.parent_view.owner_id,
+                layer_ref=self.parent_view.layer_ref,
+                source_type=ItemSourceType.WIKIPEDIA,
+                title=self.parent_view.title,
+                value=candidate["title"],
+                interaction=interaction,
+            )
+        except IcebergUserError as exc:
+            await interaction.followup.send(exc.user_message, ephemeral=True)
+            return
+        except Exception:
+            LOGGER.exception("iceberg_item_add_failed project_id=%s source_type=WIKIPEDIA", self.parent_view.project_id)
+            await interaction.followup.send("❌ Não consegui adicionar esse item. O erro foi registrado.", ephemeral=True)
+            return
+
+        await self.parent_view.cog.refresh_panel_message(self.parent_view.panel_message, project)
+        await interaction.followup.send("✅ Item da Wikipedia adicionado ao iceberg.", ephemeral=True)
+
+
+class IcebergWikipediaCandidateView(discord.ui.View):
+    def __init__(self, *, cog: IcebergCog, project_id: str, owner_id: int, layer_ref: str, title: str, value: str, candidates: list[dict[str, Any]], panel_message: discord.Message | None) -> None:
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.project_id = project_id
+        self.owner_id = owner_id
+        self.layer_ref = layer_ref
+        self.title = title
+        self.value = value
+        self.candidates = candidates
+        self.panel_message = panel_message
+        self.add_item(IcebergWikipediaCandidateSelect(self))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.owner_id:
+            return True
+        await interaction.response.send_message("⚠️ Esse seletor não é seu.", ephemeral=True)
+        return False
+
+
 class IcebergManageItemsView(discord.ui.View):
     def __init__(self, *, cog: IcebergCog, project: IcebergProject, panel_message: discord.Message | None) -> None:
         super().__init__(timeout=300)
@@ -184,6 +259,7 @@ class IcebergManageItemsView(discord.ui.View):
         self.owner_id = project.owner_id
         self.panel_message = panel_message
         self.selected_item_id: str | None = None
+        self.current_page = 0
         self.add_item(IcebergItemSelect(self))
         self._sync_buttons()
 
@@ -199,7 +275,11 @@ class IcebergManageItemsView(discord.ui.View):
         layer_names = {layer.id: layer.name for layer in self.project.layers}
         options: list[discord.SelectOption] = []
         ordered = sorted(self.project.items, key=lambda item: (self.project.layer_by_id(item.layer_id).order if self.project.layer_by_id(item.layer_id) else 999, item.sort_order))
-        for item in ordered[:25]:
+
+        start_idx = self.current_page * 25
+        end_idx = start_idx + 25
+
+        for item in ordered[start_idx:end_idx]:
             options.append(
                 discord.SelectOption(
                     label=item.title[:100],
@@ -212,9 +292,10 @@ class IcebergManageItemsView(discord.ui.View):
 
     def build_embed(self) -> discord.Embed:
         selected = self._selected_item()
+        total_pages = max(1, (len(self.project.items) + 24) // 25)
         embed = discord.Embed(
             title="Itens do iceberg",
-            description=f"{len(self.project.items)} itens no projeto.",
+            description=f"{len(self.project.items)} itens no projeto. Página {self.current_page + 1}/{total_pages}",
             color=discord.Color.blurple(),
         )
         if selected:
@@ -231,6 +312,10 @@ class IcebergManageItemsView(discord.ui.View):
         self.up_button.disabled = disabled
         self.down_button.disabled = disabled
 
+        total_pages = max(1, (len(self.project.items) + 24) // 25)
+        self.prev_button.disabled = self.current_page <= 0
+        self.next_button.disabled = self.current_page >= total_pages - 1
+
     def _selected_item(self) -> ItemConfig | None:
         if self.selected_item_id is None:
             return None
@@ -238,15 +323,36 @@ class IcebergManageItemsView(discord.ui.View):
 
     async def _reload(self) -> None:
         self.project = await self.cog.service.get_project_for_user(self.project_id, owner_id=self.owner_id)
+        total_pages = max(1, (len(self.project.items) + 24) // 25)
+        if self.current_page >= total_pages:
+            self.current_page = max(0, total_pages - 1)
+
         self.clear_items()
         self.add_item(IcebergItemSelect(self))
         self._sync_buttons()
+        self.add_item(self.prev_button)
+        self.add_item(self.next_button)
         self.add_item(self.edit_button)
         self.add_item(self.remove_button)
         self.add_item(self.up_button)
         self.add_item(self.down_button)
 
-    @discord.ui.button(label="Editar", emoji="✏️", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="Anterior", emoji="⬅️", style=discord.ButtonStyle.secondary, row=1)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if self.current_page > 0:
+            self.current_page -= 1
+        await self._reload()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="Próximo", emoji="➡️", style=discord.ButtonStyle.secondary, row=1)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        total_pages = max(1, (len(self.project.items) + 24) // 25)
+        if self.current_page < total_pages - 1:
+            self.current_page += 1
+        await self._reload()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="Editar", emoji="✏️", style=discord.ButtonStyle.primary, row=2)
     async def edit_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         from .modals import IcebergEditItemModal
 
@@ -269,7 +375,7 @@ class IcebergManageItemsView(discord.ui.View):
             )
         )
 
-    @discord.ui.button(label="Remover", emoji="🗑️", style=discord.ButtonStyle.danger, row=1)
+    @discord.ui.button(label="Remover", emoji="🗑️", style=discord.ButtonStyle.danger, row=2)
     async def remove_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if self.selected_item_id is None:
             await interaction.response.send_message("⚠️ Escolha um item primeiro.", ephemeral=True)
@@ -285,11 +391,11 @@ class IcebergManageItemsView(discord.ui.View):
         await self._reload()
         await interaction.response.edit_message(content="🗑️ Item removido.", embed=self.build_embed(), view=self)
 
-    @discord.ui.button(label="Subir", emoji="⬆️", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Subir", emoji="⬆️", style=discord.ButtonStyle.secondary, row=2)
     async def up_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self._move(interaction, -1)
 
-    @discord.ui.button(label="Descer", emoji="⬇️", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="Descer", emoji="⬇️", style=discord.ButtonStyle.secondary, row=2)
     async def down_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self._move(interaction, 1)
 

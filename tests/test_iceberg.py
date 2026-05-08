@@ -97,6 +97,42 @@ def make_project() -> IcebergProject:
     )
 
 
+class IcebergManageItemsViewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pagination_options_slice(self) -> None:
+        from cogs.iceberg.views import IcebergManageItemsView
+        project = make_project()
+
+        project.items = []
+        # Populate project with 30 items
+        for i in range(30):
+            item = ItemConfig(
+                id=f"item-{i}",
+                layer_id="layer-1",
+                title=f"Item Title {i}",
+                source=ItemSource(type=ItemSourceType.TEXT, value=f"text {i}", metadata={}),
+                display_style=ItemDisplayStyle.CHIP,
+                placement=PlacementConfig(),
+                sort_order=i,
+                created_at="now",
+                updated_at="now"
+            )
+            project.items.append(item)
+
+        view = IcebergManageItemsView(cog=SimpleNamespace(), project=project, panel_message=None)
+
+        # Page 0
+        view.current_page = 0
+        options_page0 = view.options()
+        self.assertEqual(len(options_page0), 25)
+        self.assertEqual(options_page0[0].label, "Item Title 0")
+
+        # Page 1
+        view.current_page = 1
+        options_page1 = view.options()
+        self.assertEqual(len(options_page1), 5)
+        self.assertEqual(options_page1[0].label, "Item Title 25")
+
+
 class IcebergRendererSnapshotTests(unittest.TestCase):
     def test_default_renderer_snapshot_signature(self) -> None:
         project = make_project()
@@ -122,6 +158,53 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
         self.assertEqual(imported.items[1].display_style, ItemDisplayStyle.CARD)
         self.assertEqual(imported.layers[2].height_weight, 1.8)
 
+
+
+    def test_renderer_layout_modes(self) -> None:
+        from cogs.iceberg.models import LayerLayoutMode
+        project = make_project()
+
+        # Test SCATTER layout deterministic bounds
+        project.layers[0].layout_mode = LayerLayoutMode.SCATTER
+        buffer_scatter1 = IcebergRenderer().render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
+        buffer_scatter2 = IcebergRenderer().render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
+        self.assertEqual(buffer_scatter1.getvalue(), buffer_scatter2.getvalue())
+
+        # Test GRID layout
+        project.layers[0].layout_mode = LayerLayoutMode.GRID
+        buffer_grid = IcebergRenderer().render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
+        self.assertIsNotNone(buffer_grid)
+
+        # Test MASONRY layout
+        project.layers[0].layout_mode = LayerLayoutMode.MASONRY
+        buffer_masonry = IcebergRenderer().render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
+        self.assertIsNotNone(buffer_masonry)
+
+    def test_renderer_overflow_raises_error(self) -> None:
+        from cogs.iceberg.models import LayerLayoutMode, ItemConfig, ItemSource, ItemSourceType, ItemDisplayStyle
+        project = make_project()
+        project.layers[0].layout_mode = LayerLayoutMode.GRID
+
+        # Add 1000 large items to the first layer to cause an overflow
+        items = []
+        for i in range(1000):
+            items.append(
+                ItemConfig(
+                    id=f"item-{i}",
+                    layer_id="layer-1",
+                    title="Muito grande para caber",
+                    source=ItemSource(type=ItemSourceType.TEXT, value="Enorme"),
+                    display_style=ItemDisplayStyle.CARD,
+                    sort_order=i,
+                    created_at="2026-01-01T00:00:00+00:00",
+                    updated_at="2026-01-01T00:00:00+00:00",
+                )
+            )
+        project.items = items
+
+        renderer = IcebergRenderer()
+        with self.assertRaisesRegex(ValueError, "A camada não comporta os itens"):
+            renderer.render_project(project)
 
 class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_text_provider_requires_real_text(self) -> None:
@@ -247,6 +330,45 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(IcebergUserError) as cm:
             await provider.resolve(attachment=FakeAttachment())
         self.assertEqual(cm.exception.code, "image_invalid")
+
+
+    async def test_wikipedia_modal_returns_candidate_view(self) -> None:
+        from cogs.iceberg.modals import IcebergAddItemModal
+        from cogs.iceberg.views import IcebergWikipediaCandidateView
+
+        async def mock_search(q):
+            return [{"title": "Teste", "pageid": 1, "description": "", "thumbnail_url": ""}]
+
+        class FakeCog:
+            class FakeRegistry:
+                providers = {
+                    ItemSourceType.WIKIPEDIA: SimpleNamespace(
+                        search_candidates=mock_search
+                    )
+                }
+            service = SimpleNamespace(source_registry=FakeRegistry)
+
+        cog = FakeCog()
+        modal = IcebergAddItemModal(cog, project_id="p1", owner_id=1, source_type=ItemSourceType.WIKIPEDIA, panel_message=None)
+
+        class FakeInteraction:
+            class Response:
+                async def defer(self, **kwargs): pass
+            class Followup:
+                async def send(self, content, view=None, ephemeral=True):
+                    self.content = content
+                    self.view = view
+            response = Response()
+            followup = Followup()
+
+        modal.title_input._value = "My Title"
+        modal.source_input._value = "Teste"
+        modal.layer_input._value = "layer-1"
+
+        interaction = FakeInteraction()
+        await modal.on_submit(interaction)
+        self.assertIsInstance(interaction.followup.view, IcebergWikipediaCandidateView)
+        self.assertEqual(interaction.followup.view.candidates[0]["title"], "Teste")
 
 
     async def test_wikipedia_search_candidates(self) -> None:
