@@ -4,6 +4,7 @@ import asyncio
 import datetime as dt
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -34,7 +35,6 @@ SPOTIPY_CLIENT_ID = os.getenv("SPOTIFY_ID")
 SPOTIPY_CLIENT_SECRET = os.getenv("SPOTIFY_SECRET")
 
 BR_TZ = dt.timezone(dt.timedelta(hours=-3), name="BRT")
-DAILY_TIME = dt.time(hour=12, minute=0, tzinfo=BR_TZ)
 
 EMOJI_GOSTO = "<:aotd_gosto:1495227456851017758>"
 EMOJI_NAO_GOSTO = "<:aotd_naogosto:1495227731791708250>"
@@ -46,6 +46,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "auto_enabled": True,
     "album_channel_id": None,
     "album_role_id": DEFAULT_ROLE_ID,
+
+    # Horário diário em Brasília
+    "daily_hour": 12,
+    "daily_minute": 0,
+    "last_auto_sent_date": None,
 
     # Notificações internas para staff/admins quando alguém sugere álbum
     "staff_notify_channel_id": None,
@@ -105,11 +110,19 @@ class AlbumDoDia(commands.Cog):
         config = DEFAULT_CONFIG.copy()
         config.update(raw)
 
+        hour, minute = self.get_daily_time(config)
+        config["daily_hour"] = hour
+        config["daily_minute"] = minute
+
         return config
 
     def salvar_config(self, config: dict[str, Any]) -> None:
         clean = DEFAULT_CONFIG.copy()
         clean.update(config)
+
+        hour, minute = self.get_daily_time(clean)
+        clean["daily_hour"] = hour
+        clean["daily_minute"] = minute
 
         atomic_json_save(CONFIG_FILE, clean)
 
@@ -206,23 +219,6 @@ class AlbumDoDia(commands.Cog):
         return dt.datetime.now(BR_TZ)
 
     @staticmethod
-    def next_noon() -> dt.datetime:
-        now = AlbumDoDia.now_br()
-        noon_today = now.replace(hour=12, minute=0, second=0, microsecond=0)
-
-        if now < noon_today:
-            return noon_today
-
-        return noon_today + dt.timedelta(days=1)
-
-    @classmethod
-    def queue_until_date(cls, queue_size: int) -> Optional[dt.date]:
-        if queue_size <= 0:
-            return None
-
-        return cls.next_noon().date() + dt.timedelta(days=queue_size - 1)
-
-    @staticmethod
     def fmt_bool(value: bool) -> str:
         return "Ativado" if value else "Desativado"
 
@@ -236,6 +232,86 @@ class AlbumDoDia(commands.Cog):
             return None
 
         return f"<@&{role_id}>"
+
+    @staticmethod
+    def parse_br_time(horario: str) -> Optional[tuple[int, int]]:
+        if not horario:
+            return None
+
+        text = horario.strip().lower().replace(" ", "")
+
+        patterns = (
+            r"^(\d{1,2}):(\d{2})$",
+            r"^(\d{1,2})h(\d{2})$",
+            r"^(\d{1,2})h$",
+            r"^(\d{1,2})$",
+        )
+
+        for pattern in patterns:
+            match = re.fullmatch(pattern, text)
+
+            if not match:
+                continue
+
+            hour = int(match.group(1))
+            minute = 0
+
+            if len(match.groups()) >= 2 and match.group(2):
+                minute = int(match.group(2))
+
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                return hour, minute
+
+        return None
+
+    @staticmethod
+    def get_daily_time(config: dict[str, Any]) -> tuple[int, int]:
+        try:
+            hour = int(config.get("daily_hour", 12))
+            minute = int(config.get("daily_minute", 0))
+        except (TypeError, ValueError):
+            return 12, 0
+
+        if not 0 <= hour <= 23:
+            hour = 12
+
+        if not 0 <= minute <= 59:
+            minute = 0
+
+        return hour, minute
+
+    @classmethod
+    def format_daily_time(cls, config: dict[str, Any]) -> str:
+        hour, minute = cls.get_daily_time(config)
+        return f"{hour:02d}:{minute:02d} BRT"
+
+    def next_daily_run(self, config: Optional[dict[str, Any]] = None) -> dt.datetime:
+        config = config or self.carregar_config()
+
+        hour, minute = self.get_daily_time(config)
+        now = self.now_br()
+
+        scheduled_today = now.replace(
+            hour=hour,
+            minute=minute,
+            second=0,
+            microsecond=0,
+        )
+
+        if now < scheduled_today:
+            return scheduled_today
+
+        return scheduled_today + dt.timedelta(days=1)
+
+    def queue_until_date(
+        self,
+        queue_size: int,
+        config: Optional[dict[str, Any]] = None,
+    ) -> Optional[dt.date]:
+        if queue_size <= 0:
+            return None
+
+        return self.next_daily_run(config).date() + dt.timedelta(days=queue_size - 1)
 
     def role_display(self, guild: Optional[discord.Guild], role_id: Optional[int]) -> str:
         if not role_id:
@@ -529,7 +605,7 @@ class AlbumDoDia(commands.Cog):
     #  Loop Automático
     # ========================================================
 
-    @tasks.loop(time=DAILY_TIME)
+    @tasks.loop(minutes=1)
     async def enviar_album_automatico(self) -> None:
         await self.bot.wait_until_ready()
 
@@ -538,12 +614,30 @@ class AlbumDoDia(commands.Cog):
         if not config.get("auto_enabled", True):
             return
 
+        hour, minute = self.get_daily_time(config)
+        now = self.now_br()
+
+        if now.hour != hour or now.minute != minute:
+            return
+
+        today_key = now.date().isoformat()
+
+        if config.get("last_auto_sent_date") == today_key:
+            return
+
         channel = await self.resolve_album_channel(config.get("album_channel_id"))
 
         if channel is None:
             return
 
-        await self.despachar_album(channel)
+        try:
+            await self.despachar_album(channel)
+        except Exception:
+            return
+
+        config = self.carregar_config()
+        config["last_auto_sent_date"] = today_key
+        self.salvar_config(config)
 
     @enviar_album_automatico.before_loop
     async def before_enviar_album_automatico(self) -> None:
@@ -633,6 +727,7 @@ class AlbumDoDia(commands.Cog):
         description="Mostra quantos álbuns existem na fila.",
     )
     async def ver_fila(self, interaction: discord.Interaction) -> None:
+        config = self.carregar_config()
         fila = self.carregar_fila()
         qtd = len(fila)
 
@@ -640,13 +735,14 @@ class AlbumDoDia(commands.Cog):
             await interaction.response.send_message("📭 A fila está vazia.")
             return
 
-        data_final = self.queue_until_date(qtd)
+        data_final = self.queue_until_date(qtd, config)
         proximo = fila[0]
 
         await interaction.response.send_message(
             f"📚 Temos **{qtd}** álbum(ns) na fila.\n"
             f"🎧 Próximo: **{proximo.get('nome', 'Sem nome')}** — "
             f"{proximo.get('artista', 'Sem artista')}\n"
+            f"⏰ Horário configurado: **{self.format_daily_time(config)}**.\n"
             f"🗓️ Com o envio diário ativo, a fila cobre até "
             f"**{data_final.strftime('%d/%m/%Y')}**."
         )
@@ -657,7 +753,7 @@ class AlbumDoDia(commands.Cog):
 
     @app_commands.command(
         name="aotd_config_canal",
-        description="Define o canal onde o Álbum do Dia será enviado às 12:00.",
+        description="Define o canal onde o Álbum do Dia será enviado automaticamente.",
     )
     @app_commands.describe(
         canal="Canal de texto do Álbum do Dia. Deixe vazio para remover o canal configurado.",
@@ -712,6 +808,44 @@ class AlbumDoDia(commands.Cog):
                 "✅ Ping de cargo do Álbum do Dia desativado.",
                 ephemeral=True,
             )
+
+    @app_commands.command(
+        name="aotd_config_horario",
+        description="Define o horário diário do Álbum do Dia no tempo de Brasília.",
+    )
+    @app_commands.describe(
+        horario="Horário em Brasília. Exemplos: 12:00, 20:30, 7:05, 22h ou 8.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def configurar_horario(
+        self,
+        interaction: discord.Interaction,
+        horario: str,
+    ) -> None:
+        parsed = self.parse_br_time(horario)
+
+        if parsed is None:
+            await interaction.response.send_message(
+                "❌ Horário inválido. Use algo como `12:00`, `20:30`, `7:05`, `22h` ou `8`.",
+                ephemeral=True,
+            )
+            return
+
+        hour, minute = parsed
+
+        config = self.carregar_config()
+        config["daily_hour"] = hour
+        config["daily_minute"] = minute
+        self.salvar_config(config)
+
+        next_run = self.next_daily_run(config)
+
+        await interaction.response.send_message(
+            f"✅ Horário automático do Álbum do Dia configurado para **{hour:02d}:{minute:02d} BRT**.\n"
+            f"🗓️ Próximo envio previsto: **{next_run.strftime('%d/%m/%Y às %H:%M')} BRT**.",
+            ephemeral=True,
+        )
 
     @app_commands.command(
         name="aotd_config_staff_canal",
@@ -773,7 +907,7 @@ class AlbumDoDia(commands.Cog):
 
     @app_commands.command(
         name="aotd_ativar",
-        description="Ativa o envio automático diário do Álbum do Dia às 12:00.",
+        description="Ativa o envio automático diário do Álbum do Dia.",
     )
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
@@ -791,7 +925,7 @@ class AlbumDoDia(commands.Cog):
             )
 
         await interaction.response.send_message(
-            f"✅ Envio automático ativado para todos os dias às **12:00 BRT**.\n"
+            f"✅ Envio automático ativado para todos os dias às **{self.format_daily_time(config)}**.\n"
             f"📌 Canal atual: {self.channel_mention(config.get('album_channel_id'))}"
             f"{aviso}",
             ephemeral=True,
@@ -824,10 +958,11 @@ class AlbumDoDia(commands.Cog):
         fila = self.carregar_fila()
 
         qtd = len(fila)
-        data_final = self.queue_until_date(qtd)
+        data_final = self.queue_until_date(qtd, config)
         proximo = fila[0] if fila else None
 
         spotify_ok = bool(SPOTIPY_CLIENT_ID and SPOTIPY_CLIENT_SECRET)
+        next_run = self.next_daily_run(config)
 
         embed = discord.Embed(
             title="📊 Status do Álbum do Dia",
@@ -843,7 +978,13 @@ class AlbumDoDia(commands.Cog):
 
         embed.add_field(
             name="Horário",
-            value="Todos os dias às **12:00 BRT**",
+            value=f"**{self.format_daily_time(config)}**",
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Próximo envio",
+            value=next_run.strftime("**%d/%m/%Y às %H:%M BRT**"),
             inline=True,
         )
 
@@ -920,8 +1061,9 @@ class AlbumDoDia(commands.Cog):
         if not config.get("staff_notify_channel_id"):
             dicas.append("Use /aotd_config_staff_canal para ativar avisos internos de sugestões.")
 
-        if dicas:
-            embed.set_footer(text=" ".join(dicas))
+        dicas.append("Use /aotd_config_horario para mudar o horário diário em Brasília.")
+
+        embed.set_footer(text=" ".join(dicas))
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
