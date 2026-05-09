@@ -539,6 +539,91 @@ class AlbumDoDia(commands.Cog):
 
         return self._spotify
 
+    @staticmethod
+    def classificar_lancamento_spotify(
+        *,
+        album_type: Optional[str],
+        total_tracks: Any,
+        nome: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """
+        O Spotify não possui album_type='ep'.
+        Ele costuma agrupar singles e EPs em album_type='single'.
+
+        Regra prática do bot:
+        - album_type='album' => permitido como Álbum.
+        - album_type='compilation' => bloqueado.
+        - album_type='single' com "EP" no nome => permitido como EP.
+        - album_type='single' com 4+ faixas => permitido como EP.
+        - album_type='single' com 1 a 3 faixas sem "EP" no nome => bloqueado como Single.
+        """
+        tipo_spotify = (album_type or "").strip().lower()
+
+        try:
+            faixas = int(total_tracks or 0)
+        except (TypeError, ValueError):
+            faixas = 0
+
+        nome_lower = (nome or "").lower()
+        tem_ep_no_nome = bool(re.search(r"(^|[\s\-\(\[\:])ep($|[\s\-\)\]\:])", nome_lower))
+
+        if tipo_spotify == "album":
+            return {
+                "permitido": True,
+                "tipo": "Álbum",
+                "motivo": None,
+            }
+
+        if tipo_spotify == "compilation":
+            return {
+                "permitido": False,
+                "tipo": "Coletânea",
+                "motivo": (
+                    "Esse lançamento parece ser uma **coletânea/compilação**. "
+                    "A fila aceita apenas **álbuns** ou **EPs**."
+                ),
+            }
+
+        if tipo_spotify == "single":
+            if tem_ep_no_nome or faixas >= 4:
+                return {
+                    "permitido": True,
+                    "tipo": "EP",
+                    "motivo": None,
+                }
+
+            return {
+                "permitido": False,
+                "tipo": "Single",
+                "motivo": (
+                    "Esse lançamento parece ser um **single**. "
+                    "A fila aceita apenas **álbuns** ou **EPs**."
+                ),
+            }
+
+        if faixas <= 3 and not tem_ep_no_nome:
+            return {
+                "permitido": False,
+                "tipo": "Single",
+                "motivo": (
+                    "Esse lançamento parece ser um **single**. "
+                    "A fila aceita apenas **álbuns** ou **EPs**."
+                ),
+            }
+
+        if tem_ep_no_nome or 4 <= faixas <= 6:
+            return {
+                "permitido": True,
+                "tipo": "EP",
+                "motivo": None,
+            }
+
+        return {
+            "permitido": True,
+            "tipo": "Álbum",
+            "motivo": None,
+        }
+
     def buscar_album_spotify_sync(self, query: str) -> Optional[dict[str, Any]]:
         sp = self.get_spotify()
 
@@ -550,6 +635,15 @@ class AlbumDoDia(commands.Cog):
 
         album = albuns_encontrados[0]
         artista = album["artists"][0]
+
+        total_tracks = album.get("total_tracks", "?")
+        spotify_album_type = album.get("album_type")
+
+        classificacao = self.classificar_lancamento_spotify(
+            album_type=spotify_album_type,
+            total_tracks=total_tracks,
+            nome=album.get("name"),
+        )
 
         try:
             artist_info = sp.artist(artista["id"])
@@ -583,8 +677,12 @@ class AlbumDoDia(commands.Cog):
             if album.get("images")
             else None,
             "generos": generos,
-            "total_faixas": album.get("total_tracks", "?"),
+            "total_faixas": total_tracks,
             "duracao_ms": duracao_ms,
+            "spotify_album_type": spotify_album_type,
+            "tipo_lancamento": classificacao["tipo"],
+            "lancamento_permitido": classificacao["permitido"],
+            "motivo_bloqueio": classificacao["motivo"],
         }
 
     async def buscar_album_spotify(self, query: str) -> Optional[dict[str, Any]]:
@@ -829,10 +927,12 @@ class AlbumDoDia(commands.Cog):
             else "Sem gêneros encontrados"
         )
 
+        tipo = album.get("tipo_lancamento") or "Álbum/EP"
+
         embed = discord.Embed(
-            title="🛎️ Novo álbum sugerido",
+            title="🛎️ Novo álbum/EP sugerido",
             description=(
-                f"{interaction.user.mention} adicionou um novo álbum na fila do "
+                f"{interaction.user.mention} adicionou um novo lançamento na fila do "
                 f"**Álbum do Dia**."
             ),
             color=discord.Color.gold(),
@@ -840,8 +940,9 @@ class AlbumDoDia(commands.Cog):
             timestamp=self.now_br(),
         )
 
-        embed.add_field(name="Álbum", value=f"**{nome}**", inline=True)
+        embed.add_field(name="Lançamento", value=f"**{nome}**", inline=True)
         embed.add_field(name="Artista", value=f"**{artista}**", inline=True)
+        embed.add_field(name="Tipo", value=f"**{tipo}**", inline=True)
         embed.add_field(name="Posição na fila", value=f"`#{posicao_fila}`", inline=True)
         embed.add_field(name="Duração", value=f"{minutos}min {segundos:02d}s", inline=True)
         embed.add_field(name="Faixas", value=str(album.get("total_faixas", "?")), inline=True)
@@ -853,6 +954,43 @@ class AlbumDoDia(commands.Cog):
         embed.set_footer(
             text=f"Sugerido por {interaction.user} • ID: {interaction.user.id}"
         )
+
+        return embed
+
+    def criar_embed_single_bloqueado(self, album: dict[str, Any]) -> discord.Embed:
+        nome = album.get("nome", "Lançamento desconhecido")
+        artista = album.get("artista", "Artista desconhecido")
+        imagem = album.get("imagem")
+        url = album.get("url") or None
+        motivo = album.get("motivo_bloqueio") or (
+            "Esse lançamento não pode entrar na fila."
+        )
+
+        embed = discord.Embed(
+            title="🚫 Single não permitido",
+            description=(
+                f"Encontrei **{nome}** — **{artista}**, mas ele não foi adicionado.\n\n"
+                f"{motivo}\n\n"
+                f"Procure pelo nome de um **álbum** ou **EP** e tente de novo."
+            ),
+            color=discord.Color.red(),
+            url=url,
+        )
+
+        embed.add_field(
+            name="Tipo detectado",
+            value=f"**{album.get('tipo_lancamento', 'Single')}**",
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Faixas",
+            value=str(album.get("total_faixas", "?")),
+            inline=True,
+        )
+
+        if imagem:
+            embed.set_thumbnail(url=imagem)
 
         return embed
 
@@ -910,7 +1048,7 @@ class AlbumDoDia(commands.Cog):
         if not album_de_hoje:
             await self.send_destination(
                 destino,
-                content="⚠️ A fila está vazia. Adicionem mais álbuns com `/aotd_sugerir`.",
+                content="⚠️ A fila está vazia. Adicionem mais álbuns/EPs com `/aotd_sugerir`.",
                 ephemeral=isinstance(destino, discord.Interaction),
             )
             return False
@@ -1008,10 +1146,10 @@ class AlbumDoDia(commands.Cog):
 
     @app_commands.command(
         name="aotd_sugerir",
-        description="Sugere um álbum para a fila do Álbum do Dia.",
+        description="Sugere um álbum ou EP para a fila do Álbum do Dia.",
     )
     @app_commands.describe(
-        nome_album="Nome do álbum ou artista para buscar no Spotify.",
+        nome_album="Nome do álbum ou EP para buscar no Spotify.",
     )
     async def sugerir(
         self,
@@ -1041,6 +1179,11 @@ class AlbumDoDia(commands.Cog):
             )
             return
 
+        if not album_info.get("lancamento_permitido", True):
+            embed = self.criar_embed_single_bloqueado(album_info)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
         album_info["sugerido_por"] = interaction.user.name
         album_info["sugerido_por_id"] = interaction.user.id
 
@@ -1048,17 +1191,20 @@ class AlbumDoDia(commands.Cog):
 
         if self.album_ja_na_fila(album_url):
             await interaction.followup.send(
-                "⚠️ Esse álbum já está na fila.",
+                "⚠️ Esse álbum/EP já está na fila.",
                 ephemeral=True,
             )
             return
 
         posicao_fila = self.adicionar_album_na_fila(album_info)
 
+        tipo = album_info.get("tipo_lancamento") or "Álbum/EP"
+
         embed = discord.Embed(
-            title="🎵 Álbum adicionado à fila!",
+            title="🎵 Lançamento adicionado à fila!",
             description=(
                 f"**{album_info['nome']}** — {album_info['artista']}\n\n"
+                f"🏷️ Tipo detectado: **{tipo}**\n"
                 f"📌 Posição na fila: **#{posicao_fila}**\n"
                 f"Use `/aotd_fila` para ver o tamanho da fila."
             ),
@@ -1079,7 +1225,7 @@ class AlbumDoDia(commands.Cog):
 
     @app_commands.command(
         name="aotd_fila",
-        description="Mostra quantos álbuns existem na fila.",
+        description="Mostra quantos álbuns/EPs existem na fila.",
     )
     async def ver_fila(self, interaction: discord.Interaction) -> None:
         config = self.carregar_config()
@@ -1092,10 +1238,11 @@ class AlbumDoDia(commands.Cog):
         data_final = self.queue_until_date(qtd, config)
 
         await interaction.response.send_message(
-            f"📚 Temos **{qtd}** álbum(ns) na fila.\n"
+            f"📚 Temos **{qtd}** lançamento(s) na fila.\n"
             f"⏰ Horário configurado: **{self.format_daily_time(config)}**.\n"
             f"🗓️ Com o envio diário ativo, a fila cobre até "
             f"**{data_final.strftime('%d/%m/%Y')}**.\n\n"
+            f"🤫 O próximo álbum/EP fica em segredo até o post sair."
         )
 
     # ========================================================
@@ -1300,7 +1447,7 @@ class AlbumDoDia(commands.Cog):
 
     @app_commands.command(
         name="aotd_shuffle",
-        description="Embaralha aleatoriamente a ordem dos álbuns na fila. Admin.",
+        description="Embaralha aleatoriamente a ordem dos álbuns/EPs na fila. Admin.",
     )
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
@@ -1316,7 +1463,7 @@ class AlbumDoDia(commands.Cog):
 
         if qtd == 1:
             await interaction.response.send_message(
-                "🎧 Só tem **1 álbum** na fila. O shuffle ia só fingir trabalho.",
+                "🎧 Só tem **1 lançamento** na fila. O shuffle ia só fingir trabalho.",
                 ephemeral=True,
             )
             return
@@ -1325,7 +1472,7 @@ class AlbumDoDia(commands.Cog):
 
         await interaction.response.send_message(
             f"🔀 Fila embaralhada com sucesso!\n"
-            f"🎵 **{total}** álbuns foram reorganizados aleatoriamente.",
+            f"🎵 **{total}** lançamentos foram reorganizados aleatoriamente.",
             ephemeral=True,
         )
 
@@ -1390,7 +1537,7 @@ class AlbumDoDia(commands.Cog):
 
         embed.add_field(
             name="Fila",
-            value=f"{qtd} álbum(ns)",
+            value=f"{qtd} lançamento(s)",
             inline=True,
         )
 
@@ -1420,17 +1567,14 @@ class AlbumDoDia(commands.Cog):
 
         if proximo:
             embed.add_field(
-                name="Próximo álbum",
-                value=(
-                    f"**{proximo.get('nome', 'Sem nome')}** — "
-                    f"{proximo.get('artista', 'Sem artista')}"
-                ),
+                name="Próximo lançamento",
+                value="Oculto no status público da fila. Use `/aotd_lista` se precisar auditar.",
                 inline=False,
             )
         else:
             embed.add_field(
-                name="Próximo álbum",
-                value="Nenhum álbum na fila.",
+                name="Próximo lançamento",
+                value="Nenhum lançamento na fila.",
                 inline=False,
             )
 
@@ -1458,7 +1602,7 @@ class AlbumDoDia(commands.Cog):
 
     @app_commands.command(
         name="aotd_lista",
-        description="Lista os álbuns agendados na fila. Admin.",
+        description="Lista os álbuns/EPs agendados na fila. Admin.",
     )
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
@@ -1501,10 +1645,10 @@ class AlbumDoDia(commands.Cog):
 
     @app_commands.command(
         name="aotd_remover",
-        description="Remove um álbum da fila pelo índice. Admin.",
+        description="Remove um álbum/EP da fila pelo índice. Admin.",
     )
     @app_commands.describe(
-        indice="Número do álbum na /aotd_lista.",
+        indice="Número do lançamento na /aotd_lista.",
     )
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
@@ -1530,13 +1674,13 @@ class AlbumDoDia(commands.Cog):
             return
 
         await interaction.response.send_message(
-            f"🗑️ **{removido.get('nome', 'Álbum')}** removido da fila.",
+            f"🗑️ **{removido.get('nome', 'Lançamento')}** removido da fila.",
             ephemeral=True,
         )
 
     @app_commands.command(
         name="aotd_testar_album",
-        description="Força o envio do próximo álbum agora. Admin.",
+        description="Força o envio do próximo álbum/EP agora. Admin.",
     )
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
