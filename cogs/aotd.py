@@ -4,7 +4,9 @@ import asyncio
 import datetime as dt
 import json
 import os
+import random
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any, Optional
 
@@ -17,6 +19,7 @@ from spotipy.oauth2 import SpotifyClientCredentials
 
 # ============================================================
 #  ÁLBUM DO DIA — COG ÚNICO
+#  Armazenamento em SQLite.
 #  Sem Pillow. Sem renderer. Apenas embed.
 #
 #  Requisitos:
@@ -28,8 +31,23 @@ from spotipy.oauth2 import SpotifyClientCredentials
 #  - SPOTIFY_SECRET
 # ============================================================
 
-QUEUE_FILE = Path("fila_albuns.json")
-CONFIG_FILE = Path("aotd_config.json")
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(exist_ok=True)
+
+DB_FILE = DATA_DIR / "aotd.sqlite3"
+
+OLD_QUEUE_FILES = [
+    DATA_DIR / "fila_albuns.json",
+    BASE_DIR / "fila_albuns.json",
+    Path.cwd() / "fila_albuns.json",
+]
+
+OLD_CONFIG_FILES = [
+    DATA_DIR / "aotd_config.json",
+    BASE_DIR / "aotd_config.json",
+    Path.cwd() / "aotd_config.json",
+]
 
 SPOTIPY_CLIENT_ID = os.getenv("SPOTIFY_ID")
 SPOTIPY_CLIENT_SECRET = os.getenv("SPOTIFY_SECRET")
@@ -58,57 +76,195 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
-def atomic_json_save(path: Path, payload: Any) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=4)
-
-    tmp.replace(path)
-
-
-def safe_json_load(path: Path, fallback: Any) -> Any:
-    if not path.exists():
-        atomic_json_save(path, fallback)
-        return fallback
-
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
-
-    except (json.JSONDecodeError, OSError):
-        backup = path.with_suffix(path.suffix + ".corrompido")
-
-        try:
-            path.replace(backup)
-        except OSError:
-            pass
-
-        atomic_json_save(path, fallback)
-        return fallback
-
-
 class AlbumDoDia(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._spotify: Optional[spotipy.Spotify] = None
+
+        self.inicializar_banco()
+        self.migrar_json_antigo_para_sqlite()
+
+        print(f"[AOTD] SQLite ativo em: {DB_FILE.resolve()}")
+
         self.enviar_album_automatico.start()
 
     def cog_unload(self) -> None:
         self.enviar_album_automatico.cancel()
 
     # ========================================================
-    #  Persistência
+    #  Banco de Dados
     # ========================================================
 
-    def carregar_config(self) -> dict[str, Any]:
-        raw = safe_json_load(CONFIG_FILE, DEFAULT_CONFIG.copy())
+    def conectar(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(DB_FILE, timeout=30)
+        conn.row_factory = sqlite3.Row
+        return conn
 
-        if not isinstance(raw, dict):
-            raw = DEFAULT_CONFIG.copy()
+    def inicializar_banco(self) -> None:
+        with self.conectar() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS album_queue (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    queue_position INTEGER,
+                    nome TEXT NOT NULL,
+                    artista TEXT NOT NULL,
+                    url TEXT,
+                    imagem TEXT,
+                    sugerido_por TEXT,
+                    sugerido_por_id INTEGER,
+                    generos_json TEXT NOT NULL DEFAULT '[]',
+                    total_faixas INTEGER,
+                    duracao_ms INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS aotd_config (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+
+            self.garantir_coluna_queue_position(conn)
+
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_album_queue_position
+                ON album_queue (queue_position ASC, id ASC)
+                """
+            )
+
+            for key, value in DEFAULT_CONFIG.items():
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO aotd_config (key, value)
+                    VALUES (?, ?)
+                    """,
+                    (key, json.dumps(value, ensure_ascii=False)),
+                )
+
+            conn.commit()
+
+    @staticmethod
+    def garantir_coluna_queue_position(conn: sqlite3.Connection) -> None:
+        columns = conn.execute("PRAGMA table_info(album_queue)").fetchall()
+        column_names = {column["name"] for column in columns}
+
+        if "queue_position" not in column_names:
+            conn.execute(
+                """
+                ALTER TABLE album_queue
+                ADD COLUMN queue_position INTEGER
+                """
+            )
+
+        conn.execute(
+            """
+            UPDATE album_queue
+            SET queue_position = id
+            WHERE queue_position IS NULL
+            """
+        )
+
+    def migrar_json_antigo_para_sqlite(self) -> None:
+        with self.conectar() as conn:
+            queue_count = conn.execute(
+                "SELECT COUNT(*) FROM album_queue"
+            ).fetchone()[0]
+
+            if queue_count == 0:
+                queue_file = self.encontrar_primeiro_arquivo_existente(OLD_QUEUE_FILES)
+
+                if queue_file:
+                    try:
+                        with queue_file.open("r", encoding="utf-8") as f:
+                            fila_antiga = json.load(f)
+
+                        if isinstance(fila_antiga, list):
+                            for item in fila_antiga:
+                                if isinstance(item, dict):
+                                    self.inserir_album_sync(conn, item)
+
+                            print(f"[AOTD] Fila migrada do JSON: {queue_file.resolve()}")
+
+                    except Exception as exc:
+                        print(f"[AOTD] Não consegui migrar a fila antiga: {exc}")
+
+            config_file = self.encontrar_primeiro_arquivo_existente(OLD_CONFIG_FILES)
+
+            if config_file:
+                try:
+                    with config_file.open("r", encoding="utf-8") as f:
+                        config_antiga = json.load(f)
+
+                    if isinstance(config_antiga, dict):
+                        for key in DEFAULT_CONFIG:
+                            if key in config_antiga:
+                                conn.execute(
+                                    """
+                                    INSERT OR REPLACE INTO aotd_config (key, value)
+                                    VALUES (?, ?)
+                                    """,
+                                    (
+                                        key,
+                                        json.dumps(
+                                            config_antiga[key],
+                                            ensure_ascii=False,
+                                        ),
+                                    ),
+                                )
+
+                        print(f"[AOTD] Config migrada do JSON: {config_file.resolve()}")
+
+                except Exception as exc:
+                    print(f"[AOTD] Não consegui migrar a config antiga: {exc}")
+
+            conn.commit()
+
+    @staticmethod
+    def encontrar_primeiro_arquivo_existente(paths: list[Path]) -> Optional[Path]:
+        vistos: set[Path] = set()
+
+        for path in paths:
+            try:
+                resolved = path.resolve()
+            except OSError:
+                resolved = path
+
+            if resolved in vistos:
+                continue
+
+            vistos.add(resolved)
+
+            if path.exists() and path.is_file():
+                return path
+
+        return None
+
+    # ========================================================
+    #  Config em SQLite
+    # ========================================================
+
+    def carregar_config_sync(self) -> dict[str, Any]:
+        with self.conectar() as conn:
+            rows = conn.execute("SELECT key, value FROM aotd_config").fetchall()
 
         config = DEFAULT_CONFIG.copy()
-        config.update(raw)
+
+        for row in rows:
+            key = row["key"]
+
+            try:
+                value = json.loads(row["value"])
+            except json.JSONDecodeError:
+                value = row["value"]
+
+            config[key] = value
 
         hour, minute = self.get_daily_time(config)
         config["daily_hour"] = hour
@@ -116,7 +272,7 @@ class AlbumDoDia(commands.Cog):
 
         return config
 
-    def salvar_config(self, config: dict[str, Any]) -> None:
+    def salvar_config_sync(self, config: dict[str, Any]) -> None:
         clean = DEFAULT_CONFIG.copy()
         clean.update(config)
 
@@ -124,18 +280,242 @@ class AlbumDoDia(commands.Cog):
         clean["daily_hour"] = hour
         clean["daily_minute"] = minute
 
-        atomic_json_save(CONFIG_FILE, clean)
+        with self.conectar() as conn:
+            for key, value in clean.items():
+                conn.execute(
+                    """
+                    INSERT OR REPLACE INTO aotd_config (key, value)
+                    VALUES (?, ?)
+                    """,
+                    (key, json.dumps(value, ensure_ascii=False)),
+                )
+
+            conn.commit()
+
+    def carregar_config(self) -> dict[str, Any]:
+        return self.carregar_config_sync()
+
+    def salvar_config(self, config: dict[str, Any]) -> None:
+        self.salvar_config_sync(config)
+
+    # ========================================================
+    #  Fila em SQLite
+    # ========================================================
+
+    @staticmethod
+    def row_para_album(row: sqlite3.Row) -> dict[str, Any]:
+        try:
+            generos = json.loads(row["generos_json"] or "[]")
+        except json.JSONDecodeError:
+            generos = []
+
+        if not isinstance(generos, list):
+            generos = []
+
+        return {
+            "_queue_id": row["id"],
+            "_queue_position": row["queue_position"],
+            "nome": row["nome"],
+            "artista": row["artista"],
+            "url": row["url"],
+            "imagem": row["imagem"],
+            "sugerido_por": row["sugerido_por"],
+            "sugerido_por_id": row["sugerido_por_id"],
+            "generos": generos,
+            "total_faixas": row["total_faixas"],
+            "duracao_ms": row["duracao_ms"],
+            "created_at": row["created_at"],
+        }
+
+    @staticmethod
+    def proxima_posicao_sync(conn: sqlite3.Connection) -> int:
+        row = conn.execute(
+            """
+            SELECT COALESCE(MAX(queue_position), 0) + 1
+            FROM album_queue
+            """
+        ).fetchone()
+
+        return int(row[0] or 1)
+
+    @staticmethod
+    def inserir_album_sync(conn: sqlite3.Connection, album: dict[str, Any]) -> int:
+        generos = album.get("generos") or []
+
+        if not isinstance(generos, list):
+            generos = []
+
+        queue_position = AlbumDoDia.proxima_posicao_sync(conn)
+
+        cursor = conn.execute(
+            """
+            INSERT INTO album_queue (
+                queue_position,
+                nome,
+                artista,
+                url,
+                imagem,
+                sugerido_por,
+                sugerido_por_id,
+                generos_json,
+                total_faixas,
+                duracao_ms
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                queue_position,
+                str(album.get("nome") or "Álbum desconhecido"),
+                str(album.get("artista") or "Artista desconhecido"),
+                album.get("url"),
+                album.get("imagem"),
+                album.get("sugerido_por"),
+                album.get("sugerido_por_id"),
+                json.dumps(generos, ensure_ascii=False),
+                album.get("total_faixas"),
+                int(album.get("duracao_ms") or 0),
+            ),
+        )
+
+        return int(cursor.lastrowid)
 
     def carregar_fila(self) -> list[dict[str, Any]]:
-        raw = safe_json_load(QUEUE_FILE, [])
+        with self.conectar() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM album_queue
+                ORDER BY queue_position ASC, id ASC
+                """
+            ).fetchall()
 
-        if not isinstance(raw, list):
-            return []
+        return [self.row_para_album(row) for row in rows]
 
-        return [item for item in raw if isinstance(item, dict)]
+    def contar_fila(self) -> int:
+        with self.conectar() as conn:
+            return int(
+                conn.execute("SELECT COUNT(*) FROM album_queue").fetchone()[0]
+            )
 
-    def salvar_fila(self, fila: list[dict[str, Any]]) -> None:
-        atomic_json_save(QUEUE_FILE, fila)
+    def album_ja_na_fila(self, url: Optional[str]) -> bool:
+        if not url:
+            return False
+
+        with self.conectar() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM album_queue
+                WHERE url = ?
+                LIMIT 1
+                """,
+                (url,),
+            ).fetchone()
+
+        return row is not None
+
+    def adicionar_album_na_fila(self, album: dict[str, Any]) -> int:
+        with self.conectar() as conn:
+            self.inserir_album_sync(conn, album)
+
+            posicao = int(
+                conn.execute("SELECT COUNT(*) FROM album_queue").fetchone()[0]
+            )
+
+            conn.commit()
+
+        return posicao
+
+    def primeiro_album_da_fila(self) -> Optional[dict[str, Any]]:
+        with self.conectar() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM album_queue
+                ORDER BY queue_position ASC, id ASC
+                LIMIT 1
+                """
+            ).fetchone()
+
+        return self.row_para_album(row) if row else None
+
+    def remover_album_por_id(self, queue_id: int) -> None:
+        with self.conectar() as conn:
+            conn.execute(
+                """
+                DELETE FROM album_queue
+                WHERE id = ?
+                """,
+                (queue_id,),
+            )
+
+            conn.commit()
+
+    def remover_album_por_indice(self, indice: int) -> Optional[dict[str, Any]]:
+        offset = indice - 1
+
+        with self.conectar() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM album_queue
+                ORDER BY queue_position ASC, id ASC
+                LIMIT 1 OFFSET ?
+                """,
+                (offset,),
+            ).fetchone()
+
+            if not row:
+                return None
+
+            album = self.row_para_album(row)
+
+            conn.execute(
+                """
+                DELETE FROM album_queue
+                WHERE id = ?
+                """,
+                (album["_queue_id"],),
+            )
+
+            conn.commit()
+
+        return album
+
+    def embaralhar_fila(self) -> int:
+        with self.conectar() as conn:
+            rows = conn.execute(
+                """
+                SELECT id
+                FROM album_queue
+                ORDER BY queue_position ASC, id ASC
+                """
+            ).fetchall()
+
+            ids = [int(row["id"]) for row in rows]
+
+            if len(ids) < 2:
+                return len(ids)
+
+            ordem_original = ids.copy()
+            random.shuffle(ids)
+
+            if ids == ordem_original:
+                ids = ids[1:] + ids[:1]
+
+            for position, queue_id in enumerate(ids, start=1):
+                conn.execute(
+                    """
+                    UPDATE album_queue
+                    SET queue_position = ?
+                    WHERE id = ?
+                    """,
+                    (position, queue_id),
+                )
+
+            conn.commit()
+
+        return len(ids)
 
     # ========================================================
     #  Spotify
@@ -443,53 +823,29 @@ class AlbumDoDia(commands.Cog):
         segundos = (int(album.get("duracao_ms") or 0) % 60000) // 1000
 
         generos = album.get("generos") or []
-        generos_txt = ", ".join(str(g) for g in generos[:4]) if generos else "Sem gêneros encontrados"
+        generos_txt = (
+            ", ".join(str(g) for g in generos[:4])
+            if generos
+            else "Sem gêneros encontrados"
+        )
 
         embed = discord.Embed(
             title="🛎️ Novo álbum sugerido",
             description=(
-                f"{interaction.user.mention} adicionou um novo álbum na fila do **Álbum do Dia**."
+                f"{interaction.user.mention} adicionou um novo álbum na fila do "
+                f"**Álbum do Dia**."
             ),
             color=discord.Color.gold(),
             url=url,
             timestamp=self.now_br(),
         )
 
-        embed.add_field(
-            name="Álbum",
-            value=f"**{nome}**",
-            inline=True,
-        )
-
-        embed.add_field(
-            name="Artista",
-            value=f"**{artista}**",
-            inline=True,
-        )
-
-        embed.add_field(
-            name="Posição na fila",
-            value=f"`#{posicao_fila}`",
-            inline=True,
-        )
-
-        embed.add_field(
-            name="Duração",
-            value=f"{minutos}min {segundos:02d}s",
-            inline=True,
-        )
-
-        embed.add_field(
-            name="Faixas",
-            value=str(album.get("total_faixas", "?")),
-            inline=True,
-        )
-
-        embed.add_field(
-            name="Gêneros",
-            value=generos_txt,
-            inline=False,
-        )
+        embed.add_field(name="Álbum", value=f"**{nome}**", inline=True)
+        embed.add_field(name="Artista", value=f"**{artista}**", inline=True)
+        embed.add_field(name="Posição na fila", value=f"`#{posicao_fila}`", inline=True)
+        embed.add_field(name="Duração", value=f"{minutos}min {segundos:02d}s", inline=True)
+        embed.add_field(name="Faixas", value=str(album.get("total_faixas", "?")), inline=True)
+        embed.add_field(name="Gêneros", value=generos_txt, inline=False)
 
         if imagem:
             embed.set_thumbnail(url=imagem)
@@ -548,19 +904,16 @@ class AlbumDoDia(commands.Cog):
     async def despachar_album(
         self,
         destino: discord.Interaction | discord.abc.Messageable,
-    ) -> None:
-        fila = self.carregar_fila()
+    ) -> bool:
+        album_de_hoje = self.primeiro_album_da_fila()
 
-        if not fila:
+        if not album_de_hoje:
             await self.send_destination(
                 destino,
                 content="⚠️ A fila está vazia. Adicionem mais álbuns com `/aotd_sugerir`.",
                 ephemeral=isinstance(destino, discord.Interaction),
             )
-            return
-
-        album_de_hoje = fila.pop(0)
-        self.salvar_fila(fila)
+            return False
 
         config = self.carregar_config()
         role_ping = self.build_role_ping(config.get("album_role_id"))
@@ -575,7 +928,9 @@ class AlbumDoDia(commands.Cog):
         )
 
         if msg is None:
-            return
+            return False
+
+        self.remover_album_por_id(int(album_de_hoje["_queue_id"]))
 
         for emoji in (EMOJI_GOSTO, EMOJI_NAO_GOSTO, EMOJI_NUNCA_OUVI):
             try:
@@ -600,6 +955,8 @@ class AlbumDoDia(commands.Cog):
 
         except (discord.HTTPException, discord.Forbidden):
             pass
+
+        return True
 
     # ========================================================
     #  Loop Automático
@@ -631,13 +988,15 @@ class AlbumDoDia(commands.Cog):
             return
 
         try:
-            await self.despachar_album(channel)
-        except Exception:
+            enviado = await self.despachar_album(channel)
+        except Exception as exc:
+            print(f"[AOTD] Erro no envio automático: {exc}")
             return
 
-        config = self.carregar_config()
-        config["last_auto_sent_date"] = today_key
-        self.salvar_config(config)
+        if enviado:
+            config = self.carregar_config()
+            config["last_auto_sent_date"] = today_key
+            self.salvar_config(config)
 
     @enviar_album_automatico.before_loop
     async def before_enviar_album_automatico(self) -> None:
@@ -685,20 +1044,16 @@ class AlbumDoDia(commands.Cog):
         album_info["sugerido_por"] = interaction.user.name
         album_info["sugerido_por_id"] = interaction.user.id
 
-        fila = self.carregar_fila()
         album_url = album_info.get("url")
 
-        if album_url and any(item.get("url") == album_url for item in fila):
+        if self.album_ja_na_fila(album_url):
             await interaction.followup.send(
                 "⚠️ Esse álbum já está na fila.",
                 ephemeral=True,
             )
             return
 
-        fila.append(album_info)
-        self.salvar_fila(fila)
-
-        posicao_fila = len(fila)
+        posicao_fila = self.adicionar_album_na_fila(album_info)
 
         embed = discord.Embed(
             title="🎵 Álbum adicionado à fila!",
@@ -728,22 +1083,20 @@ class AlbumDoDia(commands.Cog):
     )
     async def ver_fila(self, interaction: discord.Interaction) -> None:
         config = self.carregar_config()
-        fila = self.carregar_fila()
-        qtd = len(fila)
+        qtd = self.contar_fila()
 
         if qtd == 0:
             await interaction.response.send_message("📭 A fila está vazia.")
             return
 
         data_final = self.queue_until_date(qtd, config)
-        proximo = fila[0]
 
         await interaction.response.send_message(
             f"📚 Temos **{qtd}** álbum(ns) na fila.\n"
-            f"{proximo.get('artista', 'Sem artista')}\n"
             f"⏰ Horário configurado: **{self.format_daily_time(config)}**.\n"
             f"🗓️ Com o envio diário ativo, a fila cobre até "
-            f"**{data_final.strftime('%d/%m/%Y')}**."
+            f"**{data_final.strftime('%d/%m/%Y')}**.\n\n"
+            f"🤫 O próximo álbum fica em segredo até o post sair."
         )
 
     # ========================================================
@@ -947,6 +1300,37 @@ class AlbumDoDia(commands.Cog):
         )
 
     @app_commands.command(
+        name="aotd_shuffle",
+        description="Embaralha aleatoriamente a ordem dos álbuns na fila. Admin.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def shuffle_fila(self, interaction: discord.Interaction) -> None:
+        qtd = self.contar_fila()
+
+        if qtd == 0:
+            await interaction.response.send_message(
+                "📭 A fila está vazia, então não tem o que embaralhar.",
+                ephemeral=True,
+            )
+            return
+
+        if qtd == 1:
+            await interaction.response.send_message(
+                "🎧 Só tem **1 álbum** na fila. O shuffle ia só fingir trabalho.",
+                ephemeral=True,
+            )
+            return
+
+        total = self.embaralhar_fila()
+
+        await interaction.response.send_message(
+            f"🔀 Fila embaralhada com sucesso!\n"
+            f"🎵 **{total}** álbuns foram reorganizados aleatoriamente.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
         name="aotd_status",
         description="Mostra a configuração atual do Álbum do Dia.",
     )
@@ -1012,6 +1396,12 @@ class AlbumDoDia(commands.Cog):
         )
 
         embed.add_field(
+            name="Banco",
+            value=f"`{DB_FILE.name}`",
+            inline=True,
+        )
+
+        embed.add_field(
             name="Canal da staff",
             value=self.channel_mention(config.get("staff_notify_channel_id")),
             inline=True,
@@ -1061,6 +1451,7 @@ class AlbumDoDia(commands.Cog):
             dicas.append("Use /aotd_config_staff_canal para ativar avisos internos de sugestões.")
 
         dicas.append("Use /aotd_config_horario para mudar o horário diário em Brasília.")
+        dicas.append("Use /aotd_shuffle para embaralhar a fila.")
 
         embed.set_footer(text=" ".join(dicas))
 
@@ -1123,17 +1514,21 @@ class AlbumDoDia(commands.Cog):
         interaction: discord.Interaction,
         indice: int,
     ) -> None:
-        fila = self.carregar_fila()
-
-        if indice < 1 or indice > len(fila):
+        if indice < 1:
             await interaction.response.send_message(
                 "❌ Índice inválido.",
                 ephemeral=True,
             )
             return
 
-        removido = fila.pop(indice - 1)
-        self.salvar_fila(fila)
+        removido = self.remover_album_por_indice(indice)
+
+        if not removido:
+            await interaction.response.send_message(
+                "❌ Índice inválido.",
+                ephemeral=True,
+            )
+            return
 
         await interaction.response.send_message(
             f"🗑️ **{removido.get('nome', 'Álbum')}** removido da fila.",
