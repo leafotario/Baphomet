@@ -114,7 +114,7 @@ class AOTDQueueListView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message(
-                "🚫 Essa lista não é sua, diva. Use `/aotd_lista` pra abrir a sua própria.",
+                "🚫 Essa lista não é sua, mortal. Use `/aotd_lista` pra abrir a sua própria.",
                 ephemeral=True,
             )
             return False
