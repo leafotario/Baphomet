@@ -740,7 +740,6 @@ class AlbumDoDia(commands.Cog):
 
         await interaction.response.send_message(
             f"📚 Temos **{qtd}** álbum(ns) na fila.\n"
-            f"🎧 Próximo: **{proximo.get('nome', 'Sem nome')}** — "
             f"{proximo.get('artista', 'Sem artista')}\n"
             f"⏰ Horário configurado: **{self.format_daily_time(config)}**.\n"
             f"🗓️ Com o envio diário ativo, a fila cobre até "
