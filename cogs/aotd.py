@@ -76,6 +76,166 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
+class AOTDQueueListView(discord.ui.View):
+    """
+    View paginada do /aotd_lista.
+
+    Segurança:
+    - A mensagem é ephemeral.
+    - Apenas o admin que executou o comando consegue navegar.
+    - Mesmo assim, a View checa novamente se o usuário ainda tem permissão de admin.
+    """
+
+    def __init__(
+        self,
+        *,
+        cog: "AlbumDoDia",
+        interaction: discord.Interaction,
+        fila: list[dict[str, Any]],
+        config: dict[str, Any],
+        per_page: int = 8,
+    ) -> None:
+        super().__init__(timeout=180)
+
+        self.cog = cog
+        self.owner_id = interaction.user.id
+        self.fila = fila
+        self.config = config
+        self.per_page = max(1, per_page)
+        self.current_page = 0
+        self.message: Optional[discord.Message] = None
+
+        self._update_buttons()
+
+    @property
+    def total_pages(self) -> int:
+        return max(1, (len(self.fila) + self.per_page - 1) // self.per_page)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "🚫 Essa lista não é sua, diva. Use `/aotd_lista` pra abrir a sua própria.",
+                ephemeral=True,
+            )
+            return False
+
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message(
+                "🚫 Esse comando só pode ser usado dentro de um servidor.",
+                ephemeral=True,
+            )
+            return False
+
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                "🚫 Você precisa ser administrador para navegar nessa lista.",
+                ephemeral=True,
+            )
+            return False
+
+        return True
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            if hasattr(item, "disabled"):
+                item.disabled = True
+
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except (discord.HTTPException, discord.Forbidden, discord.NotFound):
+                pass
+
+    def _update_buttons(self) -> None:
+        total_pages = self.total_pages
+
+        for item in self.children:
+            if not isinstance(item, discord.ui.Button):
+                continue
+
+            if item.custom_id == "aotd_lista_primeira":
+                item.disabled = self.current_page <= 0
+
+            elif item.custom_id == "aotd_lista_anterior":
+                item.disabled = self.current_page <= 0
+
+            elif item.custom_id == "aotd_lista_proxima":
+                item.disabled = self.current_page >= total_pages - 1
+
+            elif item.custom_id == "aotd_lista_ultima":
+                item.disabled = self.current_page >= total_pages - 1
+
+    async def _refresh(self, interaction: discord.Interaction) -> None:
+        self.current_page = max(0, min(self.current_page, self.total_pages - 1))
+        self._update_buttons()
+
+        embed = self.cog.criar_embed_lista_paginada(
+            fila=self.fila,
+            config=self.config,
+            page=self.current_page,
+            per_page=self.per_page,
+            guild=interaction.guild,
+        )
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(
+        label="Primeira",
+        emoji="⏮️",
+        style=discord.ButtonStyle.secondary,
+        custom_id="aotd_lista_primeira",
+    )
+    async def primeira_pagina(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        self.current_page = 0
+        await self._refresh(interaction)
+
+    @discord.ui.button(
+        label="Anterior",
+        emoji="◀️",
+        style=discord.ButtonStyle.secondary,
+        custom_id="aotd_lista_anterior",
+    )
+    async def pagina_anterior(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        self.current_page -= 1
+        await self._refresh(interaction)
+
+    @discord.ui.button(
+        label="Próxima",
+        emoji="▶️",
+        style=discord.ButtonStyle.primary,
+        custom_id="aotd_lista_proxima",
+    )
+    async def proxima_pagina(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        self.current_page += 1
+        await self._refresh(interaction)
+
+    @discord.ui.button(
+        label="Última",
+        emoji="⏭️",
+        style=discord.ButtonStyle.secondary,
+        custom_id="aotd_lista_ultima",
+    )
+    async def ultima_pagina(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        self.current_page = self.total_pages - 1
+        await self._refresh(interaction)
+
+
 class AlbumDoDia(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -763,6 +923,36 @@ class AlbumDoDia(commands.Cog):
         hour, minute = cls.get_daily_time(config)
         return f"{hour:02d}:{minute:02d} BRT"
 
+    @staticmethod
+    def limitar_texto(texto: Any, limite: int) -> str:
+        texto = str(texto or "").strip()
+
+        if len(texto) <= limite:
+            return texto
+
+        if limite <= 1:
+            return texto[:limite]
+
+        return texto[: limite - 1].rstrip() + "…"
+
+    @staticmethod
+    def formatar_duracao_ms(duracao_ms: Any) -> str:
+        try:
+            total_segundos = int(duracao_ms or 0) // 1000
+        except (TypeError, ValueError):
+            total_segundos = 0
+
+        if total_segundos <= 0:
+            return "Duração desconhecida"
+
+        horas, resto = divmod(total_segundos, 3600)
+        minutos, segundos = divmod(resto, 60)
+
+        if horas:
+            return f"{horas}h {minutos:02d}min"
+
+        return f"{minutos}min {segundos:02d}s"
+
     def next_daily_run(self, config: Optional[dict[str, Any]] = None) -> dt.datetime:
         config = config or self.carregar_config()
 
@@ -902,6 +1092,112 @@ class AlbumDoDia(commands.Cog):
             embed.set_image(url=imagem)
 
         embed.set_footer(text=" | ".join(footer_parts))
+
+        return embed
+
+    def criar_embed_lista_paginada(
+        self,
+        *,
+        fila: list[dict[str, Any]],
+        config: dict[str, Any],
+        page: int,
+        per_page: int,
+        guild: Optional[discord.Guild] = None,
+    ) -> discord.Embed:
+        total = len(fila)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = max(0, min(page, total_pages - 1))
+
+        start = page * per_page
+        end = min(start + per_page, total)
+        pagina_atual = fila[start:end]
+
+        data_final = self.queue_until_date(total, config)
+
+        description_lines = [
+            f"**{total}** álbuns/EPs na fila.",
+            f"Mostrando **{start + 1}–{end}** de **{total}**.",
+            "",
+            f"⏰ Horário diário: **{self.format_daily_time(config)}**",
+        ]
+
+        if data_final:
+            description_lines.append(
+                f"🗓️ Cobertura estimada: até **{data_final.strftime('%d/%m/%Y')}**"
+            )
+
+        description_lines.append("")
+        description_lines.append(
+            "Use os botões abaixo para navegar sem floodar o chat. Finalmente civilização."
+        )
+
+        embed = discord.Embed(
+            title="🗂️ Fila do Álbum do Dia",
+            description="\n".join(description_lines),
+            color=discord.Color.blurple(),
+            timestamp=self.now_br(),
+        )
+
+        if guild and guild.icon:
+            embed.set_author(name=guild.name, icon_url=guild.icon.url)
+
+        for index, album in enumerate(pagina_atual, start=start + 1):
+            nome = self.limitar_texto(album.get("nome", "Sem nome"), 110)
+            artista = self.limitar_texto(album.get("artista", "Sem artista"), 80)
+            sugerido_por = self.limitar_texto(
+                album.get("sugerido_por") or "Comunidade",
+                70,
+            )
+
+            total_faixas = album.get("total_faixas", "?")
+            duracao = self.formatar_duracao_ms(album.get("duracao_ms"))
+            url = album.get("url") or None
+
+            generos = album.get("generos") or []
+            generos_txt = (
+                ", ".join(self.limitar_texto(genero, 28) for genero in generos[:4])
+                if generos
+                else "Sem gêneros registrados"
+            )
+
+            field_name = self.limitar_texto(
+                f"#{index:02d} · {nome} — {artista}",
+                256,
+            )
+
+            value_lines = [
+                f"👤 Sugerido por: **{sugerido_por}**",
+                f"🎵 Faixas: **{total_faixas}** · Duração: **{duracao}**",
+                f"🎸 Gêneros: {generos_txt}",
+            ]
+
+            if url:
+                value_lines.append(f"🔗 [Abrir no Spotify]({url})")
+
+            embed.add_field(
+                name=field_name,
+                value=self.limitar_texto("\n".join(value_lines), 1024),
+                inline=False,
+            )
+
+        primeira_imagem = next(
+            (
+                album.get("imagem")
+                for album in pagina_atual
+                if album.get("imagem")
+            ),
+            None,
+        )
+
+        if primeira_imagem:
+            embed.set_thumbnail(url=primeira_imagem)
+
+        embed.set_footer(
+            text=(
+                f"Página {page + 1}/{total_pages} • "
+                "Para remover: /aotd_remover índice"
+            )
+        )
 
         return embed
 
@@ -1615,32 +1911,34 @@ class AlbumDoDia(commands.Cog):
             )
             return
 
-        linhas = []
+        config = self.carregar_config()
 
-        for i, album in enumerate(fila, 1):
-            linhas.append(
-                f"`{i:02d}.` **{album.get('nome', 'Sem nome')}** — "
-                f"{album.get('artista', 'Sem artista')} "
-                f"({album.get('sugerido_por', 'Comunidade')})"
-            )
+        view = AOTDQueueListView(
+            cog=self,
+            interaction=interaction,
+            fila=fila,
+            config=config,
+            per_page=8,
+        )
 
-        chunks: list[str] = []
-        atual = "**Fila atual do Álbum do Dia:**\n"
+        embed = self.criar_embed_lista_paginada(
+            fila=fila,
+            config=config,
+            page=0,
+            per_page=view.per_page,
+            guild=interaction.guild,
+        )
 
-        for linha in linhas:
-            if len(atual) + len(linha) + 1 > 1900:
-                chunks.append(atual)
-                atual = ""
+        await interaction.response.send_message(
+            embed=embed,
+            view=view,
+            ephemeral=True,
+        )
 
-            atual += linha + "\n"
-
-        if atual.strip():
-            chunks.append(atual)
-
-        await interaction.response.send_message(chunks[0], ephemeral=True)
-
-        for chunk in chunks[1:]:
-            await interaction.followup.send(chunk, ephemeral=True)
+        try:
+            view.message = await interaction.original_response()
+        except (discord.HTTPException, discord.NotFound):
+            view.message = None
 
     @app_commands.command(
         name="aotd_remover",
