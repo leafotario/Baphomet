@@ -1201,10 +1201,10 @@ class AlbumDoDia(commands.Cog):
         tipo = album_info.get("tipo_lancamento") or "Álbum/EP"
 
         embed = discord.Embed(
-            title="🎵 Lançamento adicionado à fila!",
+            title="🎵 Álbum adicionado à fila!",
             description=(
                 f"**{album_info['nome']}** — {album_info['artista']}\n\n"
-                f"🏷️ Tipo detectado: **{tipo}**\n"
+                f"🏷️ Formato: **{tipo}**\n"
                 f"📌 Posição na fila: **#{posicao_fila}**\n"
                 f"Use `/aotd_fila` para ver o tamanho da fila."
             ),
@@ -1238,11 +1238,10 @@ class AlbumDoDia(commands.Cog):
         data_final = self.queue_until_date(qtd, config)
 
         await interaction.response.send_message(
-            f"📚 Temos **{qtd}** lançamento(s) na fila.\n"
+            f"📚 Temos **{qtd}** álbuns/eps na fila.\n"
             f"⏰ Horário configurado: **{self.format_daily_time(config)}**.\n"
-            f"🗓️ Com o envio diário ativo, a fila cobre até "
-            f"**{data_final.strftime('%d/%m/%Y')}**.\n\n"
-            f"🤫 O próximo álbum/EP fica em segredo até o post sair."
+            f"🗓️ Teremos Álbuns do Dia até o dia "
+            f"**{data_final.strftime('%d/%m/%Y')}**."
         )
 
     # ========================================================
@@ -1463,7 +1462,7 @@ class AlbumDoDia(commands.Cog):
 
         if qtd == 1:
             await interaction.response.send_message(
-                "🎧 Só tem **1 lançamento** na fila. O shuffle ia só fingir trabalho.",
+                "🎧 Só tem **1 álbum/EP** na fila. O shuffle ia só fingir trabalho.",
                 ephemeral=True,
             )
             return
@@ -1472,7 +1471,7 @@ class AlbumDoDia(commands.Cog):
 
         await interaction.response.send_message(
             f"🔀 Fila embaralhada com sucesso!\n"
-            f"🎵 **{total}** lançamentos foram reorganizados aleatoriamente.",
+            f"🎵 **{total}** álbuns/EPs foram reorganizados aleatoriamente.",
             ephemeral=True,
         )
 
@@ -1537,7 +1536,7 @@ class AlbumDoDia(commands.Cog):
 
         embed.add_field(
             name="Fila",
-            value=f"{qtd} lançamento(s)",
+            value=f"{qtd} Álbuns",
             inline=True,
         )
 
