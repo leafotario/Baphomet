@@ -238,6 +238,7 @@ async def sync_commands(ctx: commands.Context) -> None:
 # ==============================================================================
 # 7. FUNÇÃO ASSÍNCRONA PRINCIPAL
 # ==============================================================================
+
 async def main() -> None:
     print_separator()
     print(f"{Colors.BOLD}{Colors.MAGENTA}🖤 BAPHOMET — DISCORD BOT{Colors.RESET}")
