@@ -46,6 +46,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "auto_enabled": True,
     "album_channel_id": None,
     "album_role_id": DEFAULT_ROLE_ID,
+
+    # Notificações internas para staff/admins quando alguém sugere álbum
+    "staff_notify_channel_id": None,
+    "staff_notify_role_id": None,
 }
 
 
@@ -241,7 +245,7 @@ class AlbumDoDia(commands.Cog):
 
         return role.mention if role else f"<@&{role_id}>"
 
-    async def resolve_album_channel(
+    async def resolve_text_channel(
         self,
         channel_id: Optional[int],
     ) -> Optional[discord.abc.Messageable]:
@@ -263,6 +267,12 @@ class AlbumDoDia(commands.Cog):
             return None
 
         return None
+
+    async def resolve_album_channel(
+        self,
+        channel_id: Optional[int],
+    ) -> Optional[discord.abc.Messageable]:
+        return await self.resolve_text_channel(channel_id)
 
     async def send_destination(
         self,
@@ -340,6 +350,120 @@ class AlbumDoDia(commands.Cog):
         embed.set_footer(text=" | ".join(footer_parts))
 
         return embed
+
+    def criar_embed_notificacao_staff(
+        self,
+        *,
+        album: dict[str, Any],
+        interaction: discord.Interaction,
+        posicao_fila: int,
+    ) -> discord.Embed:
+        nome = album.get("nome", "Álbum desconhecido")
+        artista = album.get("artista", "Artista desconhecido")
+        url = album.get("url") or None
+        imagem = album.get("imagem")
+
+        minutos = int(album.get("duracao_ms") or 0) // 60000
+        segundos = (int(album.get("duracao_ms") or 0) % 60000) // 1000
+
+        generos = album.get("generos") or []
+        generos_txt = ", ".join(str(g) for g in generos[:4]) if generos else "Sem gêneros encontrados"
+
+        embed = discord.Embed(
+            title="🛎️ Novo álbum sugerido",
+            description=(
+                f"{interaction.user.mention} adicionou um novo álbum na fila do **Álbum do Dia**."
+            ),
+            color=discord.Color.gold(),
+            url=url,
+            timestamp=self.now_br(),
+        )
+
+        embed.add_field(
+            name="Álbum",
+            value=f"**{nome}**",
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Artista",
+            value=f"**{artista}**",
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Posição na fila",
+            value=f"`#{posicao_fila}`",
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Duração",
+            value=f"{minutos}min {segundos:02d}s",
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Faixas",
+            value=str(album.get("total_faixas", "?")),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Gêneros",
+            value=generos_txt,
+            inline=False,
+        )
+
+        if imagem:
+            embed.set_thumbnail(url=imagem)
+
+        embed.set_footer(
+            text=f"Sugerido por {interaction.user} • ID: {interaction.user.id}"
+        )
+
+        return embed
+
+    # ========================================================
+    #  Notificação interna da Staff
+    # ========================================================
+
+    async def notificar_staff_nova_sugestao(
+        self,
+        *,
+        interaction: discord.Interaction,
+        album: dict[str, Any],
+        posicao_fila: int,
+    ) -> None:
+        config = self.carregar_config()
+
+        staff_channel_id = config.get("staff_notify_channel_id")
+        staff_role_id = config.get("staff_notify_role_id")
+
+        if not staff_channel_id:
+            return
+
+        channel = await self.resolve_text_channel(staff_channel_id)
+
+        if channel is None:
+            return
+
+        role_ping = self.build_role_ping(staff_role_id)
+        embed = self.criar_embed_notificacao_staff(
+            album=album,
+            interaction=interaction,
+            posicao_fila=posicao_fila,
+        )
+
+        try:
+            await channel.send(
+                content=role_ping,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(roles=True),
+            )
+
+        except (discord.HTTPException, discord.Forbidden):
+            return
 
     # ========================================================
     #  Envio do Álbum
@@ -480,10 +604,13 @@ class AlbumDoDia(commands.Cog):
         fila.append(album_info)
         self.salvar_fila(fila)
 
+        posicao_fila = len(fila)
+
         embed = discord.Embed(
             title="🎵 Álbum adicionado à fila!",
             description=(
                 f"**{album_info['nome']}** — {album_info['artista']}\n\n"
+                f"📌 Posição na fila: **#{posicao_fila}**\n"
                 f"Use `/aotd_fila` para ver o tamanho da fila."
             ),
             color=discord.Color.green(),
@@ -494,6 +621,12 @@ class AlbumDoDia(commands.Cog):
             embed.set_thumbnail(url=album_info["imagem"])
 
         await interaction.followup.send(embed=embed)
+
+        await self.notificar_staff_nova_sugestao(
+            interaction=interaction,
+            album=album_info,
+            posicao_fila=posicao_fila,
+        )
 
     @app_commands.command(
         name="aotd_fila",
@@ -581,6 +714,64 @@ class AlbumDoDia(commands.Cog):
             )
 
     @app_commands.command(
+        name="aotd_config_staff_canal",
+        description="Define o canal interno onde a staff será avisada sobre novas sugestões.",
+    )
+    @app_commands.describe(
+        canal="Canal exclusivo de admins/staff. Deixe vazio para desativar as notificações internas.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def configurar_staff_canal(
+        self,
+        interaction: discord.Interaction,
+        canal: Optional[discord.TextChannel] = None,
+    ) -> None:
+        config = self.carregar_config()
+        config["staff_notify_channel_id"] = canal.id if canal else None
+        self.salvar_config(config)
+
+        if canal:
+            await interaction.response.send_message(
+                f"✅ Canal de notificação da staff configurado para {canal.mention}.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                "✅ Canal de notificação da staff removido. As notificações internas foram desativadas.",
+                ephemeral=True,
+            )
+
+    @app_commands.command(
+        name="aotd_config_staff_cargo",
+        description="Define o cargo de staff marcado quando alguém sugere um álbum.",
+    )
+    @app_commands.describe(
+        cargo="Cargo de staff que será marcado. Deixe vazio para não marcar cargo nas notificações internas.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def configurar_staff_cargo(
+        self,
+        interaction: discord.Interaction,
+        cargo: Optional[discord.Role] = None,
+    ) -> None:
+        config = self.carregar_config()
+        config["staff_notify_role_id"] = cargo.id if cargo else None
+        self.salvar_config(config)
+
+        if cargo:
+            await interaction.response.send_message(
+                f"✅ Cargo de staff configurado para {cargo.mention}.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                "✅ Cargo de staff removido. As notificações internas continuarão sem ping de cargo.",
+                ephemeral=True,
+            )
+
+    @app_commands.command(
         name="aotd_ativar",
         description="Ativa o envio automático diário do Álbum do Dia às 12:00.",
     )
@@ -663,13 +854,13 @@ class AlbumDoDia(commands.Cog):
         )
 
         embed.add_field(
-            name="Canal",
+            name="Canal do álbum",
             value=self.channel_mention(config.get("album_channel_id")),
             inline=True,
         )
 
         embed.add_field(
-            name="Cargo marcado",
+            name="Cargo do álbum",
             value=self.role_display(interaction.guild, config.get("album_role_id")),
             inline=True,
         )
@@ -677,6 +868,24 @@ class AlbumDoDia(commands.Cog):
         embed.add_field(
             name="Fila",
             value=f"{qtd} álbum(ns)",
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Canal da staff",
+            value=self.channel_mention(config.get("staff_notify_channel_id")),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Cargo da staff",
+            value=self.role_display(interaction.guild, config.get("staff_notify_role_id")),
+            inline=True,
+        )
+
+        embed.add_field(
+            name="Notificação da staff",
+            value="Ativada" if config.get("staff_notify_channel_id") else "Desativada",
             inline=True,
         )
 
@@ -703,10 +912,16 @@ class AlbumDoDia(commands.Cog):
                 inline=False,
             )
 
+        dicas = []
+
         if not config.get("album_channel_id"):
-            embed.set_footer(
-                text="Dica: use /aotd_config_canal para definir onde o post automático vai cair."
-            )
+            dicas.append("Use /aotd_config_canal para definir onde o post automático vai cair.")
+
+        if not config.get("staff_notify_channel_id"):
+            dicas.append("Use /aotd_config_staff_canal para ativar avisos internos de sugestões.")
+
+        if dicas:
+            embed.set_footer(text=" ".join(dicas))
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
