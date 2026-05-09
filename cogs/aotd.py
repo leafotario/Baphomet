@@ -1096,7 +1096,6 @@ class AlbumDoDia(commands.Cog):
             f"⏰ Horário configurado: **{self.format_daily_time(config)}**.\n"
             f"🗓️ Com o envio diário ativo, a fila cobre até "
             f"**{data_final.strftime('%d/%m/%Y')}**.\n\n"
-            f"🤫 O próximo álbum fica em segredo até o post sair."
         )
 
     # ========================================================
