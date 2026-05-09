@@ -205,13 +205,11 @@ class SpotifyService:
         max_retries: int = 3,
     ) -> None:
         self.client_id = (
-            os.getenv("SPOTIPY_CLIENT_ID")
-            or os.getenv("SPOTIFY_CLIENT_ID")
+            os.getenv("SPOTIFY_ID")
             or ""
         ).strip()
         self.client_secret = (
-            os.getenv("SPOTIPY_CLIENT_SECRET")
-            or os.getenv("SPOTIFY_CLIENT_SECRET")
+            os.getenv("SPOTIFY_SECRET")
             or ""
         ).strip()
         self.max_retries = max(1, max_retries)
