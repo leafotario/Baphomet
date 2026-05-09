@@ -2664,6 +2664,81 @@ class TierColorSelectionView(discord.ui.View):
         return True
 
 
+class TierConfigView(discord.ui.View):
+    """Menu efemero que centraliza configuracao de tiers e cores."""
+
+    def __init__(self, main_view: "TierListControlView") -> None:
+        super().__init__(timeout=120)
+        self.main_view = main_view
+        self.cog = main_view.cog
+        self.owner_id = main_view.owner_id
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "❌ Só quem criou a tier list pode usar esse menu.",
+                ephemeral=True,
+            )
+            return False
+
+        if self.owner_id not in self.cog.sessions:
+            await interaction.response.send_message(
+                "❌ Essa sessão expirou ou foi cancelada.",
+                ephemeral=True,
+            )
+            return False
+
+        return True
+
+    @discord.ui.button(
+        label="Editar Tiers",
+        emoji="📝",
+        style=discord.ButtonStyle.secondary,
+    )
+    async def edit_tiers(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        await interaction.response.send_modal(
+            ConfigureTiersModal(
+                cog=self.cog,
+                owner_id=self.owner_id,
+            )
+        )
+
+    @discord.ui.button(
+        label="Editar Cores",
+        emoji="🎨",
+        style=discord.ButtonStyle.secondary,
+    )
+    async def edit_colors(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        session = self.cog.sessions.get(self.owner_id)
+
+        if session is None:
+            await interaction.response.edit_message(
+                content="❌ Essa sessão expirou ou foi cancelada.",
+                view=None,
+            )
+            return
+
+        if not session.tiers:
+            await interaction.response.edit_message(
+                content="⚠️ Não há tiers para editar.",
+                view=None,
+            )
+            return
+
+        await interaction.response.edit_message(
+            content="🎨 Selecione a tier que receberá uma nova cor.",
+            view=TierColorSelectionView(self.main_view),
+        )
+
+
 class EditTierColorModal(discord.ui.Modal):
     """Modal de validacao hexadecimal e injecao de cor no estado da sessao."""
 
@@ -2917,11 +2992,19 @@ class TierListControlView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button,
     ) -> None:
-        await interaction.response.send_modal(
-            ConfigureTiersModal(
-                cog=self.cog,
-                owner_id=self.owner_id,
+        session = self.cog.sessions.get(self.owner_id)
+
+        if session is None:
+            await interaction.response.send_message(
+                "❌ Essa sessão expirou ou foi cancelada.",
+                ephemeral=True,
             )
+            return
+
+        await interaction.response.send_message(
+            "⚙️ O que você quer configurar nas tiers?",
+            view=TierConfigView(self),
+            ephemeral=True,
         )
 
     @discord.ui.button(
@@ -2958,43 +3041,9 @@ class TierListControlView(discord.ui.View):
         )
 
     @discord.ui.button(
-        label="Editar Item",
-        emoji="✏️",
-        style=discord.ButtonStyle.secondary,
-    )
-    async def edit_item(
-        self,
-        interaction: discord.Interaction,
-        button: discord.ui.Button,
-    ) -> None:
-        session = self.cog.sessions.get(self.owner_id)
-
-        if session is None:
-            await interaction.response.send_message(
-                "❌ Essa sessão expirou ou foi cancelada.",
-                ephemeral=True,
-            )
-            return
-
-        total_items = sum(len(items) for items in session.items.values())
-        if total_items <= 0:
-            await interaction.response.send_message(
-                "⚠️ Não há itens para editar.",
-                ephemeral=True,
-            )
-            return
-
-        selection_view = ItemSelectionView(self, mode="edit")
-        await interaction.response.send_message(
-            selection_view.page_content(),
-            view=selection_view,
-            ephemeral=True,
-        )
-
-    @discord.ui.button(
         label="Remover Item",
         emoji="🗑️",
-        style=discord.ButtonStyle.danger,
+        style=discord.ButtonStyle.secondary,
     )
     async def remove_item(
         self,
@@ -3026,11 +3075,11 @@ class TierListControlView(discord.ui.View):
         )
 
     @discord.ui.button(
-        label="Editar Cores",
-        emoji="🎨",
+        label="Editar Item",
+        emoji="✏️",
         style=discord.ButtonStyle.secondary,
     )
-    async def edit_colors(
+    async def edit_item(
         self,
         interaction: discord.Interaction,
         button: discord.ui.Button,
@@ -3044,16 +3093,18 @@ class TierListControlView(discord.ui.View):
             )
             return
 
-        if not session.tiers:
+        total_items = sum(len(items) for items in session.items.values())
+        if total_items <= 0:
             await interaction.response.send_message(
-                "⚠️ Não há tiers para editar.",
+                "⚠️ Não há itens para editar.",
                 ephemeral=True,
             )
             return
 
+        selection_view = ItemSelectionView(self, mode="edit")
         await interaction.response.send_message(
-            "🎨 Selecione a tier que receberá uma nova cor.",
-            view=TierColorSelectionView(self),
+            selection_view.page_content(),
+            view=selection_view,
             ephemeral=True,
         )
 
