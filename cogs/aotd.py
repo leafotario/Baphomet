@@ -935,24 +935,6 @@ class AlbumDoDia(commands.Cog):
 
         return texto[: limite - 1].rstrip() + "…"
 
-    @staticmethod
-    def formatar_duracao_ms(duracao_ms: Any) -> str:
-        try:
-            total_segundos = int(duracao_ms or 0) // 1000
-        except (TypeError, ValueError):
-            total_segundos = 0
-
-        if total_segundos <= 0:
-            return "Duração desconhecida"
-
-        horas, resto = divmod(total_segundos, 3600)
-        minutos, segundos = divmod(resto, 60)
-
-        if horas:
-            return f"{horas}h {minutos:02d}min"
-
-        return f"{minutos}min {segundos:02d}s"
-
     def next_daily_run(self, config: Optional[dict[str, Any]] = None) -> dt.datetime:
         config = config or self.carregar_config()
 
@@ -1149,34 +1131,14 @@ class AlbumDoDia(commands.Cog):
                 70,
             )
 
-            total_faixas = album.get("total_faixas", "?")
-            duracao = self.formatar_duracao_ms(album.get("duracao_ms"))
-            url = album.get("url") or None
-
-            generos = album.get("generos") or []
-            generos_txt = (
-                ", ".join(self.limitar_texto(genero, 28) for genero in generos[:4])
-                if generos
-                else "Sem gêneros registrados"
-            )
-
             field_name = self.limitar_texto(
                 f"#{index:02d} · {nome} — {artista}",
                 256,
             )
 
-            value_lines = [
-                f"👤 Sugerido por: **{sugerido_por}**",
-                f"🎵 Faixas: **{total_faixas}** · Duração: **{duracao}**",
-                f"🎸 Gêneros: {generos_txt}",
-            ]
-
-            if url:
-                value_lines.append(f"🔗 [Abrir no Spotify]({url})")
-
             embed.add_field(
                 name=field_name,
-                value=self.limitar_texto("\n".join(value_lines), 1024),
+                value=f"👤 Enviado por: **{sugerido_por}**",
                 inline=False,
             )
 
