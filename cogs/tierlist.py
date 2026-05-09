@@ -2183,7 +2183,7 @@ class ItemTierSelectView(discord.ui.View):
 
 
 class ItemSelectionSelect(discord.ui.Select):
-    """Select paginado que transforma a escolha do usuario em abertura de modal."""
+    """Select paginado que transforma a escolha do usuario em editar ou remover item."""
 
     def __init__(
         self,
@@ -2207,7 +2207,7 @@ class ItemSelectionSelect(discord.ui.Select):
             )
 
         super().__init__(
-            placeholder="Selecione o item que deseja editar",
+            placeholder=view_instance.select_placeholder(),
             min_values=1,
             max_values=1,
             options=options,
@@ -2216,6 +2216,10 @@ class ItemSelectionSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction) -> None:
         selected_index = int(self.values[0])
         ref = self.page_refs[selected_index]
+
+        if self.view_instance.mode == "remove":
+            await self.view_instance.remove_selected_item(interaction, ref)
+            return
 
         # Select -> Modal:
         # O usuario nunca digita o nome defeituoso para localizar o item.
@@ -2241,12 +2245,14 @@ class ItemSelectionView(discord.ui.View):
         main_view: "TierListControlView",
         *,
         page: int = 0,
+        mode: Literal["edit", "remove"] = "edit",
     ) -> None:
         super().__init__(timeout=120)
         self.main_view = main_view
         self.cog = main_view.cog
         self.owner_id = main_view.owner_id
         self.page = page
+        self.mode = mode
         self.item_refs = self.collect_item_refs()
         self.total_pages = max(1, math.ceil(len(self.item_refs) / self.PAGE_SIZE))
         self.page = max(0, min(self.page, self.total_pages - 1))
@@ -2282,9 +2288,106 @@ class ItemSelectionView(discord.ui.View):
         name = re.sub(r"\s+", " ", (item.name or "").strip())
         if name:
             return name
+
+        for fallback in (
+            item.spotify_name,
+            item.display_name,
+            item.internal_title,
+            item.wikipedia_title,
+            item.source_query,
+        ):
+            fallback_name = re.sub(r"\s+", " ", (fallback or "").strip())
+            if fallback_name:
+                return fallback_name
+
         if item.image_url or item.image_bytes:
             return "item com imagem"
         return "item sem nome"
+
+    def action_emoji(self) -> str:
+        return "🗑️" if self.mode == "remove" else "✏️"
+
+    def action_verb(self) -> str:
+        return "remover" if self.mode == "remove" else "editar"
+
+    def select_placeholder(self) -> str:
+        return f"Selecione o item que deseja {self.action_verb()}"
+
+    def page_content(self) -> str:
+        return (
+            f"{self.action_emoji()} Selecione o item para {self.action_verb()}. "
+            f"Página {self.page + 1}/{self.total_pages}"
+        )
+
+    async def remove_selected_item(
+        self,
+        interaction: discord.Interaction,
+        ref: dict,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        session = self.cog.sessions.get(self.owner_id)
+        if session is None:
+            await interaction.followup.send(
+                "❌ Essa sessão expirou ou foi cancelada.",
+                ephemeral=True,
+            )
+            return
+
+        tier_name = ref["tier"]
+        item_index = ref["index"]
+        original_item: TierItem = ref["item"]
+        removed_item: TierItem | None = None
+
+        async with session.lock:
+            try:
+                current_item = session.items[tier_name][item_index]
+            except (KeyError, IndexError):
+                await interaction.followup.send(
+                    "❌ Não encontrei esse item na sessão atual. Abra o menu de remoção novamente.",
+                    ephemeral=True,
+                )
+                return
+
+            if current_item is not original_item:
+                await interaction.followup.send(
+                    "❌ A lista mudou desde que você abriu o menu. Abra o menu de remoção novamente.",
+                    ephemeral=True,
+                )
+                return
+
+            removed_item = session.items[tier_name].pop(item_index)
+
+        try:
+            await self.main_view.refresh_after_item_edit(interaction, session)
+        except Exception:
+            if removed_item is not None:
+                async with session.lock:
+                    if tier_name not in session.items:
+                        session.items[tier_name] = []
+                    safe_index = max(0, min(item_index, len(session.items[tier_name])))
+                    session.items[tier_name].insert(safe_index, removed_item)
+
+            await interaction.followup.send(
+                "❌ Falha ao remover o item. A alteração foi revertida para proteger a sessão.",
+                ephemeral=True,
+            )
+            return
+
+        removed_label = self.display_item_name(removed_item) if removed_item else "item"
+        try:
+            await interaction.edit_original_response(
+                content=(
+                    f"✅ **{discord.utils.escape_markdown(removed_label)}** "
+                    f"foi removido da tier **{discord.utils.escape_markdown(tier_name)}**."
+                ),
+                view=None,
+            )
+        except discord.HTTPException:
+            await interaction.followup.send(
+                f"✅ **{discord.utils.escape_markdown(removed_label)}** foi removido.",
+                ephemeral=True,
+            )
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
@@ -2309,9 +2412,10 @@ class ItemSelectionView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button,
     ) -> None:
+        previous_view = ItemSelectionView(self.main_view, page=self.page - 1, mode=self.mode)
         await interaction.response.edit_message(
-            content=f"✏️ Selecione o item para editar. Página {self.page}/{self.total_pages}",
-            view=ItemSelectionView(self.main_view, page=self.page - 1),
+            content=previous_view.page_content(),
+            view=previous_view,
         )
 
     @discord.ui.button(label="Próxima", emoji="➡️", style=discord.ButtonStyle.secondary)
@@ -2320,9 +2424,10 @@ class ItemSelectionView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button,
     ) -> None:
+        next_view = ItemSelectionView(self.main_view, page=self.page + 1, mode=self.mode)
         await interaction.response.edit_message(
-            content=f"✏️ Selecione o item para editar. Página {self.page + 2}/{self.total_pages}",
-            view=ItemSelectionView(self.main_view, page=self.page + 1),
+            content=next_view.page_content(),
+            view=next_view,
         )
 
 
@@ -2805,7 +2910,7 @@ class TierListControlView(discord.ui.View):
     @discord.ui.button(
         label="Configurar Tiers",
         emoji="📝",
-        style=discord.ButtonStyle.primary,
+        style=discord.ButtonStyle.secondary,
     )
     async def configure_tiers(
         self,
@@ -2822,7 +2927,7 @@ class TierListControlView(discord.ui.View):
     @discord.ui.button(
         label="Adicionar Item",
         emoji="➕",
-        style=discord.ButtonStyle.success,
+        style=discord.ButtonStyle.secondary,
     )
     async def add_item(
         self,
@@ -2879,9 +2984,43 @@ class TierListControlView(discord.ui.View):
             )
             return
 
-        selection_view = ItemSelectionView(self)
+        selection_view = ItemSelectionView(self, mode="edit")
         await interaction.response.send_message(
-            f"✏️ Selecione o item para editar. Página {selection_view.page + 1}/{selection_view.total_pages}",
+            selection_view.page_content(),
+            view=selection_view,
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Remover Item",
+        emoji="🗑️",
+        style=discord.ButtonStyle.danger,
+    )
+    async def remove_item(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        session = self.cog.sessions.get(self.owner_id)
+
+        if session is None:
+            await interaction.response.send_message(
+                "❌ Essa sessão expirou ou foi cancelada.",
+                ephemeral=True,
+            )
+            return
+
+        total_items = sum(len(items) for items in session.items.values())
+        if total_items <= 0:
+            await interaction.response.send_message(
+                "⚠️ Não há itens para remover.",
+                ephemeral=True,
+            )
+            return
+
+        selection_view = ItemSelectionView(self, mode="remove")
+        await interaction.response.send_message(
+            selection_view.page_content(),
             view=selection_view,
             ephemeral=True,
         )
@@ -2919,9 +3058,9 @@ class TierListControlView(discord.ui.View):
         )
 
     @discord.ui.button(
-        label="Gerar Imagem",
+        label="Finalizar",
         emoji="🖼️",
-        style=discord.ButtonStyle.secondary,
+        style=discord.ButtonStyle.success,
     )
     async def generate_image(
         self,
