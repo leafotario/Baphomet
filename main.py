@@ -145,6 +145,15 @@ class MyBot(commands.Bot):
             except Exception as exc:
                 log_error(f"Erro ao fechar repositório XP: {exc}")
 
+        vinculos_runtime = getattr(self, "vinculos_runtime", None)
+        if vinculos_runtime is not None:
+            try:
+                log_info("Fechando conexão segura do repositório de vínculos...")
+                await vinculos_runtime.repository.close()
+                log_success("Repositório de vínculos encerrado com sucesso.")
+            except Exception as exc:
+                log_error(f"Erro ao fechar repositório de vínculos: {exc}")
+
         log_discord("Bot desconectado da API.")
         await super().close()
 

@@ -9,6 +9,7 @@ import logging
 import random
 from collections import defaultdict, deque
 from datetime import timedelta
+from typing import Protocol
 
 import discord
 
@@ -25,11 +26,24 @@ from .utils import (
 from .db import XpRepository
 
 
+class VinculoMultiplierProvider(Protocol):
+    async def get_xp_multiplier(self, guild_id: int, user_id: int) -> float:
+        ...
+
+
 class XpService:
-    def __init__(self, repository: XpRepository, *, rng: random.Random | None = None, logger: logging.Logger | None = None) -> None:
+    def __init__(
+        self,
+        repository: XpRepository,
+        *,
+        rng: random.Random | None = None,
+        logger: logging.Logger | None = None,
+        vinculos_provider: VinculoMultiplierProvider | None = None,
+    ) -> None:
         self.repository = repository
         self.rng = rng or random.Random()
         self.logger = logger or logging.getLogger("baphomet.xp")
+        self.vinculos_provider = vinculos_provider
         self._config_cache: dict[int, GuildXpConfig] = {}
         self._user_locks: dict[tuple[int, int], asyncio.Lock] = defaultdict(asyncio.Lock)
         self._recent_fingerprints: dict[tuple[int, int], deque[tuple[str, float]]] = defaultdict(lambda: deque(maxlen=5))
@@ -129,6 +143,20 @@ class XpService:
     def _remember_fingerprint(self, guild_id: int, user_id: int, normalized: str, now_ts: float) -> None:
         self._recent_fingerprints[(guild_id, user_id)].append((normalized, now_ts))
 
+    async def _apply_vinculo_multiplier(self, guild_id: int, user_id: int, base_xp: int) -> int:
+        if self.vinculos_provider is None:
+            return base_xp
+        try:
+            multiplier = await self.vinculos_provider.get_xp_multiplier(guild_id, user_id)
+        except Exception:
+            self.logger.exception(
+                "falha ao calcular multiplicador de vínculos guild_id=%s user_id=%s",
+                guild_id,
+                user_id,
+            )
+            return base_xp
+        return max(0, int(round(base_xp * multiplier)))
+
     async def process_message(self, message: discord.Message) -> XpChangeResult | None:
         if message.guild is None or not isinstance(message.author, discord.Member):
             return None
@@ -137,7 +165,7 @@ class XpService:
         if not allowed or normalized is None:
             return None
 
-        delta_xp = self.rng.randint(config.min_xp_per_message, config.max_xp_per_message)
+        base_delta_xp = self.rng.randint(config.min_xp_per_message, config.max_xp_per_message)
         fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
         now = utc_now()
         now_iso = now.isoformat()
@@ -155,6 +183,11 @@ class XpService:
             )
             if not passes_repeat:
                 return None
+            delta_xp = await self._apply_vinculo_multiplier(
+                message.guild.id,
+                message.author.id,
+                base_delta_xp,
+            )
             awarded, _, old_total, new_total = await self.repository.try_add_message_xp(
                 guild_id=message.guild.id,
                 user_id=message.author.id,

@@ -21,7 +21,9 @@ async def setup(bot: commands.Bot) -> None:
     await repository.connect()
 
     # 2. Setup Services
-    service = XpService(repository)
+    vinculos_runtime = getattr(bot, "vinculos_runtime", None)
+    vinculos_provider = getattr(vinculos_runtime, "repository", None)
+    service = XpService(repository, vinculos_provider=vinculos_provider)
     cards = XpCardRenderer()
 
     # 3. Create Runtime and attach to bot
