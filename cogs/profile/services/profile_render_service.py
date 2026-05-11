@@ -15,8 +15,16 @@ import aiohttp
 import discord
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
+from cogs.ficha.rendering import ProfileCardRenderer as FichaProfileCardRenderer
+from cogs.ficha.rendering import ProfileRenderData
+
 from ..models import ProfileFieldStatus
 from ..schemas import ProfileSnapshot
+from .profile_card_data_builder import (
+    ProfileCardDataBuilder,
+    image_to_png_bytes,
+    profile_render_data_from_snapshot,
+)
 
 
 LOGGER = logging.getLogger("baphomet.profile.renderer")
@@ -297,13 +305,50 @@ REQUIRED_FONT_FILES = ("Poppins-Regular.ttf", "Poppins-Bold.ttf", "Montserrat-Bl
 
 
 class ProfileRenderService:
-    def __init__(self, *, layout: ProfileCardLayout = LAYOUT) -> None:
+    def __init__(
+        self,
+        *,
+        layout: ProfileCardLayout = LAYOUT,
+        data_builder: ProfileCardDataBuilder | None = None,
+        card_renderer: FichaProfileCardRenderer | None = None,
+    ) -> None:
         self.layout = layout
+        self.data_builder = data_builder
+        self.card_renderer = card_renderer or FichaProfileCardRenderer()
         self._validate_assets()
         self._fonts = self._load_fonts()
         self._template_cache: dict[str, Image.Image] = {}
         self._render_cache: OrderedDict[ProfileRenderCacheKey, ProfileRenderCacheEntry] = OrderedDict()
         self._render_locks: dict[tuple[int, int], asyncio.Lock] = {}
+
+    async def build_profile_render_data(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+    ) -> ProfileRenderData:
+        if self.data_builder is None:
+            raise RuntimeError("ProfileRenderService precisa de ProfileCardDataBuilder para montar dados reais")
+        return await self.data_builder.build_profile_render_data(guild, member)
+
+    async def render_member_profile(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+    ) -> ProfileRenderResult:
+        try:
+            data = await self.build_profile_render_data(guild, member)
+            image_bytes = self.card_renderer.render(data)
+        except Exception:
+            LOGGER.exception("profile_render_failed guild_id=%s user_id=%s", guild.id, member.id)
+            raise
+
+        buffer = io.BytesIO(image_bytes)
+        buffer.seek(0)
+        return ProfileRenderResult(
+            image=buffer,
+            filename=f"ficha_{member.id}.png",
+            reason=None,
+        )
 
     async def render_profile(self, snapshot: ProfileSnapshot) -> ProfileRenderResult:
         start = time.monotonic()
@@ -357,10 +402,13 @@ class ProfileRenderService:
 
     def render_profile_card(self, snapshot: ProfileSnapshot, *, avatar_image: Image.Image | None = None) -> bytes:
         """Renderiza a ficha em PNG 1500x1000, pronta para envio no Discord."""
-        image = self._compose(snapshot, avatar_image=avatar_image)
-        buffer = io.BytesIO()
-        image.convert("RGB").save(buffer, format="PNG")
-        return buffer.getvalue()
+        theme_key = self._theme_for(snapshot).key
+        self._template_cache.setdefault(theme_key, Image.new("RGBA", self.layout.canvas, (0, 0, 0, 0)))
+        data = profile_render_data_from_snapshot(
+            snapshot,
+            avatar_bytes=image_to_png_bytes(avatar_image),
+        )
+        return self.card_renderer.render(data)
 
     def invalidate_user(self, guild_id: int, user_id: int) -> None:
         stale_keys = [

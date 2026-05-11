@@ -70,6 +70,18 @@ class ProfileRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class ProfileBadge:
+    guild_id: int
+    role_id: int
+    badge_name: str
+    image_path: str
+    priority: int
+    created_by: int
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
 class ProfileFieldValue:
     guild_id: int
     user_id: int

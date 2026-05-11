@@ -10,6 +10,7 @@ from ..db import ProfileDatabase
 from ..models import (
     GuildProfileSettings,
     PresentationMode,
+    ProfileBadge,
     ProfileFieldSourceType,
     ProfileFieldStatus,
     ProfileFieldValue,
@@ -210,6 +211,88 @@ class ProfileRepository:
                 ),
             )
         return await self.get_settings(guild_id)
+
+    async def upsert_badge(
+        self,
+        *,
+        guild_id: int,
+        role_id: int,
+        badge_name: str,
+        image_path: str,
+        priority: int,
+        created_by: int,
+    ) -> ProfileBadge:
+        now = utc_now_iso()
+        async with self.database.transaction() as conn:
+            await conn.execute(
+                """
+                INSERT INTO profile_badges(
+                    guild_id,
+                    role_id,
+                    badge_name,
+                    image_path,
+                    priority,
+                    created_by,
+                    created_at,
+                    updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(guild_id, role_id) DO UPDATE SET
+                    badge_name = excluded.badge_name,
+                    image_path = excluded.image_path,
+                    priority = excluded.priority,
+                    updated_at = excluded.updated_at
+                """,
+                (guild_id, role_id, badge_name, image_path, priority, created_by, now, now),
+            )
+            return await self._get_badge_in_conn(conn, guild_id, role_id)
+
+    async def get_badge(self, guild_id: int, role_id: int) -> ProfileBadge | None:
+        async with self.database.session() as conn:
+            rows = await conn.execute_fetchall(
+                "SELECT * FROM profile_badges WHERE guild_id = ? AND role_id = ?",
+                (guild_id, role_id),
+            )
+        return self._row_to_badge(rows[0]) if rows else None
+
+    async def list_badges(self, guild_id: int) -> list[ProfileBadge]:
+        async with self.database.session() as conn:
+            rows = await conn.execute_fetchall(
+                """
+                SELECT *
+                FROM profile_badges
+                WHERE guild_id = ?
+                ORDER BY priority DESC, role_id ASC
+                """,
+                (guild_id,),
+            )
+        return [self._row_to_badge(row) for row in rows]
+
+    async def delete_badge(self, guild_id: int, role_id: int) -> ProfileBadge | None:
+        async with self.database.transaction() as conn:
+            badge = await self._get_badge_in_conn_or_none(conn, guild_id, role_id)
+            if badge is None:
+                return None
+            await conn.execute(
+                "DELETE FROM profile_badges WHERE guild_id = ? AND role_id = ?",
+                (guild_id, role_id),
+            )
+            return badge
+
+    async def update_badge_priority(self, guild_id: int, role_id: int, priority: int) -> ProfileBadge | None:
+        now = utc_now_iso()
+        async with self.database.transaction() as conn:
+            cur = await conn.execute(
+                """
+                UPDATE profile_badges
+                SET priority = ?,
+                    updated_at = ?
+                WHERE guild_id = ? AND role_id = ?
+                """,
+                (priority, now, guild_id, role_id),
+            )
+            if cur.rowcount <= 0:
+                return None
+            return await self._get_badge_in_conn(conn, guild_id, role_id)
 
     async def upsert_field(
         self,
@@ -565,6 +648,24 @@ class ProfileRepository:
             raise RuntimeError("profile field row was not created")
         return self._row_to_field(rows[0])
 
+    async def _get_badge_in_conn(self, conn: aiosqlite.Connection, guild_id: int, role_id: int) -> ProfileBadge:
+        badge = await self._get_badge_in_conn_or_none(conn, guild_id, role_id)
+        if badge is None:
+            raise RuntimeError("profile badge row was not created")
+        return badge
+
+    async def _get_badge_in_conn_or_none(
+        self,
+        conn: aiosqlite.Connection,
+        guild_id: int,
+        role_id: int,
+    ) -> ProfileBadge | None:
+        rows = await conn.execute_fetchall(
+            "SELECT * FROM profile_badges WHERE guild_id = ? AND role_id = ?",
+            (guild_id, role_id),
+        )
+        return self._row_to_badge(rows[0]) if rows else None
+
     async def _insert_event_in_conn(
         self,
         conn: aiosqlite.Connection,
@@ -621,6 +722,18 @@ class ProfileRepository:
             moderated_by=int(row["moderated_by"]) if row["moderated_by"] is not None else None,
             moderated_at=str(row["moderated_at"]) if row["moderated_at"] is not None else None,
             moderation_reason=str(row["moderation_reason"]) if row["moderation_reason"] is not None else None,
+        )
+
+    def _row_to_badge(self, row: aiosqlite.Row) -> ProfileBadge:
+        return ProfileBadge(
+            guild_id=int(row["guild_id"]),
+            role_id=int(row["role_id"]),
+            badge_name=str(row["badge_name"]),
+            image_path=str(row["image_path"]),
+            priority=int(row["priority"]),
+            created_by=int(row["created_by"]),
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
         )
 
     def _row_to_settings(self, row: aiosqlite.Row) -> GuildProfileSettings:

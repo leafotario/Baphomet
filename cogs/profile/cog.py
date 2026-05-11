@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import io
+from pathlib import Path
 import time
 
 import discord
@@ -11,11 +13,14 @@ from .field_registry import UnknownProfileFieldError
 from .models import ProfileFieldStatus
 from .services import (
     PresentationChannelService,
+    ProfileBadgeService,
+    ProfileBadgeValidationError,
     ProfileFieldNotFoundError,
     ProfileRenderService,
     ProfileService,
     ProfileValidationError,
 )
+from .services.profile_badge_service import MAX_BADGE_IMAGE_BYTES
 from .views import ProfileEditorView
 
 
@@ -50,6 +55,7 @@ async def profile_settings_check(interaction: discord.Interaction) -> bool:
 
 class ProfileCog(commands.GroupCog, group_name="ficha", group_description="Ficha de usuario por servidor."):
     admin = app_commands.Group(name="admin", description="Moderacao de fichas.")
+    insignia = app_commands.Group(name="insignia", description="Configuracao administrativa de insignias.")
 
     def __init__(
         self,
@@ -57,12 +63,14 @@ class ProfileCog(commands.GroupCog, group_name="ficha", group_description="Ficha
         service: ProfileService,
         renderer: ProfileRenderService,
         presentation: PresentationChannelService | None = None,
+        badges: ProfileBadgeService | None = None,
     ) -> None:
         super().__init__()
         self.bot = bot
         self.service = service
         self.renderer = renderer
         self.presentation = presentation or PresentationChannelService(service)
+        self.badges = badges
         self._warned_message_content_guilds: set[int] = set()
         self._view_cooldowns: dict[tuple[int, int], float] = {}
         self._context_menu = app_commands.ContextMenu(
@@ -212,6 +220,175 @@ class ProfileCog(commands.GroupCog, group_name="ficha", group_description="Ficha
         )
         await interaction.response.send_message("Campo editado.", ephemeral=True)
 
+    @insignia.command(name="adicionar", description="Configura uma insignia de ficha para um cargo.")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.check(profile_admin_check)
+    @app_commands.describe(
+        cargo="Cargo que ativa a insignia",
+        nome="Nome exibido no bloco de insignia",
+        imagem="Imagem PNG, JPEG ou WEBP da insignia",
+        prioridade="Prioridade para desempate; maior vence",
+    )
+    async def insignia_adicionar(
+        self,
+        interaction: discord.Interaction,
+        cargo: discord.Role,
+        nome: str,
+        imagem: discord.Attachment,
+        prioridade: int = 0,
+    ) -> None:
+        badges = await self._badge_service_or_respond(interaction)
+        if badges is None:
+            return
+        if not await self._validate_badge_role(interaction, cargo):
+            return
+        if imagem.size and imagem.size > MAX_BADGE_IMAGE_BYTES:
+            await interaction.response.send_message("A imagem deve ter no maximo 5 MB.", ephemeral=True)
+            return
+
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        try:
+            payload = await imagem.read()
+            badge, updated = await badges.upsert_badge(
+                guild_id=interaction.guild_id,
+                role=cargo,
+                badge_name=nome,
+                image_bytes=payload,
+                created_by=interaction.user.id,
+                priority=prioridade,
+            )
+        except ProfileBadgeValidationError as exc:
+            await interaction.followup.send(str(exc), ephemeral=True)
+            return
+        except Exception:
+            LOGGER.exception(
+                "profile_badge_add_failed guild_id=%s role_id=%s user_id=%s",
+                interaction.guild_id,
+                cargo.id,
+                interaction.user.id,
+            )
+            await interaction.followup.send("Nao consegui configurar essa insignia agora.", ephemeral=True)
+            return
+
+        action = "atualizei" if updated else "configurei"
+        await interaction.followup.send(
+            f"Insignia **{badge.badge_name}** {action} para o cargo {cargo.mention}.",
+            ephemeral=True,
+        )
+
+    @insignia.command(name="remover", description="Remove a insignia configurada para um cargo.")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.check(profile_admin_check)
+    @app_commands.describe(cargo="Cargo cuja insignia sera removida")
+    async def insignia_remover(self, interaction: discord.Interaction, cargo: discord.Role) -> None:
+        badges = await self._badge_service_or_respond(interaction)
+        if badges is None:
+            return
+        if not await self._validate_badge_role(interaction, cargo):
+            return
+
+        try:
+            removed = await badges.remove_badge(interaction.guild_id, cargo.id)
+        except Exception:
+            LOGGER.exception(
+                "profile_badge_remove_failed guild_id=%s role_id=%s user_id=%s",
+                interaction.guild_id,
+                cargo.id,
+                interaction.user.id,
+            )
+            await interaction.response.send_message("Nao consegui remover essa insignia agora.", ephemeral=True)
+            return
+
+        if removed is None:
+            await interaction.response.send_message("Nenhuma insignia foi encontrada para esse cargo.", ephemeral=True)
+            return
+        await interaction.response.send_message(f"Insignia removida do cargo {cargo.mention}.", ephemeral=True)
+
+    @insignia.command(name="listar", description="Lista as insignias configuradas neste servidor.")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.check(profile_admin_check)
+    async def insignia_listar(self, interaction: discord.Interaction) -> None:
+        badges = await self._badge_service_or_respond(interaction)
+        if badges is None or interaction.guild is None:
+            return
+
+        configs = await badges.list_badges(interaction.guild.id)
+        if not configs:
+            await interaction.response.send_message("Nenhuma insignia configurada neste servidor.", ephemeral=True)
+            return
+
+        embed = discord.Embed(title="Insignias da ficha", color=discord.Color.dark_purple())
+        for badge in configs[:25]:
+            role = interaction.guild.get_role(badge.role_id)
+            role_label = role.mention if role is not None else f"`{badge.role_id}`"
+            image_status = "imagem ok" if Path(badge.image_path).exists() else "imagem ausente"
+            embed.add_field(
+                name=badge.badge_name[:256],
+                value=(
+                    f"Cargo: {role_label}\n"
+                    f"Prioridade: `{badge.priority}`\n"
+                    f"Status: {badges.role_status(interaction.guild, badge)}; {image_status}"
+                ),
+                inline=False,
+            )
+        if len(configs) > 25:
+            embed.set_footer(text=f"Mostrando 25 de {len(configs)} insignias.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @insignia.command(name="preview", description="Mostra a insignia configurada para um cargo.")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.check(profile_admin_check)
+    @app_commands.describe(cargo="Cargo cuja insignia sera exibida")
+    async def insignia_preview(self, interaction: discord.Interaction, cargo: discord.Role) -> None:
+        badges = await self._badge_service_or_respond(interaction)
+        if badges is None:
+            return
+        badge = await badges.get_badge(interaction.guild_id, cargo.id)
+        if badge is None:
+            await interaction.response.send_message("Nenhuma insignia foi encontrada para esse cargo.", ephemeral=True)
+            return
+
+        image_bytes = await badges.preview_badge_image(badge)
+        embed = discord.Embed(title=badge.badge_name, color=discord.Color.dark_purple())
+        embed.add_field(name="Cargo", value=cargo.mention, inline=True)
+        embed.add_field(name="Prioridade", value=str(badge.priority), inline=True)
+        embed.add_field(name="Imagem", value="ok" if image_bytes else "ausente ou invalida", inline=True)
+        if image_bytes:
+            file = discord.File(io.BytesIO(image_bytes), filename=f"insignia_{cargo.id}.png")
+            embed.set_image(url=f"attachment://insignia_{cargo.id}.png")
+            await interaction.response.send_message(embed=embed, file=file, ephemeral=True)
+            return
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @insignia.command(name="prioridade", description="Altera a prioridade de uma insignia.")
+    @app_commands.guild_only()
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.check(profile_admin_check)
+    @app_commands.describe(cargo="Cargo da insignia", prioridade="Nova prioridade; maior vence")
+    async def insignia_prioridade(
+        self,
+        interaction: discord.Interaction,
+        cargo: discord.Role,
+        prioridade: int,
+    ) -> None:
+        badges = await self._badge_service_or_respond(interaction)
+        if badges is None:
+            return
+        if not await self._validate_badge_role(interaction, cargo):
+            return
+        badge = await badges.update_priority(interaction.guild_id, cargo.id, prioridade)
+        if badge is None:
+            await interaction.response.send_message("Nenhuma insignia foi encontrada para esse cargo.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            f"Prioridade da insignia **{badge.badge_name}** atualizada para `{badge.priority}`.",
+            ephemeral=True,
+        )
+
     @admin_remover_campo.autocomplete("campo")
     @admin_restaurar_campo.autocomplete("campo")
     @admin_editar_campo.autocomplete("campo")
@@ -312,21 +489,17 @@ class ProfileCog(commands.GroupCog, group_name="ficha", group_description="Ficha
         if not interaction.response.is_done():
             await interaction.response.defer(thinking=True, ephemeral=ephemeral)
 
-        snapshot = await self.service.get_profile_snapshot(interaction.guild, member)
-        embed = self.renderer.build_preview_embed(snapshot)
         try:
-            result = await self.renderer.render_profile(snapshot)
+            result = await self.renderer.render_member_profile(interaction.guild, member)
         except Exception:
             LOGGER.exception(
-                "profile_render_failed guild_id=%s user_id=%s revision=%s command_user_id=%s",
+                "profile_render_failed guild_id=%s user_id=%s command_user_id=%s",
                 interaction.guild.id,
                 member.id,
-                snapshot.profile.render_revision,
                 interaction.user.id,
             )
             await interaction.followup.send(
                 content="Nao consegui renderizar a imagem agora. Tente novamente em instantes.",
-                embed=embed,
                 ephemeral=ephemeral,
             )
             return
@@ -335,12 +508,11 @@ class ProfileCog(commands.GroupCog, group_name="ficha", group_description="Ficha
             result.image.seek(0)
             await interaction.followup.send(
                 file=discord.File(result.image, filename=result.filename),
-                embed=embed,
                 ephemeral=ephemeral,
             )
             return
 
-        await interaction.followup.send(content=result.reason, embed=embed, ephemeral=ephemeral)
+        await interaction.followup.send(content=result.reason, ephemeral=ephemeral)
 
     async def usar_como_informacoes_basicas(
         self,
@@ -462,6 +634,21 @@ class ProfileCog(commands.GroupCog, group_name="ficha", group_description="Ficha
         for stored_key in stale_keys[:50]:
             self._view_cooldowns.pop(stored_key, None)
         return 0.0
+
+    async def _badge_service_or_respond(self, interaction: discord.Interaction) -> ProfileBadgeService | None:
+        if self.badges is not None:
+            return self.badges
+        await interaction.response.send_message("O sistema de insignias nao esta configurado.", ephemeral=True)
+        return None
+
+    async def _validate_badge_role(self, interaction: discord.Interaction, role: discord.Role) -> bool:
+        if interaction.guild is None or role.guild.id != interaction.guild.id:
+            await interaction.response.send_message("Esse cargo nao pertence a este servidor.", ephemeral=True)
+            return False
+        if role.is_default():
+            await interaction.response.send_message("Nao configure insignia para @everyone.", ephemeral=True)
+            return False
+        return True
 
     async def _warn_if_message_content_unavailable(self, message: discord.Message) -> None:
         if message.guild is None or message.guild.id in self._warned_message_content_guilds:

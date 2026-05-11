@@ -9,7 +9,15 @@ from .db import ProfileDatabase
 from .field_registry import PROFILE_FIELD_REGISTRY
 from .repositories import ProfileRepository
 from .runtime import ProfileRuntime
-from .services import PresentationChannelService, ProfileModerationService, ProfileRenderService, ProfileService, XpRuntimeLevelProvider
+from .services import (
+    PresentationChannelService,
+    ProfileBadgeService,
+    ProfileCardDataBuilder,
+    ProfileModerationService,
+    ProfileRenderService,
+    ProfileService,
+    XpRuntimeLevelProvider,
+)
 
 
 DATA_DIR = pathlib.Path("data")
@@ -29,7 +37,9 @@ async def setup(bot: commands.Bot) -> None:
         level_provider=XpRuntimeLevelProvider(bot),
         moderation_service=moderation,
     )
-    renderer = ProfileRenderService()
+    badges = ProfileBadgeService(repository)
+    data_builder = ProfileCardDataBuilder(profile_service=service, bot=bot, badge_service=badges)
+    renderer = ProfileRenderService(data_builder=data_builder)
     presentation = PresentationChannelService(service)
 
     bot.profile_runtime = ProfileRuntime(
@@ -39,5 +49,6 @@ async def setup(bot: commands.Bot) -> None:
         moderation=moderation,
         presentation=presentation,
         renderer=renderer,
+        badges=badges,
     )
-    await bot.add_cog(ProfileCog(bot, service, renderer, presentation))
+    await bot.add_cog(ProfileCog(bot, service, renderer, presentation, badges))

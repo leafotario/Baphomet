@@ -3,7 +3,7 @@ from __future__ import annotations
 import aiosqlite
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS profile_schema_migrations (
@@ -63,11 +63,26 @@ CREATE TABLE IF NOT EXISTS profile_moderation_events (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS profile_badges (
+    guild_id INTEGER NOT NULL,
+    role_id INTEGER NOT NULL,
+    badge_name TEXT NOT NULL,
+    image_path TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (guild_id, role_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_profile_fields_status
     ON profile_fields(guild_id, status, updated_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_profile_moderation_events_target
     ON profile_moderation_events(guild_id, user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_profile_badges_guild_priority
+    ON profile_badges(guild_id, priority DESC, role_id ASC);
 """
 
 
@@ -81,6 +96,21 @@ async def run_profile_migrations(conn: aiosqlite.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_profile_moderation_events_target
             ON profile_moderation_events(guild_id, user_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS profile_badges (
+            guild_id INTEGER NOT NULL,
+            role_id INTEGER NOT NULL,
+            badge_name TEXT NOT NULL,
+            image_path TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_by INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (guild_id, role_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_profile_badges_guild_priority
+            ON profile_badges(guild_id, priority DESC, role_id ASC);
         """
     )
     applied_rows = await conn.execute_fetchall("SELECT version FROM profile_schema_migrations")

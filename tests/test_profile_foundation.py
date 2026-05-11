@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import io
+import tempfile
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import discord
@@ -20,6 +22,7 @@ from cogs.profile.models import (
     FieldDefinition,
     GuildProfileSettings,
     PresentationMode,
+    ProfileBadge,
     ProfileDeletionResult,
     ProfileFieldSourceType,
     ProfileFieldStatus,
@@ -32,6 +35,9 @@ from cogs.profile.schemas import LevelSnapshot
 from cogs.profile.services import (
     NullLevelProvider,
     PresentationChannelService,
+    ProfileBadgeService,
+    ProfileBadgeValidationError,
+    ProfileCardDataBuilder,
     ProfileModerationService,
     ProfileRenderService,
     ProfileService,
@@ -62,6 +68,11 @@ class ProfileFoundationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ficha admin remover-campo", command_names)
         self.assertIn("ficha admin restaurar-campo", command_names)
         self.assertIn("ficha admin editar-campo", command_names)
+        self.assertIn("ficha insignia adicionar", command_names)
+        self.assertIn("ficha insignia remover", command_names)
+        self.assertIn("ficha insignia listar", command_names)
+        self.assertIn("ficha insignia preview", command_names)
+        self.assertIn("ficha insignia prioridade", command_names)
 
     async def test_authorial_fields_are_guild_scoped_and_display_name_is_not_persisted(self) -> None:
         self.assertNotIn("display_name", PROFILE_FIELD_REGISTRY.keys())
@@ -439,6 +450,252 @@ class ProfileRenderServiceTests(unittest.IsolatedAsyncioTestCase):
         return await self.service.get_profile_snapshot(_fake_guild(1), _fake_member(2))
 
 
+class ProfileBadgeServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.repository = _MemoryProfileRepository()
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.badges = ProfileBadgeService(self.repository, storage_root=Path(self.tempdir.name))
+        self.guild = _fake_guild_with_roles(1, [])
+
+    async def asyncTearDown(self) -> None:
+        self.tempdir.cleanup()
+
+    async def test_add_valid_badge_processes_png_and_lists_config(self) -> None:
+        role = _fake_role(10, self.guild, position=5)
+
+        badge, updated = await self.badges.upsert_badge(
+            guild_id=1,
+            role=role,
+            badge_name="LVL 5 - Iniciado",
+            image_bytes=_png_bytes((120, 30, 60), size=(256, 256)),
+            created_by=99,
+            priority=7,
+        )
+
+        self.assertFalse(updated)
+        self.assertEqual(badge.badge_name, "LVL 5 - Iniciado")
+        self.assertEqual(badge.priority, 7)
+        self.assertTrue(Path(badge.image_path).exists())
+        stored = await self.badges.list_badges(1)
+        self.assertEqual([item.role_id for item in stored], [10])
+        with Image.open(badge.image_path) as image:
+            self.assertEqual(image.format, "PNG")
+            self.assertEqual(image.size, (512, 512))
+
+    async def test_rejects_invalid_image(self) -> None:
+        role = _fake_role(10, self.guild)
+
+        with self.assertRaises(ProfileBadgeValidationError):
+            await self.badges.upsert_badge(
+                guild_id=1,
+                role=role,
+                badge_name="Quebrada",
+                image_bytes=b"not-an-image",
+                created_by=99,
+            )
+
+        self.assertEqual(await self.badges.list_badges(1), [])
+
+    async def test_remove_badge_deletes_config_and_image(self) -> None:
+        role = _fake_role(10, self.guild)
+        badge, _ = await self.badges.upsert_badge(
+            guild_id=1,
+            role=role,
+            badge_name="Novato",
+            image_bytes=_png_bytes((30, 30, 30), size=(256, 256)),
+            created_by=99,
+        )
+
+        removed = await self.badges.remove_badge(1, role.id)
+
+        self.assertEqual(removed, badge)
+        self.assertFalse(Path(badge.image_path).exists())
+        self.assertIsNone(await self.badges.get_badge(1, role.id))
+
+    async def test_resolves_unique_badge_for_member_role(self) -> None:
+        role = _fake_role(10, self.guild, position=2)
+        self.guild.roles = [role]
+        await self.badges.upsert_badge(
+            guild_id=1,
+            role=role,
+            badge_name="Novato",
+            image_bytes=_png_bytes((10, 80, 80), size=(256, 256)),
+            created_by=99,
+        )
+
+        resolved = await self.badges.resolve_member_badge(_fake_member_with_roles(2, self.guild, [role]))
+
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.badge.badge_name, "Novato")
+        self.assertIsNotNone(resolved.image_bytes)
+
+    async def test_resolves_multiple_badges_by_priority_then_role_position(self) -> None:
+        low = _fake_role(10, self.guild, position=100)
+        high = _fake_role(20, self.guild, position=1)
+        self.guild.roles = [low, high]
+        await self.badges.upsert_badge(
+            guild_id=1,
+            role=low,
+            badge_name="Cargo Alto",
+            image_bytes=_png_bytes((20, 20, 20), size=(256, 256)),
+            created_by=99,
+            priority=1,
+        )
+        await self.badges.upsert_badge(
+            guild_id=1,
+            role=high,
+            badge_name="Prioridade Alta",
+            image_bytes=_png_bytes((200, 20, 20), size=(256, 256)),
+            created_by=99,
+            priority=5,
+        )
+
+        resolved = await self.badges.resolve_member_badge(_fake_member_with_roles(2, self.guild, [low, high]))
+
+        self.assertEqual(resolved.badge.role_id, high.id)
+
+    async def test_resolves_tie_by_role_position_and_falls_back_without_badge(self) -> None:
+        lower = _fake_role(10, self.guild, position=1)
+        higher = _fake_role(20, self.guild, position=9)
+        self.guild.roles = [lower, higher]
+        for role in (lower, higher):
+            await self.badges.upsert_badge(
+                guild_id=1,
+                role=role,
+                badge_name=f"Badge {role.id}",
+                image_bytes=_png_bytes((role.id, 20, 20), size=(256, 256)),
+                created_by=99,
+                priority=3,
+            )
+
+        resolved = await self.badges.resolve_member_badge(_fake_member_with_roles(2, self.guild, [lower, higher]))
+        missing = await self.badges.resolve_member_badge(_fake_member_with_roles(3, self.guild, []))
+
+        self.assertEqual(resolved.badge.role_id, higher.id)
+        self.assertIsNone(missing)
+
+    async def test_deleted_role_and_missing_image_do_not_break_resolution(self) -> None:
+        role = _fake_role(10, self.guild)
+        await self.badges.upsert_badge(
+            guild_id=1,
+            role=role,
+            badge_name="Someu",
+            image_bytes=_png_bytes((80, 40, 40), size=(256, 256)),
+            created_by=99,
+        )
+        badge = await self.badges.get_badge(1, role.id)
+        Path(badge.image_path).unlink()
+
+        deleted_role_member = _fake_member_with_roles(2, self.guild, [])
+        missing_file_member = _fake_member_with_roles(3, self.guild, [role])
+
+        self.assertIsNone(await self.badges.resolve_member_badge(deleted_role_member))
+        resolved = await self.badges.resolve_member_badge(missing_file_member)
+        self.assertEqual(resolved.badge.role_id, role.id)
+        self.assertIsNone(resolved.image_bytes)
+
+
+class ProfileCardDataBuilderTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.repository = _MemoryProfileRepository()
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.badges = ProfileBadgeService(self.repository, storage_root=Path(self.tempdir.name))
+        self.service = ProfileService(
+            repository=self.repository,
+            field_registry=PROFILE_FIELD_REGISTRY,
+            level_provider=_RichLevelProvider(),
+            moderation_service=ProfileModerationService(PROFILE_FIELD_REGISTRY),
+        )
+
+    async def asyncTearDown(self) -> None:
+        self.tempdir.cleanup()
+
+    async def test_builder_maps_profile_xp_rank_avatar_badge_and_bonds(self) -> None:
+        await self.service.set_field(guild_id=1, user_id=2, field_key="pronouns", value="ela/dela", updated_by=2)
+        await self.service.set_field(guild_id=1, user_id=2, field_key="basic_info", value="Dados reais do perfil.", updated_by=2)
+        await self.service.set_field(
+            guild_id=1,
+            user_id=2,
+            field_key="ask_me_about",
+            value="Culinária, Taylor Swift\nMinecraft Dungeons",
+            updated_by=2,
+        )
+        member = _fake_member(2)
+        guild = _fake_guild_with_roles(1, [])
+        badge_role = _fake_role(123, guild, position=5)
+        guild.roles = [badge_role]
+        member.guild = guild
+        member.roles = [badge_role]
+        member.display_avatar = _FakeAvatarAsset(_png_bytes((64, 48, 96)))
+        await self.badges.upsert_badge(
+            guild_id=1,
+            role=badge_role,
+            badge_name="LVL 17 - Arquivo",
+            image_bytes=_png_bytes((130, 40, 70), size=(256, 256)),
+            created_by=99,
+            priority=10,
+        )
+        builder = ProfileCardDataBuilder(
+            profile_service=self.service,
+            bot=SimpleNamespace(vinculos_runtime=SimpleNamespace(repository=_FakeVinculosRepository(3, 1.3))),
+            badge_service=self.badges,
+        )
+
+        data = await builder.build_profile_render_data(guild, member)
+
+        self.assertEqual(data.display_name, "Nome vivo")
+        self.assertEqual(data.username, "@username")
+        self.assertEqual(data.pronouns, "ela/dela")
+        self.assertEqual(data.ask_me_about, ["Culinária", "Taylor Swift", "Minecraft Dungeons"])
+        self.assertEqual(data.basic_info, "Dados reais do perfil.")
+        self.assertEqual(data.rank_text, "#4")
+        self.assertEqual(data.level, 17)
+        self.assertEqual(data.xp_current, 450)
+        self.assertEqual(data.xp_required, 900)
+        self.assertEqual(data.xp_total, 12450)
+        self.assertEqual(data.xp_percent, 0.5)
+        self.assertEqual(data.badge_name, "LVL 17 - Arquivo")
+        self.assertIsNotNone(data.badge_image_bytes)
+        self.assertEqual(data.bonds_count, 3)
+        self.assertEqual(data.bonds_multiplier, 1.3)
+        self.assertIsNotNone(data.avatar_bytes)
+
+    async def test_builder_uses_safe_fallbacks_when_avatar_xp_and_bonds_fail(self) -> None:
+        service = ProfileService(
+            repository=self.repository,
+            field_registry=PROFILE_FIELD_REGISTRY,
+            level_provider=NullLevelProvider(),
+            moderation_service=ProfileModerationService(PROFILE_FIELD_REGISTRY),
+        )
+        member = _fake_member(2)
+        member.display_avatar = _FakeAvatarAsset(b"", fail=True)
+        builder = ProfileCardDataBuilder(
+            profile_service=service,
+            bot=SimpleNamespace(vinculos_runtime=SimpleNamespace(repository=_FailingVinculosRepository())),
+            badge_service=self.badges,
+        )
+
+        data = await builder.build_profile_render_data(_fake_guild(1), member)
+
+        self.assertIsNone(data.avatar_bytes)
+        self.assertEqual(data.rank_text, "Sem rank")
+        self.assertEqual(data.level, 0)
+        self.assertEqual(data.xp_total, 0)
+        self.assertEqual(data.bonds_count, 0)
+        self.assertEqual(data.bonds_multiplier, 1.0)
+        self.assertEqual(data.badge_name, "Sem insígnia")
+
+    async def test_render_member_profile_returns_discord_ready_png(self) -> None:
+        builder = ProfileCardDataBuilder(profile_service=self.service, bot=SimpleNamespace())
+        renderer = ProfileRenderService(data_builder=builder)
+
+        result = await renderer.render_member_profile(_fake_guild(1), _fake_member_without_avatar(2))
+
+        self.assertEqual(result.filename, "ficha_2.png")
+        self.assertIsNotNone(result.image)
+        self.assertTrue(result.image.getvalue().startswith(b"\x89PNG\r\n\x1a\n"))
+
+
 class ProfileXpAdapterTests(unittest.IsolatedAsyncioTestCase):
     async def test_xp_adapter_returns_degraded_snapshot_when_runtime_fails(self) -> None:
         provider = XpRuntimeLevelProvider(SimpleNamespace(xp_runtime=SimpleNamespace(service=_FailingXpService())))
@@ -597,7 +854,17 @@ class PresentationChannelServiceTests(unittest.IsolatedAsyncioTestCase):
 
 
 def _fake_guild(guild_id: int) -> SimpleNamespace:
-    return SimpleNamespace(id=guild_id)
+    return _fake_guild_with_roles(guild_id, [])
+
+
+def _fake_guild_with_roles(guild_id: int, roles: list[SimpleNamespace]) -> SimpleNamespace:
+    guild = SimpleNamespace(id=guild_id, roles=roles)
+
+    def get_role(role_id: int):
+        return next((role for role in guild.roles if role.id == role_id), None)
+
+    guild.get_role = get_role
+    return guild
 
 
 def _fake_member(user_id: int) -> SimpleNamespace:
@@ -607,6 +874,7 @@ def _fake_member(user_id: int) -> SimpleNamespace:
         name="username",
         mention=f"<@{user_id}>",
         display_avatar=SimpleNamespace(url=f"https://cdn.example/{user_id}.png"),
+        roles=[],
     )
 
 
@@ -616,13 +884,119 @@ def _fake_member_without_avatar(user_id: int) -> SimpleNamespace:
     return member
 
 
+def _fake_member_with_roles(user_id: int, guild: SimpleNamespace, roles: list[SimpleNamespace]) -> SimpleNamespace:
+    member = _fake_member(user_id)
+    member.guild = guild
+    member.roles = roles
+    return member
+
+
+def _fake_role(role_id: int, guild: SimpleNamespace, *, position: int = 1, default: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=role_id,
+        guild=guild,
+        position=position,
+        mention=f"<@&{role_id}>",
+        name=f"Cargo {role_id}",
+        is_default=lambda: default,
+    )
+
+
+def _png_bytes(color: tuple[int, int, int], *, size: tuple[int, int] = (96, 96)) -> bytes:
+    output = io.BytesIO()
+    Image.new("RGB", size, color).save(output, format="PNG")
+    return output.getvalue()
+
+
+class _FakeAvatarAsset:
+    def __init__(self, payload: bytes, *, fail: bool = False) -> None:
+        self.payload = payload
+        self.fail = fail
+        self.url = "https://cdn.example/avatar.png"
+
+    def replace(self, **kwargs):
+        return self
+
+    async def read(self) -> bytes:
+        if self.fail:
+            raise discord.HTTPException(response=SimpleNamespace(status=500, reason="erro"), message="falhou")
+        return self.payload
+
+
+class _FakeVinculosRepository:
+    def __init__(self, count: int, multiplier: float) -> None:
+        self.count = count
+        self.multiplier = multiplier
+
+    async def count_active_vinculos(self, guild_id: int, user_id: int) -> int:
+        return self.count
+
+    async def get_xp_multiplier(self, guild_id: int, user_id: int) -> float:
+        return self.multiplier
+
+
+class _FailingVinculosRepository:
+    async def count_active_vinculos(self, guild_id: int, user_id: int) -> int:
+        raise RuntimeError("vinculos indisponiveis")
+
+    async def get_xp_multiplier(self, guild_id: int, user_id: int) -> float:
+        raise RuntimeError("vinculos indisponiveis")
+
+
 class _MemoryProfileRepository:
     def __init__(self) -> None:
         self.profiles: dict[tuple[int, int], ProfileRecord] = {}
         self.fields: dict[tuple[int, int, str], ProfileFieldValue] = {}
+        self.badges: dict[tuple[int, int], ProfileBadge] = {}
         self.settings: dict[int, GuildProfileSettings] = {}
         self.events: list[dict[str, object]] = []
         self.upsert_calls = 0
+
+    async def upsert_badge(
+        self,
+        *,
+        guild_id: int,
+        role_id: int,
+        badge_name: str,
+        image_path: str,
+        priority: int,
+        created_by: int,
+    ) -> ProfileBadge:
+        key = (guild_id, role_id)
+        current = self.badges.get(key)
+        created_at = current.created_at if current is not None else "2026-01-01T00:00:00+00:00"
+        badge = ProfileBadge(
+            guild_id=guild_id,
+            role_id=role_id,
+            badge_name=badge_name,
+            image_path=image_path,
+            priority=priority,
+            created_by=current.created_by if current is not None else created_by,
+            created_at=created_at,
+            updated_at="2026-01-01T00:00:01+00:00",
+        )
+        self.badges[key] = badge
+        return badge
+
+    async def get_badge(self, guild_id: int, role_id: int) -> ProfileBadge | None:
+        return self.badges.get((guild_id, role_id))
+
+    async def list_badges(self, guild_id: int) -> list[ProfileBadge]:
+        return sorted(
+            [badge for (stored_guild_id, _), badge in self.badges.items() if stored_guild_id == guild_id],
+            key=lambda badge: (-badge.priority, badge.role_id),
+        )
+
+    async def delete_badge(self, guild_id: int, role_id: int) -> ProfileBadge | None:
+        return self.badges.pop((guild_id, role_id), None)
+
+    async def update_badge_priority(self, guild_id: int, role_id: int, priority: int) -> ProfileBadge | None:
+        current = self.badges.get((guild_id, role_id))
+        if current is None:
+            return None
+        updated = replace(current, priority=priority, updated_at="2026-01-01T00:00:02+00:00")
+        self.badges[(guild_id, role_id)] = updated
+        return updated
 
     async def ensure_profile(self, guild_id: int, user_id: int) -> ProfileRecord:
         key = (guild_id, user_id)
