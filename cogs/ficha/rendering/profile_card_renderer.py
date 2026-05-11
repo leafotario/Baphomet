@@ -37,36 +37,36 @@ REMOVED_CONTENT = "[Conteúdo removido]"
 
 @dataclass(frozen=True, slots=True)
 class ProfileCardTheme:
-    background_top: ColorA = (13, 14, 16, 255)
-    background_bottom: ColorA = (27, 28, 31, 255)
-    smoke: ColorA = (92, 96, 102, 24)
-    outer_top: ColorA = (94, 96, 98, 255)
-    outer_bottom: ColorA = (54, 56, 60, 255)
-    inner_top: ColorA = (110, 113, 115, 255)
-    inner_bottom: ColorA = (74, 76, 80, 255)
-    panel_top: ColorA = (90, 93, 96, 244)
-    panel_bottom: ColorA = (62, 65, 69, 248)
-    panel_outline: ColorA = (165, 170, 171, 174)
-    panel_highlight: ColorA = (214, 218, 216, 42)
-    panel_shadow: ColorA = (0, 0, 0, 118)
-    text: ColorA = (232, 234, 229, 255)
-    text_soft: ColorA = (198, 202, 199, 255)
-    text_muted: ColorA = (135, 140, 142, 255)
-    text_dark: ColorA = (19, 20, 22, 255)
-    accent_dark: ColorA = (22, 12, 17, 255)
-    accent: ColorA = (58, 27, 39, 255)
-    accent_light: ColorA = (122, 87, 100, 255)
-    silver_dark: ColorA = (78, 81, 84, 255)
-    silver_mid: ColorA = (141, 146, 148, 255)
-    silver_light: ColorA = (215, 218, 213, 255)
-    gold: ColorA = (157, 160, 154, 255)
-    chip_fill: ColorA = (48, 51, 54, 246)
-    chip_outline: ColorA = (155, 160, 161, 168)
-    chip_highlight: ColorA = (222, 225, 220, 58)
-    xp_track: ColorA = (13, 14, 16, 235)
-    xp_start: ColorA = (118, 123, 124, 255)
-    xp_end: ColorA = (218, 221, 216, 255)
-    recessed: ColorA = (16, 17, 19, 214)
+    background_top: ColorA = (27, 28, 30, 255)
+    background_bottom: ColorA = (44, 44, 47, 255)
+    smoke: ColorA = (118, 108, 118, 20)
+    outer_top: ColorA = (92, 92, 94, 250)
+    outer_bottom: ColorA = (64, 65, 68, 252)
+    inner_top: ColorA = (84, 85, 88, 245)
+    inner_bottom: ColorA = (61, 62, 65, 247)
+    panel_top: ColorA = (92, 93, 96, 238)
+    panel_bottom: ColorA = (68, 69, 72, 242)
+    panel_outline: ColorA = (154, 151, 144, 78)
+    panel_highlight: ColorA = (238, 235, 226, 20)
+    panel_shadow: ColorA = (0, 0, 0, 112)
+    text: ColorA = (237, 234, 225, 255)
+    text_soft: ColorA = (204, 201, 193, 255)
+    text_muted: ColorA = (142, 141, 137, 255)
+    text_dark: ColorA = (18, 18, 20, 255)
+    accent_dark: ColorA = (24, 12, 17, 255)
+    accent: ColorA = (58, 24, 35, 255)
+    accent_light: ColorA = (119, 77, 90, 255)
+    silver_dark: ColorA = (66, 67, 70, 255)
+    silver_mid: ColorA = (137, 137, 134, 255)
+    silver_light: ColorA = (218, 216, 208, 255)
+    gold: ColorA = (172, 164, 142, 255)
+    chip_fill: ColorA = (34, 35, 38, 238)
+    chip_outline: ColorA = (164, 160, 151, 108)
+    chip_highlight: ColorA = (236, 231, 220, 32)
+    xp_track: ColorA = (13, 14, 16, 236)
+    xp_start: ColorA = (78, 35, 47, 255)
+    xp_end: ColorA = (194, 191, 181, 255)
+    recessed: ColorA = (16, 17, 19, 174)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,8 +82,8 @@ class ProfileCardLayout:
     bonds_panel: Rect = Rect(1024, 438, 306, 210)
     xp_panel: Rect = Rect(488, 674, 842, 190)
     outer_radius: int = 52
-    inner_radius: int = 28
-    panel_radius: int = 18
+    inner_radius: int = 34
+    panel_radius: int = 28
     section_pad: int = 28
 
 
@@ -122,39 +122,40 @@ class ProfileCardRenderer:
     def _create_background(self) -> Image.Image:
         width, height = self.layout.canvas
         canvas = vertical_gradient(self.layout.canvas, self.theme.background_top, self.theme.background_bottom)
-        add_noise_overlay(canvas, opacity=16, seed=404, scale=4)
+        add_noise_overlay(canvas, opacity=9, seed=404, scale=4)
 
-        smoke = Image.new("RGBA", self.layout.canvas, (0, 0, 0, 0))
-        smoke_draw = ImageDraw.Draw(smoke)
+        atmosphere = Image.new("RGBA", self.layout.canvas, (0, 0, 0, 0))
+        atmosphere_draw = ImageDraw.Draw(atmosphere)
         rng = random.Random(667)
-        for _ in range(12):
-            cx = rng.randint(-120, width + 120)
-            cy = rng.randint(-80, height + 80)
-            rx = rng.randint(130, 360)
-            ry = rng.randint(80, 230)
+        for _ in range(8):
+            cx = rng.randint(-160, width + 160)
+            cy = rng.randint(-120, height + 120)
+            rx = rng.randint(180, 420)
+            ry = rng.randint(120, 280)
             color = (
                 self.theme.smoke[0],
                 self.theme.smoke[1],
                 self.theme.smoke[2],
                 rng.randint(6, self.theme.smoke[3]),
             )
-            smoke_draw.ellipse((cx - rx, cy - ry, cx + rx, cy + ry), fill=color)
-        smoke = smoke.filter(ImageFilter.GaussianBlur(46))
-        canvas.alpha_composite(smoke)
+            atmosphere_draw.ellipse((cx - rx, cy - ry, cx + rx, cy + ry), fill=color)
+        atmosphere = atmosphere.filter(ImageFilter.GaussianBlur(58))
+        canvas.alpha_composite(atmosphere)
 
-        draw = ImageDraw.Draw(canvas, "RGBA")
-        for x in range(0, width, 120):
-            draw.line((x, 0, x, height), fill=(255, 255, 255, 1), width=1)
-        for y in range(48, height, 96):
-            draw.line((0, y, width, y), fill=(255, 255, 255, 1), width=1)
+        vignette = Image.new("RGBA", self.layout.canvas, (0, 0, 0, 0))
+        vignette_draw = ImageDraw.Draw(vignette, "RGBA")
+        vignette_draw.rectangle((0, 0, width, height), fill=(0, 0, 0, 54))
+        vignette_draw.ellipse((-140, -120, width + 140, height + 160), fill=(0, 0, 0, 0))
+        vignette = vignette.filter(ImageFilter.GaussianBlur(70))
+        canvas.alpha_composite(vignette)
         return canvas
 
     def _apply_finishing_patina(self, canvas: Image.Image) -> None:
-        add_noise_overlay(canvas, opacity=5, seed=909, scale=2)
+        add_noise_overlay(canvas, opacity=3, seed=909, scale=2)
         draw = ImageDraw.Draw(canvas, "RGBA")
         frame = self.layout.outer_card
-        draw.rounded_rectangle(frame.box, radius=self.layout.outer_radius, outline=(255, 255, 255, 16), width=1)
-        draw.rounded_rectangle(frame.inset(12).box, radius=max(1, self.layout.outer_radius - 12), outline=(0, 0, 0, 70), width=1)
+        draw.rounded_rectangle(frame.box, radius=self.layout.outer_radius, outline=(255, 255, 255, 10), width=1)
+        draw.rounded_rectangle(frame.inset(16).box, radius=max(1, self.layout.outer_radius - 16), outline=(0, 0, 0, 54), width=1)
 
     def _draw_main_frame(self, canvas: Image.Image) -> None:
         layout = self.layout
@@ -170,27 +171,24 @@ class ProfileCardRenderer:
             spread=3,
         )
         outer = vertical_gradient(layout.outer_card.size, theme.outer_top, theme.outer_bottom)
-        add_noise_overlay(outer, opacity=8, seed=8, scale=3)
-        outer_draw = ImageDraw.Draw(outer, "RGBA")
-        self._draw_layer_grid(outer_draw, Rect(0, 0, *layout.outer_card.size), step=80, alpha=1)
+        add_noise_overlay(outer, opacity=4, seed=8, scale=3)
         paste_rounded(canvas, outer, layout.outer_card, layout.outer_radius)
 
         inner = vertical_gradient(layout.inner_card.size, theme.inner_top, theme.inner_bottom)
-        add_noise_overlay(inner, opacity=7, seed=11, scale=3)
-        inner_draw = ImageDraw.Draw(inner, "RGBA")
-        self._draw_layer_grid(inner_draw, Rect(0, 0, *layout.inner_card.size), step=52, alpha=0)
+        add_noise_overlay(inner, opacity=4, seed=11, scale=3)
         paste_rounded(canvas, inner, layout.inner_card, layout.inner_radius)
 
         draw = ImageDraw.Draw(canvas, "RGBA")
-        draw.rounded_rectangle(layout.outer_card.box, radius=layout.outer_radius, outline=(139, 144, 145, 135), width=2)
+        draw.rounded_rectangle(layout.outer_card.box, radius=layout.outer_radius, outline=(136, 134, 128, 62), width=1)
         draw.rounded_rectangle(
             layout.outer_card.inset(18).box,
             radius=max(1, layout.outer_radius - 18),
-            outline=(255, 255, 255, 18),
+            outline=(246, 242, 231, 12),
             width=1,
         )
-        draw.rounded_rectangle(layout.inner_card.box, radius=layout.inner_radius, outline=(173, 178, 176, 96), width=1)
-        draw.rounded_rectangle(layout.inner_card.inset(12).box, radius=16, outline=(0, 0, 0, 90), width=1)
+        draw.rounded_rectangle(layout.inner_card.box, radius=layout.inner_radius, outline=(179, 177, 168, 48), width=1)
+        draw.rounded_rectangle(layout.inner_card.inset(14).box, radius=22, outline=(0, 0, 0, 58), width=1)
+        draw.line((layout.inner_card.x + 96, layout.inner_card.y + 1, layout.inner_card.right - 96, layout.inner_card.y + 1), fill=(255, 252, 241, 14), width=1)
         self._draw_watermark(canvas)
         self._draw_document_marks(canvas)
 
@@ -205,75 +203,59 @@ class ProfileCardRenderer:
     def _draw_document_marks(self, canvas: Image.Image) -> None:
         draw = ImageDraw.Draw(canvas, "RGBA")
         rect = self.layout.inner_card
-        color = (211, 215, 211, 104)
-        length = 54
-        gap = 22
-        points = (
-            (rect.x + gap, rect.y + gap, 1, 1),
-            (rect.right - gap, rect.y + gap, -1, 1),
-            (rect.x + gap, rect.bottom - gap, 1, -1),
-            (rect.right - gap, rect.bottom - gap, -1, -1),
-        )
-        for x, y, sx, sy in points:
-            draw.line((x, y, x + sx * length, y), fill=color, width=2)
-            draw.line((x, y, x, y + sy * length), fill=color, width=2)
-            draw.line((x + sx * 12, y + sy * 12, x + sx * 34, y + sy * 12), fill=(0, 0, 0, 96), width=1)
-
-        for y in (rect.y + 74, rect.bottom - 74):
-            draw.line((rect.x + 96, y, rect.right - 96, y), fill=(255, 255, 255, 13), width=1)
+        color = (229, 225, 214, 16)
+        inset = 34
+        length = 64
+        for x0, x1 in ((rect.x + inset, rect.x + inset + length), (rect.right - inset, rect.right - inset - length)):
+            draw.line((x0, rect.y + inset, x1, rect.y + inset), fill=color, width=1)
+            draw.line((x0, rect.bottom - inset, x1, rect.bottom - inset), fill=color, width=1)
+        draw.line((rect.x + 150, rect.bottom - 58, rect.right - 150, rect.bottom - 58), fill=(255, 255, 255, 5), width=1)
 
     def _draw_watermark(self, canvas: Image.Image) -> None:
         rect = self.layout.inner_card
         layer = Image.new("RGBA", self.layout.canvas, (0, 0, 0, 0))
         draw = ImageDraw.Draw(layer, "RGBA")
         cx, cy = rect.center
-        for radius, alpha in ((255, 15), (190, 12), (122, 14)):
-            draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), outline=(230, 233, 229, alpha), width=2)
-        draw.polygon(
-            ((cx, cy - 244), (cx + 244, cy), (cx, cy + 244), (cx - 244, cy)),
-            outline=(230, 233, 229, 12),
-        )
-        draw.line((cx, cy - 270, cx, cy + 270), fill=(230, 233, 229, 12), width=2)
-        draw.line((cx - 270, cy, cx + 270, cy), fill=(230, 233, 229, 10), width=2)
+        draw.ellipse((cx - 246, cy - 246, cx + 246, cy + 246), outline=(230, 226, 216, 4), width=2)
+        draw.ellipse((cx - 178, cy - 178, cx + 178, cy + 178), outline=(230, 226, 216, 4), width=1)
         word = "BAPHOMET"
-        font = self.fonts.font(96, "display")
+        font = self.fonts.font(88, "display")
         word_w = text_width(draw, word, font)
-        draw.text((cx - word_w // 2, cy - 48), word, font=font, fill=(230, 233, 229, 10))
+        draw.text((cx - word_w // 2, cy - 44), word, font=font, fill=(230, 226, 216, 4))
         canvas.alpha_composite(layer)
 
     def _draw_panel(self, canvas: Image.Image, rect: Rect, *, radius: int | None = None) -> None:
         theme = self.theme
         radius = radius or self.layout.panel_radius
-        draw_soft_shadow(canvas, rect, radius, offset=(0, 9), blur=16, color=theme.panel_shadow)
+        draw_soft_shadow(canvas, rect, radius, offset=(0, 12), blur=20, color=theme.panel_shadow)
         panel = vertical_gradient(rect.size, theme.panel_top, theme.panel_bottom)
-        add_noise_overlay(panel, opacity=5, seed=rect.x + rect.y, scale=3)
+        add_noise_overlay(panel, opacity=3, seed=rect.x + rect.y, scale=3)
         paste_rounded(canvas, panel, rect, radius)
         draw = ImageDraw.Draw(canvas, "RGBA")
         draw.rounded_rectangle(rect.box, radius=radius, outline=theme.panel_outline, width=1)
-        draw.rounded_rectangle(rect.inset(7).box, radius=max(2, radius - 7), outline=(255, 255, 255, 17), width=1)
-        draw.line((rect.x + 18, rect.y + 2, rect.right - 18, rect.y + 2), fill=theme.panel_highlight, width=1)
-        draw.line((rect.x + 18, rect.bottom - 2, rect.right - 18, rect.bottom - 2), fill=(0, 0, 0, 88), width=1)
-        self._draw_corner_ticks(draw, rect, radius)
+        draw.rounded_rectangle(rect.inset(8).box, radius=max(2, radius - 8), outline=(255, 255, 255, 7), width=1)
+        draw.line((rect.x + 30, rect.y + 3, rect.right - 30, rect.y + 3), fill=theme.panel_highlight, width=1)
+        draw.line((rect.x + 30, rect.bottom - 2, rect.right - 30, rect.bottom - 2), fill=(0, 0, 0, 42), width=1)
 
     def _draw_section_title(self, draw: ImageDraw.ImageDraw, rect: Rect, title: str) -> None:
-        font = self.fonts.font(29, "display")
+        font = self.fonts.font(28, "bold")
         x = rect.x + self.layout.section_pad
-        y = rect.y + 24
+        y = rect.y + 23
         draw_text_shadow(
             draw,
             (x, y),
             title,
             font=font,
             fill=self.theme.text,
-            shadow=(0, 0, 0, 125),
+            shadow=(0, 0, 0, 105),
             offset=(0, 1),
         )
         title_w = text_width(draw, title, font)
         rule_x = x + title_w + 18
         if rule_x < rect.right - 30:
-            line_y = y + 19
-            draw.line((rule_x, line_y, rect.right - 30, line_y), fill=(208, 212, 209, 76), width=1)
-            draw.line((rule_x, line_y + 5, min(rect.right - 30, rule_x + 72), line_y + 5), fill=(208, 212, 209, 35), width=1)
+            line_y = y + 18
+            draw.line((rule_x, line_y, rect.right - 30, line_y), fill=(208, 204, 194, 34), width=1)
+            draw.line((rule_x, line_y + 5, min(rect.right - 30, rule_x + 64), line_y + 5), fill=(88, 48, 60, 76), width=1)
 
     def _draw_corner_ticks(self, draw: ImageDraw.ImageDraw, rect: Rect, radius: int) -> None:
         color = (214, 218, 216, 82)
@@ -293,38 +275,38 @@ class ProfileCardRenderer:
         slot = self.layout.avatar_medallion
         draw = ImageDraw.Draw(canvas, "RGBA")
 
-        photo_frame = Rect(slot.x + 8, slot.y + 8, slot.w - 16, slot.h - 16)
-        draw_soft_shadow(canvas, photo_frame, 34, offset=(0, 12), blur=20, color=(0, 0, 0, 142), spread=1)
-        draw.rounded_rectangle(photo_frame.box, radius=34, fill=(17, 18, 20, 246), outline=(145, 150, 151, 120), width=1)
-        draw.rounded_rectangle(photo_frame.inset(10).box, radius=24, outline=(255, 255, 255, 22), width=1)
-        self._draw_corner_ticks(draw, photo_frame, 24)
+        plate = Rect(slot.x + 17, slot.y + 17, slot.w - 34, slot.h - 34)
+        draw_soft_shadow(canvas, plate, plate.w // 2, offset=(0, 16), blur=24, color=(0, 0, 0, 152), spread=1)
+        halo = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        halo_draw = ImageDraw.Draw(halo, "RGBA")
+        halo_draw.ellipse(plate.inset(-10).box, fill=(88, 72, 80, 22))
+        halo = halo.filter(ImageFilter.GaussianBlur(16))
+        canvas.alpha_composite(halo)
+        draw = ImageDraw.Draw(canvas, "RGBA")
+        draw.ellipse(plate.box, fill=(25, 26, 29, 248), outline=(176, 172, 162, 120), width=2)
+        draw.ellipse(plate.inset(10).box, outline=(255, 251, 240, 26), width=1)
+        draw.ellipse(plate.inset(19).box, outline=(0, 0, 0, 132), width=2)
 
-        plate = Rect(slot.x + 30, slot.y + 30, slot.w - 60, slot.h - 60)
-        draw.ellipse(plate.box, fill=(43, 45, 48, 255), outline=(168, 172, 170, 122), width=2)
-        draw.ellipse(plate.inset(10).box, outline=(0, 0, 0, 118), width=2)
-        draw.arc(plate.inset(18).box, 202, 332, fill=(223, 226, 222, 70), width=3)
-
-        avatar_size = 226
+        avatar_size = 236
         avatar_rect = Rect(slot.x + (slot.w - avatar_size) // 2, slot.y + (slot.h - avatar_size) // 2, avatar_size, avatar_size)
         source = load_rgba_from_bytes(profile.avatar_bytes)
         if source is None:
             avatar = create_avatar_placeholder(
                 avatar_size,
                 initials=self._initials(profile.display_name or profile.username),
-                font=self.fonts.font(76, "display"),
-                fill_top=(54, 57, 60, 255),
-                fill_bottom=(18, 19, 21, 255),
-                accent=(148, 153, 154, 178),
+                font=self.fonts.font(78, "bold"),
+                fill_top=(50, 47, 50, 255),
+                fill_bottom=(18, 18, 21, 255),
+                accent=(126, 85, 95, 178),
                 text_fill=theme.text,
             )
         else:
             avatar = circular_crop(source, avatar_size)
 
         canvas.paste(avatar, (avatar_rect.x, avatar_rect.y), avatar)
-        draw.ellipse(avatar_rect.box, outline=(0, 0, 0, 175), width=4)
-        draw.ellipse(avatar_rect.inset(5).box, outline=(240, 243, 238, 54), width=1)
-        for y in range(avatar_rect.y + 16, avatar_rect.bottom - 16, 14):
-            draw.line((avatar_rect.x + 34, y, avatar_rect.right - 34, y), fill=(255, 255, 255, 2), width=1)
+        draw.ellipse(avatar_rect.box, outline=(0, 0, 0, 170), width=4)
+        draw.ellipse(avatar_rect.inset(5).box, outline=(241, 237, 226, 52), width=1)
+        draw.arc(avatar_rect.inset(11).box, 202, 332, fill=(236, 231, 220, 42), width=2)
 
     def _draw_identity(self, canvas: Image.Image, profile: ProfileRenderData) -> None:
         rect = self.layout.identity_panel
@@ -339,10 +321,10 @@ class ProfileCardRenderer:
             ("Rank", self._field(profile.rank_text, "Sem rank")),
         )
 
-        label_font = self.fonts.font(15, "bold")
-        x = rect.x + 24
-        y = rect.y + 26
-        value_width = rect.w - 48
+        label_font = self.fonts.font(14, "bold")
+        x = rect.x + 28
+        y = rect.y + 30
+        value_width = rect.w - 56
         for label, value in fields:
             label_text = label.upper()
             draw_text_shadow(
@@ -354,31 +336,31 @@ class ProfileCardRenderer:
                 shadow=(0, 0, 0, 90),
                 offset=(0, 1),
             )
-            value_rect = Rect(x - 2, y + 27, value_width + 4, 42)
-            self._draw_recessed_slot(canvas, value_rect)
             weight = "bold" if label == "Nome" else "regular"
-            start_size = 23 if label == "Nome" else 21
+            start_size = 25 if label == "Nome" else 22
             value_font = fit_font_to_width(
                 draw,
                 value,
-                value_width - 20,
+                value_width,
                 font_loader=lambda size, weight=weight: self.fonts.font(size, weight),
                 start_size=start_size,
                 min_size=15,
             )
-            display_value = truncate_text(draw, value, value_font, value_width - 20)
-            value_y = value_rect.y + (value_rect.h - text_height(draw, display_value or "Ag", value_font)) // 2 - 2
+            display_value = truncate_text(draw, value, value_font, value_width)
+            value_y = y + 26
             draw_text_shadow(
                 draw,
-                (value_rect.x + 12, value_y),
+                (x, value_y),
                 display_value,
                 font=value_font,
                 fill=self.theme.text if label == "Nome" else self.theme.text_soft,
-                shadow=(0, 0, 0, 95),
+                shadow=(0, 0, 0, 90),
                 offset=(0, 1),
             )
-            draw.line((x, value_rect.bottom + 10, x + value_width, value_rect.bottom + 10), fill=(255, 255, 255, 12), width=1)
-            y += 92
+            divider_y = value_y + text_height(draw, display_value or "Ag", value_font) + 18
+            if label != "Rank":
+                draw.line((x, divider_y, x + value_width, divider_y), fill=(255, 255, 255, 13), width=1)
+            y += 88
 
     def _draw_ask_me_about(self, canvas: Image.Image, profile: ProfileRenderData) -> None:
         rect = self.layout.ask_panel
@@ -399,24 +381,25 @@ class ProfileCardRenderer:
         text = self._field(profile.basic_info, "Não informado.")
         body_rect = Rect(rect.x + 30, rect.y + 82, rect.w - 60, rect.h - 104)
         self._draw_ruled_area(draw, body_rect)
-        font = self.fonts.font(23, "regular")
-        line_gap = 5
+        font = self.fonts.font(22, "regular")
+        line_gap = 7
         line_height = text_height(draw, "Ag", font) + line_gap
         max_lines = max(1, body_rect.h // max(1, line_height))
-        lines = wrap_text_pixels(draw, text, font, body_rect.w)
-        lines = clamp_lines_with_ellipsis(draw, lines, font, body_rect.w, max_lines)
+        text_rect = body_rect.inset(18, 16)
+        lines = wrap_text_pixels(draw, text, font, text_rect.w)
+        lines = clamp_lines_with_ellipsis(draw, lines, font, text_rect.w, max_lines)
 
-        y = body_rect.y
+        y = text_rect.y
         for line in lines:
-            if y + line_height > body_rect.bottom + 2:
+            if y + line_height > text_rect.bottom + 2:
                 break
             draw_text_shadow(
                 draw,
-                (body_rect.x, y),
+                (text_rect.x, y),
                 line,
                 font=font,
                 fill=self.theme.text_soft,
-                shadow=(0, 0, 0, 95),
+                shadow=(0, 0, 0, 82),
                 offset=(0, 1),
             )
             y += line_height
@@ -427,32 +410,23 @@ class ProfileCardRenderer:
         draw = ImageDraw.Draw(canvas, "RGBA")
         self._draw_section_title(draw, rect, "Insígnia")
 
-        slot = Rect(rect.x + 50, rect.y + 76, rect.w - 100, 134)
-        draw_soft_shadow(canvas, slot, 18, offset=(0, 6), blur=12, color=(0, 0, 0, 96))
-        draw.rounded_rectangle(slot.box, radius=18, fill=(30, 32, 34, 238), outline=(137, 142, 143, 118), width=1)
+        slot = Rect(rect.x + 54, rect.y + 82, rect.w - 108, 122)
+        draw_soft_shadow(canvas, slot, 32, offset=(0, 8), blur=16, color=(0, 0, 0, 112))
+        draw.rounded_rectangle(slot.box, radius=32, fill=(20, 21, 24, 220), outline=(159, 155, 146, 82), width=1)
         draw.ellipse(
-            (slot.x + 37, slot.y + 12, slot.right - 37, slot.bottom - 12),
-            fill=(154, 158, 158, 82),
-            outline=(224, 227, 222, 58),
+            (slot.x + 42, slot.y + 17, slot.right - 42, slot.bottom - 17),
+            fill=(118, 106, 112, 24),
+            outline=(229, 224, 213, 30),
             width=1,
         )
-        draw.polygon(
-            (
-                (slot.x + slot.w // 2, slot.y + 10),
-                (slot.right - 24, slot.y + slot.h // 2),
-                (slot.x + slot.w // 2, slot.bottom - 10),
-                (slot.x + 24, slot.y + slot.h // 2),
-            ),
-            outline=(225, 228, 224, 38),
-        )
         source = load_rgba_from_bytes(profile.badge_image_bytes)
-        image_slot = slot.inset(18, 10)
+        image_slot = slot.inset(22, 12)
         if source is None:
             badge = create_badge_placeholder(
                 (150, 118),
-                fill_top=(64, 67, 69, 235),
-                fill_bottom=(21, 22, 24, 245),
-                accent=self.theme.silver_mid,
+                fill_top=(48, 46, 49, 235),
+                fill_bottom=(18, 18, 21, 245),
+                accent=self.theme.accent_light,
                 line=self.theme.silver_light,
             )
             paste_centered(canvas, badge, image_slot)
@@ -460,10 +434,9 @@ class ProfileCardRenderer:
             paste_centered(canvas, source, image_slot)
 
         label = self._field(profile.badge_name, "Sem insígnia")
-        label_font = self.fonts.font(21, "regular")
-        label_rect = Rect(rect.x + 28, rect.y + 226, rect.w - 56, 38)
-        self._draw_recessed_slot(canvas, label_rect)
-        label = truncate_text(draw, label, label_font, label_rect.w - 24)
+        label_font = self.fonts.font(21, "bold")
+        label_rect = Rect(rect.x + 28, rect.y + 224, rect.w - 56, 40)
+        label = truncate_text(draw, label, label_font, label_rect.w - 20)
         self._draw_centered_text(draw, label_rect, label, label_font, self.theme.text_soft)
 
     def _draw_bonds(self, canvas: Image.Image, profile: ProfileRenderData) -> None:
@@ -477,38 +450,37 @@ class ProfileCardRenderer:
         count_font = fit_font_to_width(
             draw,
             count_text,
-            156,
+            rect.w - 62,
             font_loader=lambda size: self.fonts.font(size, "bold"),
             start_size=30,
             min_size=20,
         )
-        count_text = truncate_text(draw, count_text, count_font, 156)
+        count_text = truncate_text(draw, count_text, count_font, rect.w - 62)
         draw_text_shadow(
             draw,
-            (rect.x + 30, rect.y + 100),
+            (rect.x + 30, rect.y + 94),
             count_text,
             font=count_font,
             fill=self.theme.text,
             shadow=(0, 0, 0, 110),
             offset=(0, 1),
         )
-        draw.line((rect.x + 30, rect.y + 148, rect.right - 30, rect.y + 148), fill=(255, 255, 255, 18), width=1)
-        draw.line((rect.x + 194, rect.y + 82, rect.x + 194, rect.y + 138), fill=(255, 255, 255, 24), width=1)
+        draw.line((rect.x + 30, rect.y + 143, rect.right - 30, rect.y + 143), fill=(255, 255, 255, 16), width=1)
 
         mult = self._format_multiplier(profile.bonds_multiplier)
-        badge_rect = Rect(rect.right - 112, rect.y + 92, 78, 42)
-        draw_soft_shadow(canvas, badge_rect, 12, offset=(0, 5), blur=9, color=(0, 0, 0, 98))
-        draw.rounded_rectangle(badge_rect.box, radius=12, fill=(158, 163, 163, 235), outline=(236, 239, 233, 70), width=1)
-        draw.line((badge_rect.x + 11, badge_rect.y + 5, badge_rect.right - 11, badge_rect.y + 5), fill=(255, 255, 255, 54), width=1)
+        badge_rect = Rect(rect.x + 30, rect.y + 156, rect.w - 60, 36)
+        draw_soft_shadow(canvas, badge_rect, 18, offset=(0, 5), blur=10, color=(0, 0, 0, 72))
+        draw.rounded_rectangle(badge_rect.box, radius=18, fill=(45, 27, 34, 226), outline=(184, 176, 160, 78), width=1)
+        draw.line((badge_rect.x + 18, badge_rect.y + 5, badge_rect.right - 18, badge_rect.y + 5), fill=(255, 255, 255, 28), width=1)
         mult_font = fit_font_to_width(
             draw,
             mult,
             badge_rect.w - 18,
             font_loader=lambda size: self.fonts.font(size, "bold"),
-            start_size=22,
+            start_size=21,
             min_size=16,
         )
-        self._draw_centered_text(draw, badge_rect, mult, mult_font, self.theme.text_dark, shadow=(255, 255, 255, 36))
+        self._draw_centered_text(draw, badge_rect, mult, mult_font, self.theme.text, shadow=(0, 0, 0, 84))
 
     def _draw_xp_progress(self, canvas: Image.Image, profile: ProfileRenderData) -> None:
         rect = self.layout.xp_panel
@@ -519,8 +491,9 @@ class ProfileCardRenderer:
         level = max(0, int(profile.level))
         level_text = f"Nível {level}"
         level_font = self.fonts.font(22, "bold")
-        level_rect = Rect(rect.right - 162, rect.y + 29, 132, 34)
-        draw.rounded_rectangle(level_rect.box, radius=8, fill=(31, 33, 35, 236), outline=(126, 131, 132, 120), width=1)
+        level_width = min(150, max(92, text_width(draw, level_text, level_font) + 30))
+        level_rect = Rect(rect.right - 30 - level_width, rect.y + 28, level_width, 34)
+        draw.rounded_rectangle(level_rect.box, radius=17, fill=(22, 23, 26, 166), outline=(153, 149, 140, 72), width=1)
         level_text = truncate_text(draw, level_text, level_font, level_rect.w - 18)
         self._draw_centered_text(draw, level_rect, level_text, level_font, self.theme.text_soft)
 
@@ -528,7 +501,7 @@ class ProfileCardRenderer:
         required = max(0, int(profile.xp_required))
         total = max(0, int(profile.xp_total))
         percent = self._normalize_percent(profile.xp_percent)
-        bar_rect = Rect(rect.x + 30, rect.y + 84, rect.w - 60, 38)
+        bar_rect = Rect(rect.x + 30, rect.y + 86, rect.w - 60, 36)
         self._draw_xp_document_bar(canvas, bar_rect, percent / 100)
 
         xp_label = f"{current:,} / {required:,} XP".replace(",", ".")
@@ -545,7 +518,7 @@ class ProfileCardRenderer:
             stroke_fill=(0, 0, 0, 155),
         )
 
-        meta_font = self.fonts.font(23, "regular")
+        meta_font = self.fonts.font(22, "regular")
         total_text = f"XP Total: {total:,}".replace(",", ".")
         percent_text = f"{self._format_percent(percent)} completo"
         draw_text_shadow(
@@ -571,9 +544,8 @@ class ProfileCardRenderer:
 
     def _draw_recessed_slot(self, canvas: Image.Image, rect: Rect) -> None:
         draw = ImageDraw.Draw(canvas, "RGBA")
-        draw.rounded_rectangle(rect.box, radius=8, fill=self.theme.recessed, outline=(101, 106, 108, 122), width=1)
-        draw.line((rect.x + 12, rect.y + 4, rect.right - 12, rect.y + 4), fill=(255, 255, 255, 18), width=1)
-        draw.line((rect.x + 12, rect.bottom - 2, rect.right - 12, rect.bottom - 2), fill=(0, 0, 0, 92), width=1)
+        draw.rounded_rectangle(rect.box, radius=rect.h // 2, fill=self.theme.recessed, outline=(126, 124, 118, 70), width=1)
+        draw.line((rect.x + 14, rect.y + 4, rect.right - 14, rect.y + 4), fill=(255, 255, 255, 14), width=1)
 
     def _render_chips(self, canvas: Image.Image, rect: Rect, labels: list[str]) -> None:
         draw = ImageDraw.Draw(canvas, "RGBA")
@@ -640,17 +612,18 @@ class ProfileCardRenderer:
         *,
         muted: bool = False,
     ) -> None:
-        draw_soft_shadow(canvas, rect, 10, offset=(0, 4), blur=8, color=(0, 0, 0, 74))
+        draw_soft_shadow(canvas, rect, rect.h // 2, offset=(0, 4), blur=8, color=(0, 0, 0, 68))
         draw = ImageDraw.Draw(canvas, "RGBA")
-        fill = (48, 50, 53, 244) if muted else self.theme.chip_fill
-        draw.rounded_rectangle(rect.box, radius=10, fill=fill, outline=self.theme.chip_outline, width=1)
-        draw.line((rect.x + 10, rect.y + 5, rect.x + 10, rect.bottom - 5), fill=self.theme.chip_highlight, width=2)
-        draw.line((rect.x + 16, rect.y + 5, rect.right - 12, rect.y + 5), fill=(255, 255, 255, 19), width=1)
+        fill = (45, 45, 48, 226) if muted else self.theme.chip_fill
+        draw.rounded_rectangle(rect.box, radius=rect.h // 2, fill=fill, outline=self.theme.chip_outline, width=1)
+        dot = Rect(rect.x + 12, rect.y + rect.h // 2 - 3, 6, 6)
+        draw.ellipse(dot.box, fill=(112, 67, 80, 190))
+        draw.line((rect.x + 24, rect.y + 5, rect.right - 14, rect.y + 5), fill=self.theme.chip_highlight, width=1)
         label_width = text_width(draw, label, font)
         label_height = text_height(draw, label, font)
         draw_text_shadow(
             draw,
-            (rect.x + (rect.w - label_width) // 2 + 3, rect.y + (rect.h - label_height) // 2 - 2),
+            (rect.x + (rect.w - label_width) // 2 + 5, rect.y + (rect.h - label_height) // 2 - 2),
             label,
             font=font,
             fill=self.theme.text,
@@ -659,19 +632,15 @@ class ProfileCardRenderer:
         )
 
     def _draw_ruled_area(self, draw: ImageDraw.ImageDraw, rect: Rect) -> None:
-        draw.rounded_rectangle(rect.box, radius=10, fill=(15, 16, 18, 38), outline=(255, 255, 255, 14), width=1)
-        for y in range(rect.y + 31, rect.bottom, 31):
-            draw.line((rect.x + 14, y, rect.right - 14, y), fill=(255, 255, 255, 8), width=1)
-        for x in range(rect.x + 48, rect.right, 48):
-            draw.line((x, rect.y + 12, x, rect.bottom - 12), fill=(255, 255, 255, 1), width=1)
+        draw.rounded_rectangle(rect.box, radius=24, fill=(13, 14, 16, 58), outline=(255, 255, 255, 13), width=1)
+        draw.line((rect.x + 22, rect.y + 5, rect.right - 22, rect.y + 5), fill=(255, 255, 255, 11), width=1)
 
     def _draw_xp_document_bar(self, canvas: Image.Image, rect: Rect, ratio: float) -> None:
         draw = ImageDraw.Draw(canvas, "RGBA")
-        radius = 9
-        draw.rounded_rectangle(rect.box, radius=radius, fill=self.theme.xp_track, outline=(134, 139, 140, 142), width=1)
-        for index in range(1, 10):
-            x = rect.x + rect.w * index // 10
-            draw.line((x, rect.y + 7, x, rect.bottom - 7), fill=(255, 255, 255, 19), width=1)
+        radius = rect.h // 2
+        draw_soft_shadow(canvas, rect, radius, offset=(0, 5), blur=10, color=(0, 0, 0, 78))
+        draw = ImageDraw.Draw(canvas, "RGBA")
+        draw.rounded_rectangle(rect.box, radius=radius, fill=self.theme.xp_track, outline=(134, 130, 122, 112), width=1)
 
         ratio = clamp(ratio, 0.0, 1.0)
         fill_width = int(rect.w * ratio)
@@ -682,9 +651,10 @@ class ProfileCardRenderer:
             ImageDraw.Draw(mask).rounded_rectangle((0, 0, fill_rect.w, fill_rect.h), radius=radius, fill=255)
             canvas.paste(gradient, (fill_rect.x, fill_rect.y), mask)
             draw = ImageDraw.Draw(canvas, "RGBA")
-            draw.line((fill_rect.x + 8, fill_rect.y + 5, fill_rect.right - 8, fill_rect.y + 5), fill=(255, 255, 255, 56), width=1)
+            if fill_rect.w > 18:
+                draw.line((fill_rect.x + 12, fill_rect.y + 7, fill_rect.right - 12, fill_rect.y + 7), fill=(255, 255, 255, 44), width=1)
 
-        draw.rounded_rectangle(rect.box, radius=radius, outline=(220, 224, 220, 74), width=1)
+        draw.rounded_rectangle(rect.box, radius=radius, outline=(220, 216, 206, 66), width=1)
 
     def _horizontal_gradient(self, size: tuple[int, int], left: ColorA, right: ColorA) -> Image.Image:
         width, height = size

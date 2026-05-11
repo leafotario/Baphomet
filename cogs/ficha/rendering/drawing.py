@@ -182,14 +182,13 @@ def create_avatar_placeholder(
     text_fill: ColorA,
 ) -> Image.Image:
     canvas = vertical_gradient((size, size), fill_top, fill_bottom)
-    add_noise_overlay(canvas, opacity=14, seed=71, scale=3)
+    add_noise_overlay(canvas, opacity=8, seed=71, scale=3)
     mask = rounded_mask((size, size), size // 2)
     canvas.putalpha(mask)
 
     draw = ImageDraw.Draw(canvas)
-    draw.ellipse((size * 0.16, size * 0.16, size * 0.84, size * 0.84), outline=accent, width=max(2, size // 55))
-    draw.line((size * 0.5, size * 0.22, size * 0.5, size * 0.78), fill=accent, width=max(2, size // 70))
-    draw.line((size * 0.28, size * 0.5, size * 0.72, size * 0.5), fill=accent, width=max(2, size // 70))
+    draw.ellipse((size * 0.16, size * 0.16, size * 0.84, size * 0.84), outline=accent, width=max(2, size // 70))
+    draw.arc((size * 0.24, size * 0.24, size * 0.76, size * 0.76), 205, 335, fill=accent, width=max(2, size // 90))
     text = initials[:2].upper() or "?"
     bbox = draw.textbbox((0, 0), text, font=font)
     draw.text(
@@ -212,18 +211,22 @@ def create_badge_placeholder(
     line: ColorA,
 ) -> Image.Image:
     canvas = vertical_gradient(size, fill_top, fill_bottom)
-    add_noise_overlay(canvas, opacity=12, seed=91, scale=3)
+    add_noise_overlay(canvas, opacity=8, seed=91, scale=3)
     draw = ImageDraw.Draw(canvas)
     w, h = size
     cx = w // 2
-    top = int(h * 0.14)
-    bottom = int(h * 0.84)
-    left = int(w * 0.26)
-    right = int(w * 0.74)
-    draw.polygon(((cx, top), (right, int(h * 0.38)), (cx, bottom), (left, int(h * 0.38))), outline=line, fill=None)
-    draw.line((cx, top + 10, cx, bottom - 10), fill=accent, width=5)
-    draw.arc((left - 10, int(h * 0.24), right + 10, int(h * 0.72)), 145, 395, fill=line, width=5)
-    draw.ellipse((cx - 8, bottom - 8, cx + 8, bottom + 8), fill=accent)
+    shield = (
+        (cx, int(h * 0.1)),
+        (int(w * 0.76), int(h * 0.28)),
+        (int(w * 0.69), int(h * 0.68)),
+        (cx, int(h * 0.9)),
+        (int(w * 0.31), int(h * 0.68)),
+        (int(w * 0.24), int(h * 0.28)),
+    )
+    draw.polygon(shield, outline=line, fill=(accent[0], accent[1], accent[2], 82))
+    draw.line((cx, int(h * 0.22), cx, int(h * 0.74)), fill=line, width=4)
+    draw.arc((int(w * 0.28), int(h * 0.2), int(w * 0.72), int(h * 0.72)), 200, 340, fill=line, width=4)
+    draw.ellipse((cx - 10, int(h * 0.49) - 10, cx + 10, int(h * 0.49) + 10), fill=accent)
     return canvas
 
 

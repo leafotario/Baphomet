@@ -15,7 +15,7 @@ class FontManager:
     _FONT_FILES = {
         "regular": "Poppins-Regular.ttf",
         "bold": "Poppins-Bold.ttf",
-        "display": "Montserrat-Black.ttf",
+        "display": "Poppins-Bold.ttf",
     }
 
     def __init__(self, *, strict: bool = False, font_dirs: tuple[Path, ...] | None = None) -> None:
@@ -64,4 +64,3 @@ class FontManager:
             return ImageFont.load_default(size=size)
         except TypeError:
             return ImageFont.load_default()
-
