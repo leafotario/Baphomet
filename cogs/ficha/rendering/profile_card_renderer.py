@@ -851,7 +851,6 @@ class ProfileCardRenderer:
         font = self._font(13, "bold")
 
         left = "BAPHOMET ID"
-        right = "FICHA DE IDENTIFICAÇÃO"
 
         self._draw_text(
             draw,
