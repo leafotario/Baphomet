@@ -3309,7 +3309,7 @@ class TierListCog(
         self.sessions: dict[int, TierListSession] = {}
 
         self.renderer = TierListRenderer()
-
+# oi
         self.spotify_service = SpotifyService()
         self.spotify_resolver = SpotifyInputResolver(self.spotify_service)
         self.spotify_image_downloader = SpotifyImageDownloader(
