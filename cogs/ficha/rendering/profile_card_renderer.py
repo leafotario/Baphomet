@@ -56,7 +56,12 @@ class Rect:
         return (self.x + self.w // 2, self.y + self.h // 2)
 
     def inset(self, dx: int, dy: int) -> Rect:
-        return Rect(self.x + dx, self.y + dy, max(1, self.w - dx * 2), max(1, self.h - dy * 2))
+        return Rect(
+            self.x + dx,
+            self.y + dy,
+            max(1, self.w - dx * 2),
+            max(1, self.h - dy * 2),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +104,7 @@ class FontManager:
         key = (safe_size, normalized)
 
         cached = self._cache.get(key)
+
         if cached is not None:
             return cached
 
@@ -141,25 +147,32 @@ def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
 
 
-def _safe_rgba(color: Any, fallback: ColorA = (0, 0, 0, 255)) -> ColorA:
+def safe_rgba(color: Any, fallback: ColorA = (0, 0, 0, 255)) -> ColorA:
     if not isinstance(color, (tuple, list)):
         return fallback
 
-    def ch(v: Any, fb: int) -> int:
+    def channel(value: Any, fb: int) -> int:
         try:
-            return max(0, min(255, int(round(float(v)))))
+            number = int(round(float(value)))
         except (TypeError, ValueError, OverflowError):
-            return fb
+            number = fb
+
+        return max(0, min(255, number))
 
     if len(color) == 3:
-        return (ch(color[0], fallback[0]), ch(color[1], fallback[1]), ch(color[2], fallback[2]), 255)
+        return (
+            channel(color[0], fallback[0]),
+            channel(color[1], fallback[1]),
+            channel(color[2], fallback[2]),
+            255,
+        )
 
     if len(color) >= 4:
         return (
-            ch(color[0], fallback[0]),
-            ch(color[1], fallback[1]),
-            ch(color[2], fallback[2]),
-            ch(color[3], fallback[3]),
+            channel(color[0], fallback[0]),
+            channel(color[1], fallback[1]),
+            channel(color[2], fallback[2]),
+            channel(color[3], fallback[3]),
         )
 
     return fallback
@@ -242,6 +255,7 @@ def fit_font_to_width(
 
     for size in range(safe_start, safe_min - 1, -1):
         font = font_loader(size)
+
         if text_width(draw, text, font) <= safe_max:
             return font
 
@@ -255,7 +269,7 @@ def draw_text_shadow(
     *,
     font: ImageFont.ImageFont,
     fill: ColorA,
-    shadow: ColorA = (0, 0, 0, 160),
+    shadow: ColorA = (0, 0, 0, 170),
     offset: tuple[int, int] = (2, 2),
     stroke_width: int = 0,
     stroke_fill: ColorA = (0, 0, 0, 0),
@@ -268,17 +282,17 @@ def draw_text_shadow(
         (x + ox, y + oy),
         safe_text,
         font=font,
-        fill=_safe_rgba(shadow),
+        fill=safe_rgba(shadow),
         stroke_width=max(0, int(stroke_width)),
-        stroke_fill=_safe_rgba(stroke_fill, (0, 0, 0, 0)),
+        stroke_fill=safe_rgba(stroke_fill, (0, 0, 0, 0)),
     )
     draw.text(
         (x, y),
         safe_text,
         font=font,
-        fill=_safe_rgba(fill),
+        fill=safe_rgba(fill),
         stroke_width=max(0, int(stroke_width)),
-        stroke_fill=_safe_rgba(stroke_fill, (0, 0, 0, 0)),
+        stroke_fill=safe_rgba(stroke_fill, (0, 0, 0, 0)),
     )
 
 
@@ -302,7 +316,12 @@ def draw_soft_shadow(
         rect.bottom + offset[1] + spread,
     )
 
-    draw.rounded_rectangle(box, radius=max(1, radius + spread), fill=_safe_rgba(color))
+    draw.rounded_rectangle(
+        box,
+        radius=max(1, radius + spread),
+        fill=safe_rgba(color),
+    )
+
     blurred = layer.filter(ImageFilter.GaussianBlur(max(0, int(blur))))
 
     try:
@@ -312,66 +331,65 @@ def draw_soft_shadow(
         blurred.close()
 
 
-def _rounded_mask(size: tuple[int, int], radius: int, *, scale: int = 3) -> Image.Image:
-    width, height = max(1, size[0]), max(1, size[1])
+def rounded_mask(size: tuple[int, int], radius: int, *, scale: int = 3) -> Image.Image:
+    width = max(1, int(size[0]))
+    height = max(1, int(size[1]))
     scale = max(2, int(scale))
 
-    big = Image.new("L", (width * scale, height * scale), 0)
-    draw = ImageDraw.Draw(big)
+    large = Image.new("L", (width * scale, height * scale), 0)
+    draw = ImageDraw.Draw(large)
     draw.rounded_rectangle(
         (0, 0, width * scale - 1, height * scale - 1),
-        radius=max(1, radius * scale),
+        radius=max(1, int(radius) * scale),
         fill=255,
     )
 
-    mask = big.resize((width, height), RESAMPLE_LANCZOS)
-    big.close()
+    mask = large.resize((width, height), RESAMPLE_LANCZOS)
+    large.close()
+    return mask
+
+
+def circle_mask(size: int, *, scale: int = 3) -> Image.Image:
+    safe_size = max(1, int(size))
+    scale = max(2, int(scale))
+
+    large = Image.new("L", (safe_size * scale, safe_size * scale), 0)
+    draw = ImageDraw.Draw(large)
+    draw.ellipse((0, 0, safe_size * scale - 1, safe_size * scale - 1), fill=255)
+
+    mask = large.resize((safe_size, safe_size), RESAMPLE_LANCZOS)
+    large.close()
     return mask
 
 
 def paste_rounded(canvas: Image.Image, image: Image.Image, rect: Rect, radius: int) -> None:
-    src = image.convert("RGBA") if image.mode != "RGBA" else image
-    if src.size != rect.size:
-        src = src.resize(rect.size, RESAMPLE_LANCZOS)
+    source = image.convert("RGBA") if image.mode != "RGBA" else image
 
-    mask = _rounded_mask(rect.size, radius, scale=3)
+    if source.size != rect.size:
+        source = source.resize(rect.size, RESAMPLE_LANCZOS)
+
+    mask = rounded_mask(rect.size, radius, scale=3)
 
     try:
-        canvas.paste(src, (rect.x, rect.y), mask)
+        canvas.paste(source, (rect.x, rect.y), mask)
     finally:
         mask.close()
-        if src is not image:
-            src.close()
+
+        if source is not image:
+            source.close()
 
 
 def paste_centered(canvas: Image.Image, image: Image.Image, rect: Rect) -> None:
-    src = image.convert("RGBA") if image.mode != "RGBA" else image.copy()
-    src.thumbnail((rect.w, rect.h), RESAMPLE_LANCZOS)
+    source = image.convert("RGBA") if image.mode != "RGBA" else image.copy()
+    source.thumbnail((rect.w, rect.h), RESAMPLE_LANCZOS)
 
-    x = rect.x + (rect.w - src.width) // 2
-    y = rect.y + (rect.h - src.height) // 2
-
-    try:
-        canvas.paste(src, (x, y), src)
-    finally:
-        src.close()
-
-
-def add_noise_overlay(canvas: Image.Image, *, opacity: int = 1, seed: int = 0, scale: int = 2) -> None:
-    if opacity <= 0:
-        return
-
-    noise = Image.effect_noise(canvas.size, 18)
-    alpha = noise.convert("L").point(lambda p: max(0, min(255, int(opacity))))
-    layer = Image.new("RGBA", canvas.size, (255, 255, 255, 0))
-    layer.putalpha(alpha)
+    x = rect.x + (rect.w - source.width) // 2
+    y = rect.y + (rect.h - source.height) // 2
 
     try:
-        canvas.alpha_composite(layer)
+        canvas.paste(source, (x, y), source)
     finally:
-        noise.close()
-        alpha.close()
-        layer.close()
+        source.close()
 
 
 def load_rgba_from_bytes(image_bytes: bytes | bytearray | memoryview | None) -> Image.Image | None:
@@ -389,12 +407,7 @@ def load_rgba_from_bytes(image_bytes: bytes | bytearray | memoryview | None) -> 
 def circular_crop(source: Image.Image, size: int) -> Image.Image:
     safe_size = max(1, int(size))
     image = ImageOps.fit(source.convert("RGBA"), (safe_size, safe_size), method=RESAMPLE_LANCZOS)
-
-    mask_big = Image.new("L", (safe_size * 3, safe_size * 3), 0)
-    draw = ImageDraw.Draw(mask_big)
-    draw.ellipse((0, 0, safe_size * 3 - 1, safe_size * 3 - 1), fill=255)
-    mask = mask_big.resize((safe_size, safe_size), RESAMPLE_LANCZOS)
-
+    mask = circle_mask(safe_size, scale=3)
     output = Image.new("RGBA", (safe_size, safe_size), (0, 0, 0, 0))
 
     try:
@@ -402,7 +415,6 @@ def circular_crop(source: Image.Image, size: int) -> Image.Image:
         return output
     finally:
         image.close()
-        mask_big.close()
         mask.close()
 
 
@@ -416,32 +428,40 @@ def create_avatar_placeholder(
     accent: ColorA,
     text_fill: ColorA,
 ) -> Image.Image:
-    image = Image.new("RGBA", (size, size), _safe_rgba(fill_bottom))
+    image = Image.new("RGBA", (size, size), safe_rgba(fill_bottom))
     draw = ImageDraw.Draw(image, "RGBA")
 
+    top = safe_rgba(fill_top)
+    bottom = safe_rgba(fill_bottom)
+
     for y in range(size):
-        t = y / max(1, size - 1)
-        top = _safe_rgba(fill_top)
-        bottom = _safe_rgba(fill_bottom)
-        color = tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(4))
+        ratio = y / max(1, size - 1)
+        color = tuple(int(top[i] + (bottom[i] - top[i]) * ratio) for i in range(4))
         draw.line((0, y, size, y), fill=color)
 
-    draw.ellipse((size // 5, size // 5, size - size // 5, size - size // 5), outline=_safe_rgba(accent), width=max(2, size // 35))
+    draw.ellipse(
+        (size // 5, size // 5, size - size // 5, size - size // 5),
+        outline=safe_rgba(accent),
+        width=max(2, size // 35),
+    )
 
     text = str(initials or "?").upper()[:2]
     tw = text_width(draw, text, font)
     th = text_height(draw, text, font)
+
     draw_text_shadow(
         draw,
         ((size - tw) // 2, (size - th) // 2 - 3),
         text,
         font=font,
-        fill=_safe_rgba(text_fill),
+        fill=safe_rgba(text_fill),
         shadow=(0, 0, 0, 170),
         offset=(2, 2),
     )
 
-    return circular_crop(image, size)
+    cropped = circular_crop(image, size)
+    image.close()
+    return cropped
 
 
 def create_badge_placeholder(
@@ -453,25 +473,35 @@ def create_badge_placeholder(
     line: ColorA,
 ) -> Image.Image:
     width, height = size
-    image = Image.new("RGBA", size, _safe_rgba(fill_bottom))
+    image = Image.new("RGBA", size, safe_rgba(fill_bottom))
     draw = ImageDraw.Draw(image, "RGBA")
 
+    top = safe_rgba(fill_top)
+    bottom = safe_rgba(fill_bottom)
+
     for y in range(height):
-        t = y / max(1, height - 1)
-        top = _safe_rgba(fill_top)
-        bottom = _safe_rgba(fill_bottom)
-        color = tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(4))
+        ratio = y / max(1, height - 1)
+        color = tuple(int(top[i] + (bottom[i] - top[i]) * ratio) for i in range(4))
         draw.line((0, y, width, y), fill=color)
 
     cx = width // 2
     cy = height // 2
 
-    draw.ellipse((cx - 36, cy - 36, cx + 36, cy + 36), outline=_safe_rgba(line), width=3)
-    draw.line((cx, cy - 44, cx, cy + 44), fill=_safe_rgba(accent), width=4)
-    draw.line((cx - 42, cy, cx + 42, cy), fill=_safe_rgba(line), width=2)
+    draw.ellipse(
+        (cx - 36, cy - 36, cx + 36, cy + 36),
+        outline=safe_rgba(line),
+        width=3,
+    )
+    draw.line((cx, cy - 44, cx, cy + 44), fill=safe_rgba(accent), width=4)
+    draw.line((cx - 42, cy, cx + 42, cy), fill=safe_rgba(line), width=2)
     draw.polygon(
-        [(cx, cy - 56), (cx + 16, cy - 30), (cx, cy - 18), (cx - 16, cy - 30)],
-        fill=_safe_rgba(accent),
+        [
+            (cx, cy - 56),
+            (cx + 16, cy - 30),
+            (cx, cy - 18),
+            (cx - 16, cy - 30),
+        ],
+        fill=safe_rgba(accent),
     )
 
     return image
@@ -531,27 +561,25 @@ def clamp_lines_with_ellipsis(
 
 @dataclass(frozen=True, slots=True)
 class ProfileCardTheme:
-    background_fallback: ColorA = (42, 39, 48, 255)
+    background_top: ColorA = (67, 64, 76, 255)
+    background_bottom: ColorA = (43, 41, 50, 255)
 
-    glass_overlay: ColorA = (18, 15, 24, 180)
-    outer_card_fill: ColorA = (0, 0, 0, 105)
-    inner_card_fill: ColorA = (0, 0, 0, 62)
+    outer_card_fill: ColorA = (32, 31, 38, 255)
+    inner_card_fill: ColorA = (36, 35, 43, 255)
 
-    panel_fill: ColorA = (0, 0, 0, 82)
-    panel_outline: ColorA = (255, 255, 255, 42)
+    panel_fill: ColorA = (28, 27, 34, 255)
+    panel_outline: ColorA = (95, 93, 108, 255)
 
-    field_fill: ColorA = (0, 0, 0, 92)
-    field_outline: ColorA = (255, 255, 255, 36)
+    field_fill: ColorA = (20, 20, 26, 255)
+    field_outline: ColorA = (68, 67, 78, 255)
 
     text: ColorA = (255, 255, 255, 255)
     text_soft: ColorA = (225, 225, 230, 255)
-    text_muted: ColorA = (190, 190, 198, 255)
+    text_muted: ColorA = (184, 184, 194, 255)
 
-    rank_gold: ColorA = (255, 220, 50, 255)
     cyan: ColorA = (0, 255, 255, 255)
-
-    bar_track: ColorA = (0, 0, 0, 135)
-    shadow: ColorA = (0, 0, 0, 170)
+    bar_track: ColorA = (20, 20, 26, 255)
+    shadow: ColorA = (0, 0, 0, 150)
 
 
 @dataclass(frozen=True, slots=True)
@@ -591,11 +619,9 @@ class ProfileCardRenderer:
         self._accent: tuple[int, int, int] = (120, 220, 220)
 
     def render(self, profile: ProfileRenderData) -> bytes:
-        """Renderiza a ficha completa e retorna bytes PNG prontos para Discord."""
-
         self._accent = self._extract_accent(profile)
 
-        canvas = self._create_glass_background(profile).convert("RGBA")
+        canvas = self._create_background()
         self._draw_main_frame(canvas)
         self._draw_avatar(canvas, profile)
         self._draw_identity(canvas, profile)
@@ -604,7 +630,6 @@ class ProfileCardRenderer:
         self._draw_badge(canvas, profile)
         self._draw_bonds(canvas, profile)
         self._draw_xp_progress(canvas, profile)
-        self._apply_finishing(canvas)
 
         output = io.BytesIO()
 
@@ -615,69 +640,37 @@ class ProfileCardRenderer:
             output.close()
             canvas.close()
 
-    @staticmethod
-    def _channel(value: Any, fallback: int = 0) -> int:
-        try:
-            number = int(round(float(value)))
-        except (TypeError, ValueError, OverflowError):
-            number = fallback
-
-        return max(0, min(255, number))
-
     def _rgba(self, color: Any, fallback: ColorA = (0, 0, 0, 255)) -> ColorA:
-        return _safe_rgba(color, fallback)
+        return safe_rgba(color, fallback)
 
-    def _rgb(self, color: Any, fallback: tuple[int, int, int] = (120, 220, 220)) -> tuple[int, int, int]:
+    def _rgb(
+        self,
+        color: Any,
+        fallback: tuple[int, int, int] = (120, 220, 220),
+    ) -> tuple[int, int, int]:
         rgba = self._rgba(color, (*fallback, 255))
         return rgba[:3]
 
-    def _safe_load_external_image(self, image_bytes: bytes | bytearray | memoryview | None) -> Image.Image | None:
-        return load_rgba_from_bytes(image_bytes)
-
-    def _safe_paste(
-        self,
-        base: Image.Image,
-        image: Image.Image,
-        position: tuple[int, int],
-        mask: Image.Image | None = None,
-    ) -> None:
-        src = image.convert("RGBA") if image.mode != "RGBA" else image
-
-        if mask is not None:
-            alpha_mask = mask.convert("L") if mask.mode != "L" else mask
-
-            try:
-                base.paste(src, position, alpha_mask)
-            finally:
-                if alpha_mask is not mask:
-                    alpha_mask.close()
-                if src is not image:
-                    src.close()
-
-            return
-
-        try:
-            base.paste(src, position, src)
-        finally:
-            if src is not image:
-                src.close()
-
     def _font(self, size: int, weight: str = "regular") -> ImageFont.ImageFont:
-        safe_size = max(1, int(size))
-
         try:
-            font = self.fonts.font(safe_size, weight)
-            if font is not None:
-                return font
+            return self.fonts.font(max(1, int(size)), weight)
         except Exception:
-            pass
+            return FontManager().font(max(1, int(size)), weight)
 
-        return FontManager().font(safe_size, weight)
-
-    def _measure_width(self, draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> int:
+    def _measure_width(
+        self,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        font: ImageFont.ImageFont,
+    ) -> int:
         return text_width(draw, text, font)
 
-    def _measure_height(self, draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> int:
+    def _measure_height(
+        self,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        font: ImageFont.ImageFont,
+    ) -> int:
         return text_height(draw, text, font)
 
     def _truncate_to_width(
@@ -686,10 +679,8 @@ class ProfileCardRenderer:
         value: str,
         font: ImageFont.ImageFont,
         max_width: int,
-        *,
-        ellipsis: str = "...",
     ) -> str:
-        return truncate_text(draw, value, font, max_width, ellipsis=ellipsis)
+        return truncate_text(draw, value, font, max_width)
 
     def _fit_font_to_width_safe(
         self,
@@ -710,41 +701,45 @@ class ProfileCardRenderer:
             min_size=min_size,
         )
 
-    def _create_antialiased_circle_mask(self, size: int, *, scale: int = 3) -> Image.Image:
-        safe_size = max(1, int(size))
-        safe_scale = max(2, int(scale))
-        big_size = safe_size * safe_scale
+    def _safe_load_external_image(
+        self,
+        image_bytes: bytes | bytearray | memoryview | None,
+    ) -> Image.Image | None:
+        return load_rgba_from_bytes(image_bytes)
 
-        large = Image.new("L", (big_size, big_size), 0)
-        large_draw = ImageDraw.Draw(large)
-        large_draw.ellipse((0, 0, big_size - 1, big_size - 1), fill=255)
+    def _safe_paste(
+        self,
+        base: Image.Image,
+        image: Image.Image,
+        position: tuple[int, int],
+        mask: Image.Image | None = None,
+    ) -> None:
+        source = image.convert("RGBA") if image.mode != "RGBA" else image
 
-        mask = large.resize((safe_size, safe_size), RESAMPLE_LANCZOS)
-        large.close()
-        return mask
+        if mask is not None:
+            if mask.mode == "RGBA":
+                alpha_mask = mask.getchannel("A")
+            elif mask.mode != "L":
+                alpha_mask = mask.convert("L")
+            else:
+                alpha_mask = mask
 
-    def _create_circular_image(self, source: Image.Image | None, size: int) -> Image.Image:
-        safe_size = max(1, int(size))
+            try:
+                base.paste(source, position, alpha_mask)
+            finally:
+                if alpha_mask is not mask:
+                    alpha_mask.close()
 
-        if source is None:
-            image = Image.new("RGBA", (safe_size, safe_size), (0, 0, 0, 0))
-        else:
-            image = ImageOps.fit(source.convert("RGBA"), (safe_size, safe_size), method=RESAMPLE_LANCZOS)
+                if source is not image:
+                    source.close()
 
-        mask = self._create_antialiased_circle_mask(safe_size, scale=3)
-        output = Image.new("RGBA", (safe_size, safe_size), (0, 0, 0, 0))
+            return
 
         try:
-            output.paste(image, (0, 0), mask)
-            return output
+            base.paste(source, position, source)
         finally:
-            mask.close()
-            image.close()
-
-    def _safe_placeholder(self, size: tuple[int, int], color: ColorA = (0, 0, 0, 0)) -> Image.Image:
-        width = max(1, int(size[0]))
-        height = max(1, int(size[1]))
-        return Image.new("RGBA", (width, height), self._rgba(color, (0, 0, 0, 0)))
+            if source is not image:
+                source.close()
 
     def _extract_accent(self, profile: ProfileRenderData) -> tuple[int, int, int]:
         source = self._safe_load_external_image(profile.avatar_bytes)
@@ -757,19 +752,20 @@ class ProfileCardRenderer:
         finally:
             source.close()
 
-    def _get_dominant_color(self, img: Image.Image) -> tuple[int, int, int]:
+    def _get_dominant_color(self, image: Image.Image) -> tuple[int, int, int]:
         converted = None
         tiny = None
 
         try:
-            converted = img.convert("RGBA")
-            tiny = converted.resize((1, 1), resample=RESAMPLE_LANCZOS)
+            converted = image.convert("RGBA")
+            tiny = converted.resize((1, 1), RESAMPLE_LANCZOS)
             pixel = tiny.getpixel((0, 0))
         except Exception:
             return (120, 220, 220)
         finally:
             if converted is not None:
                 converted.close()
+
             if tiny is not None:
                 tiny.close()
 
@@ -783,65 +779,31 @@ class ProfileCardRenderer:
 
         return (120, 220, 220)
 
-    def _create_glass_background(self, profile: ProfileRenderData) -> Image.Image:
+    def _create_background(self) -> Image.Image:
         width, height = self.layout.canvas
+        top = self._rgba(self.theme.background_top)
+        bottom = self._rgba(self.theme.background_bottom)
+        canvas = Image.new("RGBA", self.layout.canvas, top)
+        draw = ImageDraw.Draw(canvas, "RGBA")
 
-        source = self._safe_load_external_image(profile.avatar_bytes)
+        for y in range(height):
+            ratio = y / max(1, height - 1)
+            color = tuple(int(top[i] + (bottom[i] - top[i]) * ratio) for i in range(4))
+            draw.line((0, y, width, y), fill=color)
 
-        if source is None:
-            canvas = Image.new("RGBA", self.layout.canvas, self._rgba(self.theme.background_fallback))
-        else:
-            try:
-                canvas = ImageOps.fit(source, self.layout.canvas, method=RESAMPLE_LANCZOS).convert("RGBA")
-                canvas = canvas.filter(ImageFilter.GaussianBlur(radius=45))
-            except Exception:
-                canvas = Image.new("RGBA", self.layout.canvas, self._rgba(self.theme.background_fallback))
-            finally:
-                source.close()
-
-        overlay = Image.new("RGBA", self.layout.canvas, self._rgba(self.theme.glass_overlay))
-
-        try:
-            canvas = Image.alpha_composite(canvas.convert("RGBA"), overlay)
-        finally:
-            overlay.close()
-
+        accent = self._rgb(self._accent)
         glow = Image.new("RGBA", self.layout.canvas, (0, 0, 0, 0))
         glow_draw = ImageDraw.Draw(glow, "RGBA")
-        accent = self._rgb(self._accent)
-
-        glow_draw.ellipse((-220, -260, 650, 590), fill=self._rgba((*accent, 34)))
-        glow_draw.ellipse((width - 620, height - 520, width + 260, height + 250), fill=self._rgba((0, 255, 255, 20)))
-        glow_draw.ellipse(
-            (width // 2 - 420, height // 2 - 260, width // 2 + 420, height // 2 + 260),
-            fill=self._rgba((*accent, 12)),
-        )
-
-        blurred_glow = glow.filter(ImageFilter.GaussianBlur(radius=65))
+        glow_draw.ellipse((-300, -260, 640, 590), fill=(*accent, 55))
+        glow_draw.ellipse((880, 570, 1720, 1240), fill=(0, 255, 255, 35))
+        glow = glow.filter(ImageFilter.GaussianBlur(80))
 
         try:
-            canvas.alpha_composite(blurred_glow.convert("RGBA"))
+            canvas.alpha_composite(glow)
         finally:
             glow.close()
-            blurred_glow.close()
 
-        vignette = Image.new("RGBA", self.layout.canvas, (0, 0, 0, 0))
-        vignette_draw = ImageDraw.Draw(vignette, "RGBA")
-        vignette_draw.rectangle((0, 0, width, height), fill=self._rgba((0, 0, 0, 118)))
-        vignette_draw.ellipse((-120, -100, width + 120, height + 100), fill=self._rgba((0, 0, 0, 0)))
-
-        blurred_vignette = vignette.filter(ImageFilter.GaussianBlur(radius=90))
-
-        try:
-            canvas.alpha_composite(blurred_vignette.convert("RGBA"))
-        finally:
-            vignette.close()
-            blurred_vignette.close()
-
-        return canvas.convert("RGBA")
-
-    def _apply_finishing(self, canvas: Image.Image) -> None:
-        add_noise_overlay(canvas, opacity=1, seed=909, scale=2)
+        return canvas
 
     def _draw_main_frame(self, canvas: Image.Image) -> None:
         layout = self.layout
@@ -854,35 +816,30 @@ class ProfileCardRenderer:
             layout.outer_radius,
             offset=(0, 18),
             blur=38,
-            color=self._rgba((0, 0, 0, 175)),
-            spread=0,
+            color=theme.shadow,
         )
 
         outer = Image.new("RGBA", layout.outer_card.size, self._rgba(theme.outer_card_fill))
-
-        try:
-            paste_rounded(canvas, outer, layout.outer_card, layout.outer_radius)
-        finally:
-            outer.close()
-
         inner = Image.new("RGBA", layout.inner_card.size, self._rgba(theme.inner_card_fill))
 
         try:
+            paste_rounded(canvas, outer, layout.outer_card, layout.outer_radius)
             paste_rounded(canvas, inner, layout.inner_card, layout.inner_radius)
         finally:
+            outer.close()
             inner.close()
 
         draw.rounded_rectangle(
             layout.outer_card.box,
             radius=layout.outer_radius,
-            outline=self._rgba((255, 255, 255, 52)),
+            outline=(120, 118, 134, 255),
             width=2,
         )
 
         draw.rounded_rectangle(
             layout.inner_card.box,
             radius=layout.inner_radius,
-            outline=self._rgba((255, 255, 255, 26)),
+            outline=(72, 70, 84, 255),
             width=1,
         )
 
@@ -891,8 +848,8 @@ class ProfileCardRenderer:
     def _draw_document_header(self, canvas: Image.Image) -> None:
         rect = self.layout.inner_card
         draw = ImageDraw.Draw(canvas, "RGBA")
-
         font = self._font(13, "bold")
+
         left = "BAPHOMET ID"
         right = "FICHA DE IDENTIFICAÇÃO"
 
@@ -901,8 +858,8 @@ class ProfileCardRenderer:
             (rect.x + 30, rect.y + 22),
             left,
             font,
-            fill=(220, 220, 225, 135),
-            shadow=(0, 0, 0, 95),
+            fill=(210, 210, 218, 255),
+            shadow=(0, 0, 0, 130),
             offset=(1, 1),
             max_width=420,
         )
@@ -915,16 +872,10 @@ class ProfileCardRenderer:
             (rect.right - 30 - right_w, rect.y + 22),
             right,
             font,
-            fill=(220, 220, 225, 135),
-            shadow=(0, 0, 0, 95),
+            fill=(210, 210, 218, 255),
+            shadow=(0, 0, 0, 130),
             offset=(1, 1),
             max_width=420,
-        )
-
-        draw.line(
-            (rect.x + 30, rect.y + 49, rect.right - 30, rect.y + 49),
-            fill=self._rgba((255, 255, 255, 34)),
-            width=1,
         )
 
     def _draw_panel(self, canvas: Image.Image, rect: Rect, *, radius: int | None = None) -> None:
@@ -936,7 +887,7 @@ class ProfileCardRenderer:
             radius,
             offset=(0, 8),
             blur=18,
-            color=self._rgba((0, 0, 0, 105)),
+            color=(0, 0, 0, 105),
         )
 
         panel = Image.new("RGBA", rect.size, self._rgba(self.theme.panel_fill))
@@ -947,7 +898,6 @@ class ProfileCardRenderer:
             panel.close()
 
         draw = ImageDraw.Draw(canvas, "RGBA")
-
         draw.rounded_rectangle(
             rect.box,
             radius=radius,
@@ -955,17 +905,11 @@ class ProfileCardRenderer:
             width=1,
         )
 
-        draw.line(
-            (rect.x + 24, rect.y + 1, rect.right - 24, rect.y + 1),
-            fill=self._rgba((255, 255, 255, 24)),
-            width=1,
-        )
-
     def _draw_section_title(self, draw: ImageDraw.ImageDraw, rect: Rect, title: str) -> None:
         font = self._font(26, "display")
         x = rect.x + self.layout.section_pad
         y = rect.y + 22
-        max_width = max(1, rect.w - (self.layout.section_pad * 2))
+        max_width = max(1, rect.w - self.layout.section_pad * 2)
 
         title = self._truncate_to_width(draw, title, font, max_width)
 
@@ -975,21 +919,10 @@ class ProfileCardRenderer:
             title,
             font,
             fill=self.theme.text,
-            shadow=(0, 0, 0, 180),
+            shadow=(0, 0, 0, 170),
             offset=(2, 2),
             max_width=max_width,
         )
-
-        title_w = self._measure_width(draw, title, font)
-        rule_x = x + title_w + 16
-
-        if rule_x < rect.right - 30:
-            line_y = y + 17
-            draw.line(
-                (rule_x, line_y, rect.right - 30, line_y),
-                fill=self._rgba((255, 255, 255, 36)),
-                width=1,
-            )
 
     def _draw_avatar(self, canvas: Image.Image, profile: ProfileRenderData) -> None:
         slot = self.layout.avatar_medallion
@@ -1017,10 +950,10 @@ class ProfileCardRenderer:
             border_rect.w // 2,
             offset=(0, 12),
             blur=28,
-            color=self._rgba((0, 0, 0, 170)),
+            color=(0, 0, 0, 180),
         )
 
-        draw.ellipse(border_rect.box, fill=self._rgba((*self._accent, 255)))
+        draw.ellipse(border_rect.box, fill=(*self._accent, 255))
 
         source = self._safe_load_external_image(profile.avatar_bytes)
 
@@ -1031,17 +964,17 @@ class ProfileCardRenderer:
                 font=self._font(78, "display"),
                 fill_top=(68, 64, 82, 255),
                 fill_bottom=(28, 25, 36, 255),
-                accent=self._rgba((*self._accent, 255)),
-                text_fill=self._rgba(self.theme.text),
+                accent=(*self._accent, 255),
+                text_fill=self.theme.text,
             )
 
             try:
-                avatar = self._create_circular_image(placeholder.convert("RGBA"), avatar_size)
+                avatar = circular_crop(placeholder, avatar_size)
             finally:
                 placeholder.close()
         else:
             try:
-                avatar = self._create_circular_image(source, avatar_size)
+                avatar = circular_crop(source, avatar_size)
             finally:
                 source.close()
 
@@ -1050,7 +983,11 @@ class ProfileCardRenderer:
         finally:
             avatar.close()
 
-        draw.ellipse(avatar_rect.box, outline=self._rgba((255, 255, 255, 65)), width=2)
+        draw.ellipse(
+            avatar_rect.box,
+            outline=(255, 255, 255, 80),
+            width=2,
+        )
 
     def _draw_identity(self, canvas: Image.Image, profile: ProfileRenderData) -> None:
         rect = self.layout.identity_panel
@@ -1067,7 +1004,6 @@ class ProfileCardRenderer:
         )
 
         label_font = self._font(13, "bold")
-
         x = rect.x + 28
         y = rect.y + 32
         value_width = rect.w - 56
@@ -1075,7 +1011,12 @@ class ProfileCardRenderer:
         for label, value in fields:
             label_text = self._truncate_to_width(draw, label.upper(), label_font, value_width)
 
-            draw.text((x, y), label_text, font=label_font, fill=self._rgba(self.theme.text_muted))
+            draw.text(
+                (x, y),
+                label_text,
+                font=label_font,
+                fill=self._rgba(self.theme.text_muted),
+            )
 
             weight = "display" if label == "Nome" else "regular"
             start_size = 30 if label == "Nome" else 22
@@ -1091,7 +1032,6 @@ class ProfileCardRenderer:
 
             display_value = self._truncate_to_width(draw, value, value_font, value_width - 24)
             value_y = y + 22
-
             field_rect = Rect(x - 12, value_y - 7, value_width + 24, 40)
 
             self._draw_field(draw, field_rect)
@@ -1139,12 +1079,8 @@ class ProfileCardRenderer:
         max_lines = max(1, body_rect.h // max(1, line_height))
 
         text_rect = body_rect.inset(16, 16)
-
-        try:
-            lines = wrap_text_pixels(draw, text, font, text_rect.w)
-            lines = clamp_lines_with_ellipsis(draw, lines, font, text_rect.w, max_lines)
-        except Exception:
-            lines = self._wrap_text_safe(draw, text, font, text_rect.w, max_lines)
+        lines = wrap_text_pixels(draw, text, font, text_rect.w)
+        lines = clamp_lines_with_ellipsis(draw, lines, font, text_rect.w, max_lines)
 
         y = text_rect.y
 
@@ -1160,56 +1096,12 @@ class ProfileCardRenderer:
                 safe_line,
                 font,
                 fill=self.theme.text_soft,
-                shadow=(0, 0, 0, 115),
+                shadow=(0, 0, 0, 120),
                 offset=(2, 2),
                 max_width=text_rect.w,
             )
 
             y += line_height
-
-    def _wrap_text_safe(
-        self,
-        draw: ImageDraw.ImageDraw,
-        text: str,
-        font: ImageFont.ImageFont,
-        max_width: int,
-        max_lines: int,
-    ) -> list[str]:
-        words = str(text or "").replace("\n", " ").split()
-
-        if not words:
-            return [""]
-
-        lines: list[str] = []
-        current = ""
-
-        for word in words:
-            candidate = word if not current else f"{current} {word}"
-
-            if self._measure_width(draw, candidate, font) <= max_width:
-                current = candidate
-                continue
-
-            if current:
-                lines.append(current)
-                current = word
-            else:
-                lines.append(self._truncate_to_width(draw, word, font, max_width))
-                current = ""
-
-            if len(lines) >= max_lines:
-                break
-
-        if current and len(lines) < max_lines:
-            lines.append(current)
-
-        if len(lines) > max_lines:
-            lines = lines[:max_lines]
-
-        if len(lines) == max_lines and words:
-            lines[-1] = self._truncate_to_width(draw, lines[-1], font, max_width)
-
-        return lines or [""]
 
     def _draw_badge(self, canvas: Image.Image, profile: ProfileRenderData) -> None:
         rect = self.layout.badge_panel
@@ -1229,33 +1121,33 @@ class ProfileCardRenderer:
                 (150, 118),
                 fill_top=(58, 54, 68, 255),
                 fill_bottom=(30, 27, 38, 255),
-                accent=self._rgba((*self._accent, 255)),
-                line=(255, 255, 255, 65),
+                accent=(*self._accent, 255),
+                line=(255, 255, 255, 90),
             )
         else:
             try:
                 badge = source.convert("RGBA").copy()
             except Exception:
-                badge = self._safe_placeholder((150, 118), (0, 0, 0, 0))
+                badge = Image.new("RGBA", (150, 118), (0, 0, 0, 0))
             finally:
                 source.close()
 
         try:
-            badge = badge.convert("RGBA")
             paste_centered(canvas, badge, image_slot)
         finally:
             badge.close()
 
         label = self._field(profile.badge_name, "Sem insígnia")
+        label_rect = Rect(rect.x + 28, rect.y + 224, rect.w - 56, 40)
+
         label_font = self._fit_font_to_width_safe(
             draw,
             label,
-            rect.w - 76,
+            label_rect.w - 20,
             weight="regular",
             start_size=18,
             min_size=13,
         )
-        label_rect = Rect(rect.x + 28, rect.y + 224, rect.w - 56, 40)
         label = self._truncate_to_width(draw, label, label_font, label_rect.w - 20)
 
         self._draw_field(draw, label_rect, radius=15)
@@ -1308,7 +1200,14 @@ class ProfileCardRenderer:
         )
 
         mult = self._truncate_to_width(draw, mult, mult_font, badge_rect.w - 18)
-        self._draw_centered_text(draw, badge_rect, mult, mult_font, self.theme.text_soft)
+
+        self._draw_centered_text(
+            draw,
+            badge_rect,
+            mult,
+            mult_font,
+            self.theme.text_soft,
+        )
 
     def _draw_xp_progress(self, canvas: Image.Image, profile: ProfileRenderData) -> None:
         rect = self.layout.xp_panel
@@ -1402,7 +1301,7 @@ class ProfileCardRenderer:
             rect.box,
             radius=radius,
             fill=self._rgba(self.theme.bar_track),
-            outline=self._rgba((255, 255, 255, 42)),
+            outline=(92, 91, 104, 255),
             width=1,
         )
 
@@ -1418,37 +1317,34 @@ class ProfileCardRenderer:
         fill_layer = Image.new("RGBA", (rect.w, rect.h), (0, 0, 0, 0))
         fill_draw = ImageDraw.Draw(fill_layer)
 
-        start_color = self._rgba((*self._accent, 255))
+        start_color = (*self._accent, 255)
         end_color = self._rgba(self.theme.cyan)
-        mask = None
+
+        for i in range(filled_width):
+            t = i / max(1, rect.w)
+            r = int(start_color[0] + (end_color[0] - start_color[0]) * t)
+            g = int(start_color[1] + (end_color[1] - start_color[1]) * t)
+            b = int(start_color[2] + (end_color[2] - start_color[2]) * t)
+            a = int(start_color[3] + (end_color[3] - start_color[3]) * t)
+
+            fill_draw.line([(i, 0), (i, rect.h)], fill=(r, g, b, a))
+
+        scale = 3
+        big_mask = Image.new("L", (rect.w * scale, rect.h * scale), 0)
+        big_draw = ImageDraw.Draw(big_mask)
+        big_draw.rounded_rectangle(
+            (0, 0, filled_width * scale, rect.h * scale),
+            radius=radius * scale,
+            fill=255,
+        )
+        mask = big_mask.resize((rect.w, rect.h), RESAMPLE_LANCZOS)
+        big_mask.close()
 
         try:
-            for i in range(filled_width):
-                t = i / max(1, rect.w)
-                r = int(start_color[0] + (end_color[0] - start_color[0]) * t)
-                g = int(start_color[1] + (end_color[1] - start_color[1]) * t)
-                b = int(start_color[2] + (end_color[2] - start_color[2]) * t)
-                a = int(start_color[3] + (end_color[3] - start_color[3]) * t)
-
-                fill_draw.line([(i, 0), (i, rect.h)], fill=self._rgba((r, g, b, a)))
-
-            big_scale = 3
-            big_mask = Image.new("L", (rect.w * big_scale, rect.h * big_scale), 0)
-            big_draw = ImageDraw.Draw(big_mask)
-            big_draw.rounded_rectangle(
-                (0, 0, filled_width * big_scale, rect.h * big_scale),
-                radius=radius * big_scale,
-                fill=255,
-            )
-
-            mask = big_mask.resize((rect.w, rect.h), RESAMPLE_LANCZOS)
-            big_mask.close()
-
             fill_layer.putalpha(mask)
-            self._safe_paste(canvas, fill_layer, (rect.x, rect.y), fill_layer)
+            canvas.paste(fill_layer, (rect.x, rect.y), fill_layer)
         finally:
-            if mask is not None:
-                mask.close()
+            mask.close()
             fill_layer.close()
 
     def _render_chips(self, canvas: Image.Image, rect: Rect, labels: list[str]) -> None:
@@ -1523,7 +1419,13 @@ class ProfileCardRenderer:
         if chip_width > slot.w:
             return
 
-        self._draw_topic_chip(canvas, Rect(slot.x, slot.y, chip_width, slot.h), label, font, muted=True)
+        self._draw_topic_chip(
+            canvas,
+            Rect(slot.x, slot.y, chip_width, slot.h),
+            label,
+            font,
+            muted=True,
+        )
 
     def _draw_topic_chip(
         self,
@@ -1536,15 +1438,15 @@ class ProfileCardRenderer:
     ) -> None:
         draw = ImageDraw.Draw(canvas, "RGBA")
 
-        fill = (0, 0, 0, 86) if muted else (0, 0, 0, 112)
-        outline = (255, 255, 255, 30) if muted else (255, 255, 255, 42)
+        fill = (28, 28, 34, 255) if muted else (42, 41, 50, 255)
+        outline = (70, 69, 82, 255) if muted else (82, 80, 94, 255)
         text_fill = self.theme.text_muted if muted else self.theme.text_soft
 
         draw.rounded_rectangle(
             rect.box,
             radius=rect.h // 2,
-            fill=self._rgba(fill),
-            outline=self._rgba(outline),
+            fill=fill,
+            outline=outline,
             width=1,
         )
 
@@ -1554,11 +1456,14 @@ class ProfileCardRenderer:
 
         self._draw_text(
             draw,
-            (rect.x + (rect.w - label_width) // 2, rect.y + (rect.h - label_height) // 2 - 2),
+            (
+                rect.x + (rect.w - label_width) // 2,
+                rect.y + (rect.h - label_height) // 2 - 2,
+            ),
             label,
             font,
             fill=text_fill,
-            shadow=(0, 0, 0, 135),
+            shadow=(0, 0, 0, 120),
             offset=(2, 2),
             max_width=rect.w - 20,
         )
@@ -1596,7 +1501,10 @@ class ProfileCardRenderer:
 
         self._draw_text(
             draw,
-            (rect.x + (rect.w - text_w) // 2, rect.y + (rect.h - text_h) // 2 - 2),
+            (
+                rect.x + (rect.w - text_w) // 2,
+                rect.y + (rect.h - text_h) // 2 - 2,
+            ),
             safe_text,
             font,
             fill=fill,
@@ -1626,23 +1534,17 @@ class ProfileCardRenderer:
         if max_width is not None:
             safe_text = self._truncate_to_width(draw, safe_text, font, max_width)
 
-        try:
-            draw_text_shadow(
-                draw,
-                pos,
-                safe_text,
-                font=font,
-                fill=self._rgba(fill),
-                shadow=self._rgba(shadow),
-                offset=(int(offset[0]), int(offset[1])),
-                stroke_width=max(0, int(stroke_width)),
-                stroke_fill=self._rgba(stroke_fill, (0, 0, 0, 0)),
-            )
-        except Exception:
-            x, y = pos
-            ox, oy = int(offset[0]), int(offset[1])
-            draw.text((x + ox, y + oy), safe_text, font=font, fill=self._rgba(shadow))
-            draw.text((x, y), safe_text, font=font, fill=self._rgba(fill))
+        draw_text_shadow(
+            draw,
+            pos,
+            safe_text,
+            font=font,
+            fill=self._rgba(fill),
+            shadow=self._rgba(shadow),
+            offset=(int(offset[0]), int(offset[1])),
+            stroke_width=max(0, int(stroke_width)),
+            stroke_fill=self._rgba(stroke_fill, (0, 0, 0, 0)),
+        )
 
     def _field(self, value: str | None, fallback: str = "Não informado") -> str:
         if value == REMOVED_CONTENT:
@@ -1706,13 +1608,6 @@ class ProfileCardRenderer:
 
 
 class ProfileCardCog(commands.Cog):
-    """
-    Cog autocontido da ficha do Baphomet.
-
-    Ele renderiza a ficha com o ProfileCardRenderer embutido e tenta ler dados
-    de bancos SQLite comuns sem quebrar caso tabelas/colunas não existam.
-    """
-
     PROFILE_TABLES = ("profile_cards", "profiles", "user_profiles", "fichas", "ficha_profiles")
     TOPIC_TABLES = ("profile_topics", "user_topics", "ficha_topics", "ask_me_about")
     BOND_TABLES = ("profile_bonds", "bonds", "vinculos", "vínculos", "user_bonds")
@@ -1836,7 +1731,11 @@ class ProfileCardCog(commands.Cog):
         if isinstance(badge_bytes, bytes):
             return badge_bytes
 
-        badge_url = self._pick(payload.get("profile", {}), ("badge_image_url", "badge_url", "insignia_url", "badge_icon_url"))
+        badge_url = self._pick(
+            payload.get("profile", {}),
+            ("badge_image_url", "badge_url", "insignia_url", "badge_icon_url"),
+        )
+
         return await self._fetch_image_url(badge_url)
 
     def _make_profile_data(
@@ -1853,7 +1752,11 @@ class ProfileCardCog(commands.Cog):
         topics = payload.get("topics") or []
         bonds_count = int(payload.get("bonds_count") or 0)
 
-        display_name = self._pick(profile, ("display_name", "name", "nome", "apelido", "nickname")) or getattr(member, "display_name", None) or getattr(member, "name", "Usuário")
+        display_name = (
+            self._pick(profile, ("display_name", "name", "nome", "apelido", "nickname"))
+            or getattr(member, "display_name", None)
+            or getattr(member, "name", "Usuário")
+        )
         username = getattr(member, "name", None) or display_name
 
         pronouns = self._pick(profile, ("pronouns", "pronomes"))
@@ -1862,8 +1765,14 @@ class ProfileCardCog(commands.Cog):
 
         level = self._safe_int(self._pick(xp, ("level", "lvl", "nivel", "nível")), 0)
         xp_total = self._safe_int(self._pick(xp, ("xp_total", "total_xp", "xp", "experience", "points")), 0)
-        xp_required = self._safe_int(self._pick(xp, ("xp_required", "xp_for_next_level", "required_xp", "next_level_xp")), 0)
-        xp_current = self._safe_int(self._pick(xp, ("xp_current", "xp_into_level", "current_xp", "level_xp")), -1)
+        xp_required = self._safe_int(
+            self._pick(xp, ("xp_required", "xp_for_next_level", "required_xp", "next_level_xp")),
+            0,
+        )
+        xp_current = self._safe_int(
+            self._pick(xp, ("xp_current", "xp_into_level", "current_xp", "level_xp")),
+            -1,
+        )
 
         if xp_required <= 0:
             xp_required = max(1, level * 200 if level > 0 else 200)
@@ -1878,16 +1787,15 @@ class ProfileCardCog(commands.Cog):
 
         if not rank_text:
             rank_value = payload.get("rank_position")
+            rank_text = f"#{rank_value}" if rank_value is not None else "Sem rank"
 
-            if rank_value is not None:
-                rank_text = f"#{rank_value}"
-            else:
-                rank_text = "Sem rank"
-
-        multiplier = self._safe_float(self._pick(profile, ("bonds_multiplier", "multiplier", "multiplicador")), 0.0)
+        multiplier = self._safe_float(
+            self._pick(profile, ("bonds_multiplier", "multiplier", "multiplicador")),
+            0.0,
+        )
 
         if multiplier <= 0:
-            multiplier = 1.0 + (bonds_count * 0.1)
+            multiplier = 1.0 + bonds_count * 0.1
 
         return ProfileRenderData(
             user_id=int(member.id),
@@ -1965,7 +1873,9 @@ class ProfileCardCog(commands.Cog):
         user_id: int,
         profile: dict[str, Any],
     ) -> list[str]:
-        inline_topics = self._parse_topics(self._pick(profile, ("ask_me_about", "topics", "interests", "assuntos")))
+        inline_topics = self._parse_topics(
+            self._pick(profile, ("ask_me_about", "topics", "interests", "assuntos")),
+        )
 
         if inline_topics:
             return inline_topics
@@ -1991,7 +1901,6 @@ class ProfileCardCog(commands.Cog):
             args.append(str(guild_id))
 
         order_col = self._first_existing(columns, ("position", "ordem", "order_index", "created_at", "id"))
-
         sql = f"SELECT * FROM {self._q(table)} WHERE {' AND '.join(where)}"
 
         if order_col:
@@ -2058,7 +1967,10 @@ class ProfileCardCog(commands.Cog):
             args.append(str(guild_id))
 
         if status_col:
-            where.append(f"LOWER(CAST({self._q(status_col)} AS TEXT)) IN ('accepted', 'ativo', 'ativa', 'aprovado', 'aprovada', 'active')")
+            where.append(
+                f"LOWER(CAST({self._q(status_col)} AS TEXT)) IN "
+                "('accepted', 'ativo', 'ativa', 'aprovado', 'aprovada', 'active')"
+            )
 
         sql = f"SELECT COUNT(*) FROM {self._q(table)} WHERE {' AND '.join(where)}"
 
@@ -2241,14 +2153,11 @@ class ProfileCardCog(commands.Cog):
         except json.JSONDecodeError:
             pass
 
-        parts: list[str] = []
-
         for separator in ("\n", ";", "|", ","):
             if separator in text:
-                parts = [part.strip() for part in text.split(separator) if part.strip()]
-                break
+                return [part.strip() for part in text.split(separator) if part.strip()]
 
-        return parts or [text]
+        return [text]
 
     @staticmethod
     def _safe_int(value: Any, fallback: int = 0) -> int:
