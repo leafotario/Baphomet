@@ -159,33 +159,6 @@ class IcebergCog(commands.Cog):
     async def renderizar_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         return await self.project_choices(interaction, current)
 
-    @iceberg.command(name="importar", description="Importa um JSON de projeto de iceberg.")
-    @app_commands.guild_only()
-    @app_commands.describe(arquivo="Arquivo JSON de projeto de iceberg")
-    async def importar(self, interaction: discord.Interaction, arquivo: discord.Attachment) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        if arquivo.size and arquivo.size > 512 * 1024:
-            await interaction.followup.send("⚠️ Esse JSON é grande demais para importar.", ephemeral=True)
-            return
-        try:
-            raw = (await arquivo.read(use_cached=True)).decode("utf-8")
-            project = await self.service.import_project_json(
-                raw,
-                owner_id=interaction.user.id,
-                guild_id=interaction.guild_id,
-            )
-        except UnicodeDecodeError:
-            await interaction.followup.send("⚠️ O arquivo precisa estar em UTF-8.", ephemeral=True)
-            return
-        except IcebergUserError as exc:
-            await interaction.followup.send(exc.user_message, ephemeral=True)
-            return
-        except Exception:
-            LOGGER.exception("iceberg_import_failed user_id=%s attachment=%s", interaction.user.id, arquivo.filename)
-            await interaction.followup.send("❌ Não consegui importar esse iceberg. O erro foi registrado.", ephemeral=True)
-            return
-        await self.send_editor_panel(interaction, project=project, content="✅ Iceberg importado.")
-
     async def project_choices(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         query = (current or "").casefold().strip()
         projects = await self.service.list_projects(owner_id=interaction.user.id, guild_id=interaction.guild_id, limit=25)
