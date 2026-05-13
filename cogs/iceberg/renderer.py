@@ -56,7 +56,6 @@ class IcebergRenderer:
         project: IcebergProject,
         *,
         asset_bytes_by_item_id: dict[str, bytes] | None = None,
-        preview: bool = False,
     ) -> io.BytesIO:
         asset_bytes_by_item_id = asset_bytes_by_item_id or {}
         theme = project.theme
@@ -76,9 +75,6 @@ class IcebergRenderer:
             items = project.ordered_items_for_layer(layer_box.layer.id)
             self._draw_items_for_layer(image, project, layer_box, items, asset_bytes_by_item_id)
         self._draw_footer(image, project)
-
-        if preview:
-            image = image.resize((theme.canvas_width // 2, theme.canvas_height // 2), resample=Image.Resampling.LANCZOS)
 
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")

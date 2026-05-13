@@ -16,39 +16,21 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger("baphomet.iceberg.modals")
 
 
-class IcebergGeneralModal(discord.ui.Modal, title="Editar Iceberg"):
-    def __init__(self, cog: IcebergCog, *, project_id: str, owner_id: int, current_name: str, current_theme: str, current_style: str, panel_message: discord.Message | None) -> None:
+class IcebergGeneralModal(discord.ui.Modal, title="Editar Título"):
+    def __init__(self, cog: IcebergCog, *, project_id: str, owner_id: int, current_name: str, panel_message: discord.Message | None) -> None:
         super().__init__(timeout=300)
         self.cog = cog
         self.project_id = project_id
         self.owner_id = owner_id
         self.panel_message = panel_message
         self.name_input = discord.ui.TextInput(
-            label="Nome do iceberg",
+            label="Título do iceberg",
             default=current_name,
             min_length=1,
             max_length=90,
             required=True,
         )
-        self.theme_input = discord.ui.TextInput(
-            label="Tema/preset",
-            default=current_theme,
-            placeholder="classic_iceberg",
-            min_length=1,
-            max_length=64,
-            required=True,
-        )
-        self.style_input = discord.ui.TextInput(
-            label="Estilo padrão dos itens",
-            default=current_style,
-            placeholder="CARD, CHIP ou STICKER",
-            min_length=3,
-            max_length=16,
-            required=True,
-        )
         self.add_item(self.name_input)
-        self.add_item(self.theme_input)
-        self.add_item(self.style_input)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -57,8 +39,6 @@ class IcebergGeneralModal(discord.ui.Modal, title="Editar Iceberg"):
                 self.project_id,
                 owner_id=self.owner_id,
                 name=str(self.name_input.value),
-                theme_id=str(self.theme_input.value),
-                default_item_style=str(self.style_input.value),
             )
         except IcebergUserError as exc:
             await interaction.followup.send(exc.user_message, ephemeral=True)
@@ -68,10 +48,10 @@ class IcebergGeneralModal(discord.ui.Modal, title="Editar Iceberg"):
             await interaction.followup.send("❌ Não consegui atualizar esse iceberg. O erro foi registrado.", ephemeral=True)
             return
         await self.cog.refresh_panel_message(self.panel_message, project)
-        await interaction.followup.send("✅ Configuração geral atualizada.", ephemeral=True)
+        await interaction.followup.send("✅ Título atualizado.", ephemeral=True)
 
 
-class IcebergLayersModal(discord.ui.Modal, title="Editar Camadas"):
+class IcebergLayersModal(discord.ui.Modal, title="Configurar Camadas"):
     def __init__(self, cog: IcebergCog, *, project_id: str, owner_id: int, layer_lines: str, weight_line: str, panel_message: discord.Message | None) -> None:
         super().__init__(timeout=300)
         self.cog = cog
@@ -240,7 +220,7 @@ class IcebergAddItemModal(discord.ui.Modal):
 
 
 class IcebergEditItemModal(discord.ui.Modal, title="Editar Item"):
-    def __init__(self, cog: IcebergCog, *, project_id: str, owner_id: int, item_id: str, current_title: str, current_layer: str, current_style: str, current_placement: PlacementConfig, panel_message: discord.Message | None) -> None:
+    def __init__(self, cog: IcebergCog, *, project_id: str, owner_id: int, item_id: str, current_title: str, current_layer: str, current_placement: PlacementConfig, panel_message: discord.Message | None) -> None:
         super().__init__(timeout=300)
         self.cog = cog
         self.project_id = project_id
@@ -262,14 +242,6 @@ class IcebergEditItemModal(discord.ui.Modal, title="Editar Item"):
             max_length=48,
             required=True,
         )
-        self.style_input = discord.ui.TextInput(
-            label="Estilo",
-            default=current_style,
-            placeholder="CARD, CHIP ou STICKER",
-            min_length=3,
-            max_length=16,
-            required=True,
-        )
         self.placement_input = discord.ui.TextInput(
             label="Posição opcional",
             default=placement_default,
@@ -280,7 +252,6 @@ class IcebergEditItemModal(discord.ui.Modal, title="Editar Item"):
         )
         self.add_item(self.title_input)
         self.add_item(self.layer_input)
-        self.add_item(self.style_input)
         self.add_item(self.placement_input)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
@@ -293,7 +264,6 @@ class IcebergEditItemModal(discord.ui.Modal, title="Editar Item"):
                 item_id=self.item_id,
                 title=str(self.title_input.value),
                 layer_ref=str(self.layer_input.value),
-                display_style=str(self.style_input.value),
                 placement=placement,
             )
         except IcebergUserError as exc:

@@ -141,7 +141,3 @@ def default_layers(count: int = 5) -> list[LayerConfig]:
             )
         )
     return layers
-
-
-def theme_choices() -> list[tuple[str, str]]:
-    return [(theme.id, theme.name) for theme in THEME_PRESETS.values()]

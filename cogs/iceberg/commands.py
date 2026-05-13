@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 
 import discord
@@ -81,7 +80,7 @@ class IcebergCog(commands.Cog):
             LOGGER.exception("iceberg_create_failed user_id=%s guild_id=%s", interaction.user.id, interaction.guild_id)
             await interaction.followup.send("❌ Não consegui criar esse iceberg agora. O erro foi registrado.", ephemeral=True)
             return
-        await self.send_editor_panel(interaction, project=project, content="✅ Draft criado. Use o painel para editar e renderizar.")
+        await self.send_editor_panel(interaction, project=project, content="✅ Draft criado. Use o painel para editar e finalizar.")
 
     @iceberg.command(name="abrir", description="Abre o painel de edição de um iceberg seu.")
     @app_commands.guild_only()
@@ -154,25 +153,15 @@ class IcebergCog(commands.Cog):
     @app_commands.guild_only()
     @app_commands.describe(projeto="ID do projeto")
     async def renderizar(self, interaction: discord.Interaction, projeto: str) -> None:
-        await self.send_rendered_iceberg(interaction, project_id=projeto, final=True)
+        await self.send_rendered_iceberg(interaction, project_id=projeto)
 
     @renderizar.autocomplete("projeto")
     async def renderizar_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         return await self.project_choices(interaction, current)
 
-    @iceberg.command(name="exportar", description="Exporta um iceberg como JSON.")
-    @app_commands.guild_only()
-    @app_commands.describe(projeto="ID do projeto")
-    async def exportar(self, interaction: discord.Interaction, projeto: str) -> None:
-        await self.send_project_export(interaction, project_id=projeto)
-
-    @exportar.autocomplete("projeto")
-    async def exportar_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-        return await self.project_choices(interaction, current)
-
     @iceberg.command(name="importar", description="Importa um JSON de projeto de iceberg.")
     @app_commands.guild_only()
-    @app_commands.describe(arquivo="Arquivo JSON exportado pelo iceberg")
+    @app_commands.describe(arquivo="Arquivo JSON de projeto de iceberg")
     async def importar(self, interaction: discord.Interaction, arquivo: discord.Attachment) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         if arquivo.size and arquivo.size > 512 * 1024:
@@ -238,32 +227,32 @@ class IcebergCog(commands.Cog):
 
     def build_project_embed(self, project: IcebergProject) -> discord.Embed:
         embed = discord.Embed(
-            title="🧊 Editor de Iceberg",
+            title="🧊 Painel De Criação De Iceberg",
             description=(
-                f"**Nome:** {discord.utils.escape_markdown(project.name)}\n"
+                f"**Título:** {discord.utils.escape_markdown(project.name)}\n"
                 f"**Projeto:** `{project.id}`\n"
-                f"**Tema:** `{project.theme_id}`\n"
-                f"**Estilo padrão:** `{project.default_item_style.value}`\n"
-                f"**Itens:** {len(project.items)}"
+                f"**Camadas:** {len(project.layers)}\n"
+                f"**Itens:** {len(project.items)}\n\n"
+                "Use os botões abaixo para editar título, configurar camadas, adicionar itens e finalizar."
             ),
             color=discord.Color.from_rgb(56, 149, 196),
         )
         for layer in project.ordered_layers():
             items = project.ordered_items_for_layer(layer.id)
-            preview = ", ".join(item.title for item in items[:6])
+            item_summary = ", ".join(item.title for item in items[:6])
             if len(items) > 6:
-                preview += f" +{len(items) - 6}"
+                item_summary += f" +{len(items) - 6}"
             embed.add_field(
                 name=f"{layer.order + 1}. {layer.name} ({layer.height_weight:g}x)",
-                value=discord.utils.escape_markdown(preview) if preview else "Sem itens",
+                value=discord.utils.escape_markdown(item_summary) if item_summary else "Sem itens",
                 inline=False,
             )
         embed.set_footer(text="Attachment por imagem: use /iceberg anexar, porque modal do Discord não recebe upload.")
         return embed
 
-    async def send_rendered_iceberg(self, interaction: discord.Interaction, *, project_id: str, final: bool) -> None:
+    async def send_rendered_iceberg(self, interaction: discord.Interaction, *, project_id: str) -> None:
         if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=not final, thinking=True)
+            await interaction.response.defer(thinking=True)
         try:
             project, buffer = await self.service.render_project(project_id, owner_id=interaction.user.id)
         except IcebergUserError as exc:
@@ -275,29 +264,8 @@ class IcebergCog(commands.Cog):
             return
         filename = f"iceberg-{project.id[:8]}.png"
         await interaction.followup.send(
-            content=f"🧊 **{discord.utils.escape_markdown(project.name)}**" if final else "👀 Preview do iceberg.",
+            content=f"🧊 **{discord.utils.escape_markdown(project.name)}**",
             file=discord.File(buffer, filename=filename),
-            ephemeral=not final,
-        )
-
-    async def send_project_export(self, interaction: discord.Interaction, *, project_id: str) -> None:
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            raw_json = await self.service.export_project_json(project_id, owner_id=interaction.user.id)
-        except IcebergUserError as exc:
-            await interaction.followup.send(exc.user_message, ephemeral=True)
-            return
-        except Exception:
-            LOGGER.exception("iceberg_export_failed project_id=%s user_id=%s", project_id, interaction.user.id)
-            await interaction.followup.send("❌ Não consegui exportar esse iceberg. O erro foi registrado.", ephemeral=True)
-            return
-        data = io.BytesIO(raw_json.encode("utf-8"))
-        data.seek(0)
-        await interaction.followup.send(
-            content="📦 JSON do projeto exportado.",
-            file=discord.File(data, filename=f"iceberg-{project_id[:8]}.json"),
-            ephemeral=True,
         )
 
 

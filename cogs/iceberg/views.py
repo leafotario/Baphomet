@@ -33,9 +33,7 @@ class IcebergEditorView(discord.ui.View):
         self.layers_button.custom_id = iceberg_component_id(self.project_id, "layers")
         self.add_item_button.custom_id = iceberg_component_id(self.project_id, "add")
         self.manage_items_button.custom_id = iceberg_component_id(self.project_id, "items")
-        self.preview_button.custom_id = iceberg_component_id(self.project_id, "preview")
         self.render_button.custom_id = iceberg_component_id(self.project_id, "render")
-        self.export_button.custom_id = iceberg_component_id(self.project_id, "export")
         self.close_button.custom_id = iceberg_component_id(self.project_id, "close")
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -44,7 +42,7 @@ class IcebergEditorView(discord.ui.View):
         await interaction.response.send_message("⚠️ Esse painel de iceberg não é seu.", ephemeral=True)
         return False
 
-    @discord.ui.button(label="Geral", emoji="✏️", style=discord.ButtonStyle.secondary, row=0, custom_id="iceberg:general")
+    @discord.ui.button(label="Editar Título", emoji="✏️", style=discord.ButtonStyle.secondary, row=0, custom_id="iceberg:general")
     async def general_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         from .modals import IcebergGeneralModal
 
@@ -55,13 +53,11 @@ class IcebergEditorView(discord.ui.View):
                 project_id=project.id,
                 owner_id=project.owner_id,
                 current_name=project.name,
-                current_theme=project.theme_id,
-                current_style=project.default_item_style.value,
                 panel_message=interaction.message,
             )
         )
 
-    @discord.ui.button(label="Camadas", emoji="🧊", style=discord.ButtonStyle.primary, row=0, custom_id="iceberg:layers")
+    @discord.ui.button(label="Configurar Camadas", emoji="📝", style=discord.ButtonStyle.secondary, row=0, custom_id="iceberg:layers")
     async def layers_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         from .modals import IcebergLayersModal
 
@@ -79,31 +75,23 @@ class IcebergEditorView(discord.ui.View):
             )
         )
 
-    @discord.ui.button(label="Adicionar", emoji="➕", style=discord.ButtonStyle.success, row=0, custom_id="iceberg:add")
+    @discord.ui.button(label="Adicionar Item", emoji="➕", style=discord.ButtonStyle.secondary, row=0, custom_id="iceberg:add")
     async def add_item_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         view = IcebergAddItemView(cog=self.cog, project_id=self.project_id, owner_id=self.owner_id, panel_message=interaction.message)
         await interaction.response.send_message("Escolha a fonte do item.", view=view, ephemeral=True)
 
-    @discord.ui.button(label="Itens", emoji="🧩", style=discord.ButtonStyle.secondary, row=0, custom_id="iceberg:items")
+    @discord.ui.button(label="Editar Item", emoji="✏️", style=discord.ButtonStyle.secondary, row=0, custom_id="iceberg:items")
     async def manage_items_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         project = await self.cog.service.get_project_for_user(self.project_id, owner_id=self.owner_id)
         view = IcebergManageItemsView(cog=self.cog, project=project, panel_message=interaction.message)
         embed = view.build_embed()
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
-    @discord.ui.button(label="Preview", emoji="👀", style=discord.ButtonStyle.secondary, row=1, custom_id="iceberg:preview")
-    async def preview_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self.cog.send_rendered_iceberg(interaction, project_id=self.project_id, final=False)
-
-    @discord.ui.button(label="Render Final", emoji="🖼️", style=discord.ButtonStyle.primary, row=1, custom_id="iceberg:render")
+    @discord.ui.button(label="Finalizar", emoji="🖼️", style=discord.ButtonStyle.success, row=1, custom_id="iceberg:render")
     async def render_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self.cog.send_rendered_iceberg(interaction, project_id=self.project_id, final=True)
+        await self.cog.send_rendered_iceberg(interaction, project_id=self.project_id)
 
-    @discord.ui.button(label="Exportar JSON", emoji="📦", style=discord.ButtonStyle.secondary, row=1, custom_id="iceberg:export")
-    async def export_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        await self.cog.send_project_export(interaction, project_id=self.project_id)
-
-    @discord.ui.button(label="Fechar", emoji="❌", style=discord.ButtonStyle.danger, row=1, custom_id="iceberg:close")
+    @discord.ui.button(label="Cancelar", emoji="❌", style=discord.ButtonStyle.danger, row=1, custom_id="iceberg:close")
     async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         for child in self.children:
             child.disabled = True
@@ -300,7 +288,7 @@ class IcebergManageItemsView(discord.ui.View):
         )
         if selected:
             layer = self.project.layer_by_id(selected.layer_id)
-            embed.add_field(name="Selecionado", value=f"**{discord.utils.escape_markdown(selected.title)}**\nCamada: {layer.name if layer else selected.layer_id}\nEstilo: {selected.display_style.value}", inline=False)
+            embed.add_field(name="Selecionado", value=f"**{discord.utils.escape_markdown(selected.title)}**\nCamada: {layer.name if layer else selected.layer_id}", inline=False)
         else:
             embed.add_field(name="Selecionado", value="Escolha um item no menu.", inline=False)
         return embed
@@ -352,7 +340,7 @@ class IcebergManageItemsView(discord.ui.View):
         await self._reload()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
-    @discord.ui.button(label="Editar", emoji="✏️", style=discord.ButtonStyle.primary, row=2)
+    @discord.ui.button(label="Editar Item", emoji="✏️", style=discord.ButtonStyle.secondary, row=2)
     async def edit_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         from .modals import IcebergEditItemModal
 
@@ -369,13 +357,12 @@ class IcebergManageItemsView(discord.ui.View):
                 item_id=selected.id,
                 current_title=selected.title,
                 current_layer=layer.name if layer else selected.layer_id,
-                current_style=selected.display_style.value,
                 current_placement=selected.placement,
                 panel_message=self.panel_message,
             )
         )
 
-    @discord.ui.button(label="Remover", emoji="🗑️", style=discord.ButtonStyle.danger, row=2)
+    @discord.ui.button(label="Remover Item", emoji="🗑️", style=discord.ButtonStyle.secondary, row=2)
     async def remove_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         if self.selected_item_id is None:
             await interaction.response.send_message("⚠️ Escolha um item primeiro.", ephemeral=True)

@@ -92,18 +92,10 @@ class IcebergService:
         *,
         owner_id: int,
         name: str | None = None,
-        theme_id: str | None = None,
-        default_item_style: str | None = None,
     ) -> IcebergProject:
         project = await self.get_project_for_user(project_id, owner_id=owner_id)
         if name is not None:
             project.name = normalize_text(name, max_length=MAX_PROJECT_NAME_LENGTH, fallback=project.name) or project.name
-        if theme_id:
-            theme = get_theme(theme_id)
-            project.theme_id = theme.id
-            project.theme = theme
-        if default_item_style:
-            project.default_item_style = self._parse_display_style(default_item_style, fallback=project.default_item_style)
         project.touch()
         return await self.repository.save_project(project)
 
@@ -209,7 +201,6 @@ class IcebergService:
         item_id: str,
         title: str | None = None,
         layer_ref: str | None = None,
-        display_style: str | None = None,
         placement: PlacementConfig | None = None,
     ) -> IcebergProject:
         project = await self.get_project_for_user(project_id, owner_id=owner_id)
@@ -218,8 +209,6 @@ class IcebergService:
             item.title = normalize_text(title, max_length=MAX_ITEM_TITLE_LENGTH, fallback=item.title) or item.title
         if layer_ref:
             item.layer_id = self.resolve_layer(project, layer_ref).id
-        if display_style:
-            item.display_style = self._parse_display_style(display_style, fallback=item.display_style)
         if placement is not None:
             item.placement = placement
         item.updated_at = utc_now_iso()
@@ -283,10 +272,6 @@ class IcebergService:
                 LOGGER.exception("iceberg_asset_load_failed project_id=%s item_id=%s asset_id=%s", project.id, item.id, asset_id)
         return result
 
-    async def export_project_json(self, project_id: str, *, owner_id: int) -> str:
-        project = await self.get_project_for_user(project_id, owner_id=owner_id)
-        return project.to_json(pretty=True)
-
     async def import_project_json(
         self,
         raw_json: str,
@@ -309,6 +294,10 @@ class IcebergService:
             project.id = new_uuid()
         project.owner_id = int(owner_id)
         project.guild_id = guild_id
+        default_theme = get_theme(DEFAULT_THEME_ID)
+        project.theme_id = default_theme.id
+        project.theme = default_theme
+        project.default_item_style = ItemDisplayStyle.CARD
         project.touch()
         return await self.repository.save_project(project)
 
@@ -343,9 +332,3 @@ class IcebergService:
         for layer in project.layers:
             for index, item in enumerate(project.ordered_items_for_layer(layer.id)):
                 item.sort_order = index
-
-    def _parse_display_style(self, value: str, *, fallback: ItemDisplayStyle) -> ItemDisplayStyle:
-        try:
-            return ItemDisplayStyle(str(value or fallback.value).strip().upper())
-        except ValueError:
-            raise IcebergUserError("⚠️ Estilo inválido. Use CARD, CHIP ou STICKER.", code="style_invalid")
