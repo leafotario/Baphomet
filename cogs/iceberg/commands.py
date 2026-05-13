@@ -13,6 +13,7 @@ from cogs.tierlist_templates.database import DatabaseManager as TierAssetDatabas
 from cogs.tierlist_templates.downloads import SafeImageDownloader
 from cogs.tierlist_wikipedia.wikipedia import WikipediaImageService
 
+from .constants import ICEBERG_DEFAULT_LAYERS, ICEBERG_MAX_LAYERS, ICEBERG_MIN_LAYERS
 from .models import IcebergProject, ItemSourceType
 from .repository import IcebergDatabaseManager, IcebergRepository
 from .renderer import IcebergRenderer
@@ -65,7 +66,7 @@ class IcebergCog(commands.Cog):
         self,
         interaction: discord.Interaction,
         nome: app_commands.Range[str, 1, 90],
-        camadas: app_commands.Range[int, 1, 12] = 5,
+        camadas: app_commands.Range[int, ICEBERG_MIN_LAYERS, ICEBERG_MAX_LAYERS] = ICEBERG_DEFAULT_LAYERS,
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
@@ -76,6 +77,9 @@ class IcebergCog(commands.Cog):
                 layer_count=int(camadas),
                 theme_id=DEFAULT_THEME_ID,
             )
+        except IcebergUserError as exc:
+            await interaction.followup.send(exc.user_message, ephemeral=True)
+            return
         except Exception:
             LOGGER.exception("iceberg_create_failed user_id=%s guild_id=%s", interaction.user.id, interaction.guild_id)
             await interaction.followup.send("❌ Não consegui criar esse iceberg agora. O erro foi registrado.", ephemeral=True)
@@ -158,6 +162,34 @@ class IcebergCog(commands.Cog):
     @renderizar.autocomplete("projeto")
     async def renderizar_autocomplete(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         return await self.project_choices(interaction, current)
+
+    @iceberg.command(name="importar", description="Importa um iceberg a partir de um JSON.")
+    @app_commands.guild_only()
+    @app_commands.describe(arquivo="Arquivo .json exportado do iceberg")
+    async def importar(self, interaction: discord.Interaction, arquivo: discord.Attachment) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            if arquivo.size > 256 * 1024:
+                raise IcebergUserError("⚠️ Esse JSON é grande demais para importar.", code="import_too_large")
+            raw = await arquivo.read(use_cached=True)
+            try:
+                raw_json = raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise IcebergUserError("⚠️ Envie um arquivo JSON em UTF-8.", code="import_encoding_invalid") from exc
+            project = await self.service.import_project_json(
+                raw_json,
+                owner_id=interaction.user.id,
+                guild_id=interaction.guild_id,
+                force_new_id=True,
+            )
+        except IcebergUserError as exc:
+            await interaction.followup.send(exc.user_message, ephemeral=True)
+            return
+        except Exception:
+            LOGGER.exception("iceberg_import_failed user_id=%s guild_id=%s", interaction.user.id, interaction.guild_id)
+            await interaction.followup.send("❌ Não consegui importar esse iceberg. O erro foi registrado.", ephemeral=True)
+            return
+        await self.send_editor_panel(interaction, project=project, content="✅ Iceberg importado. Revise o painel antes de finalizar.")
 
     async def project_choices(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
         query = (current or "").casefold().strip()

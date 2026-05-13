@@ -8,6 +8,7 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import discord
 from discord.ext import commands
@@ -23,11 +24,12 @@ from cogs.iceberg.models import (
     LayerConfig,
     PlacementConfig,
 )
-from cogs.iceberg.renderer import IcebergRenderer
+from cogs.iceberg.renderer import IcebergRenderer, IcebergTemplateError
 from cogs.iceberg.repository import IcebergDatabaseManager, IcebergRepository
 from cogs.iceberg.service import IcebergService
 from cogs.iceberg.sources.providers import AttachmentImageProvider, IcebergUserError, TextItemProvider
 from cogs.iceberg.themes import get_theme
+from cogs.iceberg.constants import ICEBERG_MAX_LAYERS, ICEBERG_TEMPLATE_TIER_COUNT
 
 
 AIOSQLITE_AVAILABLE = importlib.util.find_spec("aiosqlite") is not None
@@ -54,12 +56,50 @@ def png_bytes(color: tuple[int, int, int, int] = (220, 40, 90, 255)) -> bytes:
     return buffer.getvalue()
 
 
-def make_project() -> IcebergProject:
+TEMPLATE_TIER_COLORS = (
+    (10, 20, 30, 255),
+    (20, 40, 60, 255),
+    (30, 60, 90, 255),
+    (40, 80, 120, 255),
+    (50, 100, 150, 255),
+    (60, 120, 180, 255),
+    (70, 140, 210, 255),
+    (80, 160, 220, 255),
+    (90, 180, 230, 255),
+    (100, 200, 240, 255),
+)
+
+
+def template_bounds(height: int) -> list[int]:
+    return [round(index * height / ICEBERG_TEMPLATE_TIER_COUNT) for index in range(ICEBERG_TEMPLATE_TIER_COUNT + 1)]
+
+
+def write_test_template(path: Path, *, width: int = 100, height: int = 101) -> None:
+    bounds = template_bounds(height)
+    image = Image.new("RGBA", (width, height), TEMPLATE_TIER_COLORS[0])
+    for index, color in enumerate(TEMPLATE_TIER_COLORS):
+        image.paste(color, (0, bounds[index], width, bounds[index + 1]))
+    image.save(path, format="PNG")
+
+
+def make_project(layer_count: int = 7) -> IcebergProject:
     theme = get_theme()
+    layer_names = [
+        "Ponta",
+        "Raso",
+        "Submerso",
+        "Profundo",
+        "Abismo",
+        "Camada 6",
+        "Camada 7",
+        "Camada 8",
+        "Camada 9",
+        "Camada 10",
+    ]
+    height_weights = [0.8, 1.2, 1.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
     layers = [
-        LayerConfig(id="layer-1", name="Ponta", order=0, height_weight=0.8),
-        LayerConfig(id="layer-2", name="Raso", order=1, height_weight=1.2),
-        LayerConfig(id="layer-3", name="Abismo", order=2, height_weight=1.8),
+        LayerConfig(id=f"layer-{index + 1}", name=layer_names[index], order=index, height_weight=height_weights[index])
+        for index in range(layer_count)
     ]
     return IcebergProject(
         id="project-1",
@@ -95,6 +135,31 @@ def make_project() -> IcebergProject:
         created_at="2026-01-01T00:00:00+00:00",
         updated_at="2026-01-01T00:00:00+00:00",
     )
+
+
+class MemoryIcebergRepository:
+    def __init__(self) -> None:
+        self.projects: dict[str, IcebergProject] = {}
+
+    async def save_project(self, project: IcebergProject) -> IcebergProject:
+        self.projects[project.id] = project
+        return project
+
+    async def get_project(self, project_id: str, *, owner_id: int) -> IcebergProject | None:
+        project = self.projects.get(project_id)
+        if project is None or project.owner_id != owner_id:
+            return None
+        return project
+
+    async def list_projects_for_user(self, owner_id: int, *, guild_id: int | None = None, limit: int = 10) -> list[IcebergProject]:
+        return [
+            project
+            for project in self.projects.values()
+            if project.owner_id == owner_id and (guild_id is None or project.guild_id == guild_id)
+        ][:limit]
+
+    async def mark_deleted(self, project_id: str, *, owner_id: int) -> None:
+        self.projects.pop(project_id, None)
 
 
 class IcebergManageItemsViewTests(unittest.IsolatedAsyncioTestCase):
@@ -134,21 +199,77 @@ class IcebergManageItemsViewTests(unittest.IsolatedAsyncioTestCase):
 
 
 class IcebergRendererSnapshotTests(unittest.TestCase):
-    def test_default_renderer_snapshot_signature(self) -> None:
-        project = make_project()
-        buffer = IcebergRenderer().render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
-        image = Image.open(buffer).convert("RGBA")
-        self.assertEqual(image.size, (1200, 1600))
-        snapshot = {
-            "sky": image.getpixel((10, 10)),
-            "ocean": image.getpixel((10, 620)),
-            "iceberg_top": image.getpixel((600, 222)),
-            "footer": image.getpixel((600, 1570)),
-        }
-        self.assertEqual(snapshot["sky"], (164, 218, 241, 255))
-        self.assertNotEqual(snapshot["ocean"], snapshot["sky"])
-        self.assertGreater(snapshot["iceberg_top"][0], 180)
-        self.assertGreater(snapshot["footer"][3], 240)
+    def render_with_template(self, project: IcebergProject, *, width: int = 100, height: int = 101) -> Image.Image:
+        with tempfile.TemporaryDirectory() as tmp:
+            template_path = Path(tmp) / "icebergtemplate.png"
+            write_test_template(template_path, width=width, height=height)
+            buffer = IcebergRenderer(template_path=template_path).render_project(
+                project,
+                asset_bytes_by_item_id={"image-1": png_bytes()},
+            )
+            return Image.open(buffer).convert("RGBA")
+
+    def test_renderer_crops_template_for_7_layers(self) -> None:
+        project = make_project(layer_count=7)
+        project.items = []
+        image = self.render_with_template(project)
+        bounds = template_bounds(101)
+        self.assertEqual(image.size, (100, bounds[7]))
+        self.assertEqual(image.getpixel((1, image.height - 1)), TEMPLATE_TIER_COLORS[6])
+
+    def test_renderer_crops_template_for_8_layers(self) -> None:
+        project = make_project(layer_count=8)
+        project.items = []
+        image = self.render_with_template(project)
+        bounds = template_bounds(101)
+        present_colors = {image.getpixel((1, y)) for y in range(image.height)}
+        self.assertEqual(image.size, (100, bounds[8]))
+        self.assertIn(TEMPLATE_TIER_COLORS[7], present_colors)
+        self.assertNotIn(TEMPLATE_TIER_COLORS[8], present_colors)
+        self.assertNotIn(TEMPLATE_TIER_COLORS[9], present_colors)
+
+    def test_renderer_uses_full_template_for_10_layers(self) -> None:
+        project = make_project(layer_count=10)
+        project.items = []
+        image = self.render_with_template(project)
+        self.assertEqual(image.size, (100, 101))
+        self.assertEqual(image.getpixel((1, image.height - 1)), TEMPLATE_TIER_COLORS[9])
+
+    def test_renderer_preview_resizes_after_crop(self) -> None:
+        project = make_project(layer_count=8)
+        project.items = []
+        with tempfile.TemporaryDirectory() as tmp:
+            template_path = Path(tmp) / "icebergtemplate.png"
+            write_test_template(template_path, width=1000, height=1001)
+            buffer = IcebergRenderer(template_path=template_path).render_project(project, preview=True)
+            image = Image.open(buffer).convert("RGBA")
+        cropped_height = template_bounds(1001)[8]
+        self.assertEqual(image.size, (900, round(cropped_height * 900 / 1000)))
+
+    def test_renderer_accepts_manual_rotation_opacity_and_placement(self) -> None:
+        project = make_project(layer_count=7)
+        project.items = [
+            ItemConfig(
+                id="manual-1",
+                layer_id="layer-3",
+                title="Manual",
+                source=ItemSource(type=ItemSourceType.TEXT, value="Manual"),
+                display_style=ItemDisplayStyle.CHIP,
+                placement=PlacementConfig(x=0.4, y=0.3, scale=1.2, rotation=14.0, opacity=0.55),
+                sort_order=0,
+                created_at="2026-01-01T00:00:00+00:00",
+                updated_at="2026-01-01T00:00:00+00:00",
+            )
+        ]
+        image = self.render_with_template(project, width=1200, height=2000)
+        self.assertEqual(image.size, (1200, template_bounds(2000)[7]))
+
+    def test_renderer_errors_when_template_is_missing(self) -> None:
+        project = make_project(layer_count=7)
+        with tempfile.TemporaryDirectory() as tmp:
+            missing_path = Path(tmp) / "icebergtemplate.png"
+            with self.assertRaisesRegex(IcebergTemplateError, "icebergtemplate.png"):
+                IcebergRenderer(template_path=missing_path).render_project(project)
 
     def test_project_json_roundtrip_keeps_domain_types(self) -> None:
         project = make_project()
@@ -164,21 +285,23 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
         from cogs.iceberg.models import LayerLayoutMode
         project = make_project()
 
-        # Test SCATTER layout deterministic bounds
-        project.layers[0].layout_mode = LayerLayoutMode.SCATTER
-        buffer_scatter1 = IcebergRenderer().render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
-        buffer_scatter2 = IcebergRenderer().render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
-        self.assertEqual(buffer_scatter1.getvalue(), buffer_scatter2.getvalue())
+        with tempfile.TemporaryDirectory() as tmp:
+            template_path = Path(tmp) / "icebergtemplate.png"
+            write_test_template(template_path, width=1200, height=2000)
+            renderer = IcebergRenderer(template_path=template_path)
 
-        # Test GRID layout
-        project.layers[0].layout_mode = LayerLayoutMode.GRID
-        buffer_grid = IcebergRenderer().render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
-        self.assertIsNotNone(buffer_grid)
+            project.layers[0].layout_mode = LayerLayoutMode.SCATTER
+            buffer_scatter1 = renderer.render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
+            buffer_scatter2 = renderer.render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
+            self.assertEqual(buffer_scatter1.getvalue(), buffer_scatter2.getvalue())
 
-        # Test MASONRY layout
-        project.layers[0].layout_mode = LayerLayoutMode.MASONRY
-        buffer_masonry = IcebergRenderer().render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
-        self.assertIsNotNone(buffer_masonry)
+            project.layers[0].layout_mode = LayerLayoutMode.GRID
+            buffer_grid = renderer.render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
+            self.assertIsNotNone(buffer_grid)
+
+            project.layers[0].layout_mode = LayerLayoutMode.MASONRY
+            buffer_masonry = renderer.render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
+            self.assertIsNotNone(buffer_masonry)
 
     def test_renderer_overflow_raises_error(self) -> None:
         from cogs.iceberg.models import LayerLayoutMode, ItemConfig, ItemSource, ItemSourceType, ItemDisplayStyle
@@ -202,9 +325,54 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
             )
         project.items = items
 
-        renderer = IcebergRenderer()
-        with self.assertRaisesRegex(ValueError, "A camada não comporta os itens"):
-            renderer.render_project(project)
+        with tempfile.TemporaryDirectory() as tmp:
+            template_path = Path(tmp) / "icebergtemplate.png"
+            write_test_template(template_path, width=1200, height=2000)
+            renderer = IcebergRenderer(template_path=template_path)
+            with self.assertRaisesRegex(ValueError, "A camada não comporta os itens"):
+                renderer.render_project(project)
+
+
+class IcebergServiceValidationTests(unittest.IsolatedAsyncioTestCase):
+    def make_service(self, *, renderer: object | None = None) -> IcebergService:
+        return IcebergService(
+            repository=MemoryIcebergRepository(),
+            asset_repository=SimpleNamespace(),
+            asset_store=SimpleNamespace(),
+            source_registry=SimpleNamespace(),
+            renderer=renderer or IcebergRenderer(),
+        )
+
+    async def test_create_project_defaults_to_7_layers_and_rejects_outside_range(self) -> None:
+        service = self.make_service()
+        project = await service.create_project(owner_id=42, guild_id=99, name="Novo")
+        self.assertEqual(len(project.layers), 7)
+
+        with self.assertRaisesRegex(IcebergUserError, "mínimo 7"):
+            await service.create_project(owner_id=42, guild_id=99, name="Poucas", layer_count=6)
+
+        with self.assertRaisesRegex(IcebergUserError, "máximo 10"):
+            await service.create_project(owner_id=42, guild_id=99, name="Muitas", layer_count=ICEBERG_MAX_LAYERS + 1)
+
+    async def test_render_converts_template_error_to_user_error_without_sqlite(self) -> None:
+        class BrokenRenderer:
+            def render_project(self, *args, **kwargs):
+                raise IcebergTemplateError("❌ Não encontrei a template local `icebergtemplate.png`.")
+
+        async def inline_to_thread(func, /, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        service = self.make_service(renderer=BrokenRenderer())
+        project = make_project()
+        project.items = []
+        await service.repository.save_project(project)
+
+        with patch("cogs.iceberg.service.asyncio.to_thread", inline_to_thread):
+            with self.assertRaises(IcebergUserError) as cm:
+                await service.render_project("project-1", owner_id=42)
+        self.assertEqual(cm.exception.code, "template_unavailable")
+        self.assertIn("icebergtemplate.png", cm.exception.user_message)
+
 
 class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_text_provider_requires_real_text(self) -> None:
@@ -461,11 +629,48 @@ class IcebergRepositoryServiceTests(unittest.IsolatedAsyncioTestCase):
         updated = await service.update_layers(
             "project-1",
             owner_id=42,
-            names=["Raso", "Novo"],
-            weights=[2.0, 1.0],
+            names=["Raso", "Novo", "Submerso", "Profundo", "Abismo", "Camada 6", "Camada 7"],
+            weights=[2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
         )
-        self.assertEqual([layer.name for layer in updated.layers], ["Raso", "Novo"])
+        self.assertEqual([layer.name for layer in updated.layers], ["Raso", "Novo", "Submerso", "Profundo", "Abismo", "Camada 6", "Camada 7"])
         self.assertTrue(all(item.layer_id in {layer.id for layer in updated.layers} for item in updated.items))
+
+    async def test_service_rejects_layer_update_outside_template_range(self) -> None:
+        service = IcebergService(
+            repository=self.repository,
+            asset_repository=SimpleNamespace(),
+            asset_store=SimpleNamespace(),
+            source_registry=SimpleNamespace(),
+            renderer=IcebergRenderer(),
+        )
+        await self.repository.save_project(make_project())
+
+        with self.assertRaisesRegex(IcebergUserError, "mínimo 7"):
+            await service.update_layers("project-1", owner_id=42, names=[f"Camada {index}" for index in range(1, 7)])
+
+        with self.assertRaisesRegex(IcebergUserError, "máximo 10"):
+            await service.update_layers("project-1", owner_id=42, names=[f"Camada {index}" for index in range(1, ICEBERG_MAX_LAYERS + 2)])
+
+    async def test_service_converts_template_error_to_user_error(self) -> None:
+        class BrokenRenderer:
+            def render_project(self, *args, **kwargs):
+                raise IcebergTemplateError("❌ Não encontrei a template local `icebergtemplate.png`.")
+
+        service = IcebergService(
+            repository=self.repository,
+            asset_repository=SimpleNamespace(),
+            asset_store=SimpleNamespace(),
+            source_registry=SimpleNamespace(),
+            renderer=BrokenRenderer(),
+        )
+        project = make_project()
+        project.items = []
+        await self.repository.save_project(project)
+
+        with self.assertRaises(IcebergUserError) as cm:
+            await service.render_project("project-1", owner_id=42)
+        self.assertEqual(cm.exception.code, "template_unavailable")
+        self.assertIn("icebergtemplate.png", cm.exception.user_message)
 
 
 class IcebergCommandRegistrationTests(unittest.IsolatedAsyncioTestCase):

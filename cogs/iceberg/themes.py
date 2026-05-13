@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+from .constants import ICEBERG_DEFAULT_LAYERS, ICEBERG_MAX_LAYERS, ICEBERG_MIN_LAYERS
 from .models import LayerConfig, ThemeConfig
 
 
@@ -127,8 +128,8 @@ def get_theme(theme_id: str | None = None) -> ThemeConfig:
     return deepcopy(theme)
 
 
-def default_layers(count: int = 5) -> list[LayerConfig]:
-    safe_count = max(1, min(12, int(count or 5)))
+def default_layers(count: int = ICEBERG_DEFAULT_LAYERS) -> list[LayerConfig]:
+    safe_count = max(ICEBERG_MIN_LAYERS, min(ICEBERG_MAX_LAYERS, int(count or ICEBERG_DEFAULT_LAYERS)))
     layers: list[LayerConfig] = []
     for index in range(safe_count):
         name = DEFAULT_LAYER_NAMES[index] if index < len(DEFAULT_LAYER_NAMES) else f"Camada {index + 1}"

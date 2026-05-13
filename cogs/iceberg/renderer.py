@@ -2,23 +2,34 @@ from __future__ import annotations
 
 import io
 import logging
-import math
 import pathlib
 import re
 import random
 import textwrap
-from dataclasses import dataclass
-from typing import Iterable
+from dataclasses import dataclass, replace
+from typing import Any
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 
+from .constants import (
+    ICEBERG_MAX_LAYERS,
+    ICEBERG_MIN_LAYERS,
+    ICEBERG_TEMPLATE_FILENAME,
+    ICEBERG_TEMPLATE_TIER_COUNT,
+)
 from .models import IcebergProject, ItemConfig, ItemDisplayStyle, ItemSourceType, LayerConfig, LayerLayoutMode, ThemeConfig
 
 
 LOGGER = logging.getLogger("baphomet.iceberg.renderer")
 MASK_SCALE = 3
 MAX_TEXT_LINES = 3
+PREVIEW_MAX_WIDTH = 900
+TEMPLATE_ITEM_SAFE_RIGHT_RATIO = 1288 / 1580
 Image.MAX_IMAGE_PIXELS = 25_000_000
+
+
+class IcebergTemplateError(RuntimeError):
+    """Erro user-facing para problemas com a template fixa do iceberg."""
 
 
 @dataclass(frozen=True)
@@ -45,90 +56,154 @@ class LayerRenderBox:
 
 
 class IcebergRenderer:
-    def __init__(self, *, font_dir: str | pathlib.Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        font_dir: str | pathlib.Path | None = None,
+        template_path: str | pathlib.Path | None = None,
+    ) -> None:
         repo_root = pathlib.Path(__file__).resolve().parents[2]
         self.font_dir = pathlib.Path(font_dir) if font_dir else repo_root / "assets" / "fonts"
+        self.template_path = pathlib.Path(template_path) if template_path else repo_root / ICEBERG_TEMPLATE_FILENAME
         self._font_cache: dict[tuple[str, int], ImageFont.ImageFont] = {}
         self._mask_cache: dict[tuple[int, int, int], Image.Image] = {}
+        self._template_cache: Image.Image | None = None
 
     def render_project(
         self,
         project: IcebergProject,
         *,
         asset_bytes_by_item_id: dict[str, bytes] | None = None,
+        preview: bool = False,
     ) -> io.BytesIO:
         asset_bytes_by_item_id = asset_bytes_by_item_id or {}
-        theme = project.theme
-        image = Image.new("RGBA", (theme.canvas_width, theme.canvas_height), theme.sky_color)
-        self._draw_background(image, theme)
-        draw = ImageDraw.Draw(image, "RGBA")
+        layer_count = self._validate_layer_count(len(project.layers))
+        template = self._load_template()
+        bounds = self._template_bounds(template.height)
+        crop_height = bounds[layer_count]
+        image = template.crop((0, 0, template.width, crop_height)).convert("RGBA")
+        theme = self._theme_for_canvas(project.theme, image.size)
+        item_safe_box = self._item_safe_box(image.width)
 
-        title = re.sub(r"\s+", " ", project.name.strip()) or "Iceberg"
-        title_font = self._fit_font(draw, title, theme, start_size=theme.title_font_size, max_width=theme.canvas_width - theme.padding_x * 2, min_size=30, bold=True)
-        title_box = (theme.padding_x, theme.title_top, theme.canvas_width - theme.padding_x, theme.title_top + theme.title_height)
-        self._draw_centered_text(draw, title_box, title, title_font, theme.title_color)
+        self._draw_project_title(image, project, theme, item_safe_box)
 
-        layer_boxes = self._build_layer_boxes(project)
-        self._draw_iceberg_body(image, layer_boxes, theme)
-        self._draw_layer_lines_and_labels(image, layer_boxes, theme)
+        layer_boxes = self._build_layer_boxes(project, bounds=bounds, item_safe_box=item_safe_box)
         for layer_box in layer_boxes:
             items = project.ordered_items_for_layer(layer_box.layer.id)
             self._draw_items_for_layer(image, project, layer_box, items, asset_bytes_by_item_id)
-        self._draw_footer(image, project)
+        if preview:
+            image = self._resize_preview(image)
 
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
         buffer.seek(0)
         return buffer
 
-    def _draw_background(self, image: Image.Image, theme: ThemeConfig) -> None:
-        draw = ImageDraw.Draw(image, "RGBA")
-        water_y = self._waterline_y(theme)
-        draw.rectangle((0, 0, theme.canvas_width, water_y), fill=theme.sky_color)
-        ocean_height = max(1, theme.canvas_height - water_y)
-        for offset in range(ocean_height):
-            ratio = offset / ocean_height
-            color = self._lerp_color(theme.ocean_color, theme.deep_ocean_color, ratio)
-            draw.line((0, water_y + offset, theme.canvas_width, water_y + offset), fill=color)
-        draw.rectangle((0, water_y - 4, theme.canvas_width, water_y + 4), fill=theme.horizon_color)
+    def _load_template(self) -> Image.Image:
+        if self._template_cache is not None:
+            return self._template_cache.copy()
+        try:
+            with Image.open(self.template_path) as raw:
+                raw.load()
+                template = raw.convert("RGBA")
+        except FileNotFoundError as exc:
+            raise IcebergTemplateError(
+                f"❌ Não encontrei a template local `{ICEBERG_TEMPLATE_FILENAME}` em `{self.template_path}`."
+            ) from exc
+        except (OSError, ValueError, UnidentifiedImageError) as exc:
+            raise IcebergTemplateError(
+                f"❌ Não consegui carregar a template local `{ICEBERG_TEMPLATE_FILENAME}`. Verifique se o PNG não está corrompido."
+            ) from exc
+        self._template_cache = template
+        return template.copy()
 
-    def _draw_iceberg_body(self, image: Image.Image, layer_boxes: list[LayerRenderBox], theme: ThemeConfig) -> None:
-        if not layer_boxes:
-            return
-        draw = ImageDraw.Draw(image, "RGBA")
-        total = max(1, len(layer_boxes) - 1)
-        for box in layer_boxes:
-            ratio = box.index / total
-            fill = box.layer.color or self._lerp_color(theme.iceberg_top_color, theme.iceberg_bottom_color, ratio)
-            draw.polygon(box.polygon, fill=fill)
-            draw.line((*box.polygon, box.polygon[0]), fill=theme.iceberg_edge_color, width=3)
+    def _template_bounds(self, template_height: int) -> list[int]:
+        return [
+            round(index * template_height / ICEBERG_TEMPLATE_TIER_COUNT)
+            for index in range(ICEBERG_TEMPLATE_TIER_COUNT + 1)
+        ]
 
-        shadow = Image.new("RGBA", image.size, (0, 0, 0, 0))
-        shadow_draw = ImageDraw.Draw(shadow, "RGBA")
-        full_polygon = (
-            layer_boxes[0].polygon[0],
-            layer_boxes[0].polygon[1],
-            layer_boxes[-1].polygon[2],
-            layer_boxes[-1].polygon[3],
+    def _validate_layer_count(self, layer_count: int) -> int:
+        if layer_count < ICEBERG_MIN_LAYERS:
+            raise ValueError(f"O iceberg precisa ter no mínimo {ICEBERG_MIN_LAYERS} camadas para renderizar.")
+        if layer_count > ICEBERG_MAX_LAYERS:
+            raise ValueError(f"O iceberg precisa ter no máximo {ICEBERG_MAX_LAYERS} camadas para renderizar.")
+        return layer_count
+
+    def _theme_for_canvas(self, theme: ThemeConfig, size: tuple[int, int]) -> ThemeConfig:
+        width, height = size
+        scale = width / max(1, theme.canvas_width)
+
+        def scaled(value: int, minimum: int = 1) -> int:
+            return max(minimum, int(round(value * scale)))
+
+        return replace(
+            theme,
+            canvas_width=width,
+            canvas_height=height,
+            padding_x=scaled(theme.padding_x),
+            title_top=scaled(theme.title_top, 0),
+            title_height=scaled(theme.title_height),
+            iceberg_top_y=0,
+            iceberg_bottom_y=height,
+            iceberg_center_x=width // 2,
+            title_font_size=scaled(theme.title_font_size, 8),
+            layer_label_font_size=scaled(theme.layer_label_font_size, 8),
+            item_font_size=scaled(theme.item_font_size, 8),
+            item_caption_font_size=scaled(theme.item_caption_font_size, 8),
+            item_card_width=scaled(theme.item_card_width, 24),
+            item_card_height=scaled(theme.item_card_height, 28),
+            item_chip_min_width=scaled(theme.item_chip_min_width, 24),
+            item_chip_height=scaled(theme.item_chip_height, 18),
+            item_gap_x=scaled(theme.item_gap_x),
+            item_gap_y=scaled(theme.item_gap_y),
+            item_padding_x=scaled(theme.item_padding_x),
+            item_padding_y=scaled(theme.item_padding_y),
+            item_radius=scaled(theme.item_radius),
+            layer_inner_padding_x=scaled(theme.layer_inner_padding_x),
+            layer_inner_padding_y=scaled(theme.layer_inner_padding_y),
+            footer_height=scaled(theme.footer_height),
+            item_stroke_width=scaled(theme.item_stroke_width, 0),
         )
-        shadow_draw.polygon(full_polygon, fill=(0, 0, 0, 34))
-        shadow = shadow.filter(ImageFilter.GaussianBlur(18))
-        image.alpha_composite(shadow)
 
-    def _draw_layer_lines_and_labels(self, image: Image.Image, layer_boxes: list[LayerRenderBox], theme: ThemeConfig) -> None:
+    def _item_safe_box(self, canvas_width: int) -> tuple[int, int]:
+        safe_right = int(round(canvas_width * TEMPLATE_ITEM_SAFE_RIGHT_RATIO))
+        safe_right = max(1, min(canvas_width, safe_right))
+        return 0, safe_right
+
+    def _draw_project_title(
+        self,
+        image: Image.Image,
+        project: IcebergProject,
+        theme: ThemeConfig,
+        item_safe_box: tuple[int, int],
+    ) -> None:
+        title = re.sub(r"\s+", " ", project.name.strip()) or "Iceberg"
         draw = ImageDraw.Draw(image, "RGBA")
-        font = self._font(theme, theme.layer_label_font_size, bold=True)
-        for box in layer_boxes:
-            draw.line((box.polygon[0][0], box.top_y, box.polygon[1][0], box.top_y), fill=theme.layer_line_color, width=2)
-            label = re.sub(r"\s+", " ", box.layer.name).strip()
-            if not label:
-                continue
-            label_x = max(18, box.min_left - theme.layer_inner_padding_x - 120)
-            label_box = (label_x, box.top_y, box.min_left - 16, box.bottom_y)
-            fitted = self._fit_font(draw, label, theme, start_size=theme.layer_label_font_size, max_width=max(80, label_box[2] - label_box[0]), min_size=14, bold=True)
-            clipped = self._clip_text(draw, label, fitted, max(80, label_box[2] - label_box[0]))
-            _, text_y = self._centered_text_pos(draw, label_box, clipped, fitted)
-            draw.text((label_box[0], text_y), clipped, font=fitted, fill=theme.layer_label_color)
+        left, right = item_safe_box
+        title_left = max(left + theme.padding_x, 0)
+        title_right = max(title_left + 1, min(right - theme.padding_x, image.width))
+        title_top = min(theme.title_top, max(0, image.height - theme.title_height))
+        title_bottom = min(image.height, title_top + theme.title_height)
+        max_width = max(1, title_right - title_left)
+        min_size = max(8, min(30, theme.title_font_size))
+        title_font = self._fit_font(
+            draw,
+            title,
+            theme,
+            start_size=max(theme.title_font_size, min_size),
+            max_width=max_width,
+            min_size=min_size,
+            bold=True,
+        )
+        self._draw_centered_text(draw, (title_left, title_top, title_right, title_bottom), title, title_font, theme.title_color)
+
+    def _resize_preview(self, image: Image.Image) -> Image.Image:
+        if image.width <= PREVIEW_MAX_WIDTH:
+            return image
+        ratio = PREVIEW_MAX_WIDTH / image.width
+        preview_height = max(1, int(round(image.height * ratio)))
+        return image.resize((PREVIEW_MAX_WIDTH, preview_height), Image.Resampling.LANCZOS)
 
     def _draw_items_for_layer(
         self,
@@ -459,64 +534,32 @@ class IcebergRenderer:
         draw.line((x1, y1, x2, y2), fill=theme.item_outline_color, width=3)
         draw.line((x2, y1, x1, y2), fill=theme.item_outline_color, width=3)
 
-    def _draw_footer(self, image: Image.Image, project: IcebergProject) -> None:
-        theme = project.theme
-        draw = ImageDraw.Draw(image, "RGBA")
-        y = theme.canvas_height - theme.footer_height
-        draw.rectangle((0, y, theme.canvas_width, theme.canvas_height), fill=(5, 25, 45, 255))
-        text = f"Baphomet Iceberg • {len(project.layers)} camadas • {len(project.items)} itens"
-        font = self._font(theme, 18, bold=True)
-        self._draw_centered_text(draw, (theme.padding_x, y, theme.canvas_width - theme.padding_x, theme.canvas_height), text, font, (236, 249, 255, 230))
-
-    def _build_layer_boxes(self, project: IcebergProject) -> list[LayerRenderBox]:
-        theme = project.theme
+    def _build_layer_boxes(
+        self,
+        project: IcebergProject,
+        *,
+        bounds: list[int],
+        item_safe_box: tuple[int, int],
+    ) -> list[LayerRenderBox]:
         layers = project.ordered_layers()
-        weights = [max(0.15, layer.height_weight) for layer in layers]
-        total_weight = sum(weights) or 1.0
-        total_height = theme.iceberg_bottom_y - theme.iceberg_top_y
-        y_values = [theme.iceberg_top_y]
-        carried = float(theme.iceberg_top_y)
-        for weight in weights:
-            carried += total_height * (weight / total_weight)
-            y_values.append(int(round(carried)))
-        y_values[-1] = theme.iceberg_bottom_y
+        safe_left, safe_right = item_safe_box
+        safe_width = max(1, safe_right - safe_left)
         boxes: list[LayerRenderBox] = []
         for index, layer in enumerate(layers):
-            top_y = y_values[index]
-            bottom_y = y_values[index + 1]
-            top_width = self._boundary_width(theme, index / max(1, len(layers)))
-            bottom_width = self._boundary_width(theme, (index + 1) / max(1, len(layers)))
-            top_left = theme.iceberg_center_x - top_width // 2
-            top_right = theme.iceberg_center_x + top_width // 2
-            bottom_left = theme.iceberg_center_x - bottom_width // 2
-            bottom_right = theme.iceberg_center_x + bottom_width // 2
+            top_y = bounds[index]
+            bottom_y = bounds[index + 1]
             boxes.append(
                 LayerRenderBox(
                     layer=layer,
                     index=index,
                     top_y=top_y,
                     bottom_y=bottom_y,
-                    top_width=top_width,
-                    bottom_width=bottom_width,
-                    polygon=((top_left, top_y), (top_right, top_y), (bottom_right, bottom_y), (bottom_left, bottom_y)),
+                    top_width=safe_width,
+                    bottom_width=safe_width,
+                    polygon=((safe_left, top_y), (safe_right, top_y), (safe_right, bottom_y), (safe_left, bottom_y)),
                 )
             )
         return boxes
-
-    def _boundary_width(self, theme: ThemeConfig, ratio: float) -> int:
-        ratios = theme.iceberg_boundary_width_ratios or (0.2, 0.8)
-        if len(ratios) == 1:
-            width_ratio = ratios[0]
-        else:
-            scaled = max(0.0, min(1.0, ratio)) * (len(ratios) - 1)
-            left_index = min(len(ratios) - 2, int(math.floor(scaled)))
-            local_ratio = scaled - left_index
-            width_ratio = ratios[left_index] + (ratios[left_index + 1] - ratios[left_index]) * local_ratio
-        max_width = theme.canvas_width - theme.padding_x * 2
-        return max(80, int(max_width * width_ratio))
-
-    def _waterline_y(self, theme: ThemeConfig) -> int:
-        return theme.iceberg_top_y + int((theme.iceberg_bottom_y - theme.iceberg_top_y) * 0.18)
 
     def _item_size(self, theme: ThemeConfig, item: ItemConfig) -> tuple[int, int]:
         if item.display_style is ItemDisplayStyle.CHIP or item.source.type is ItemSourceType.TEXT:
@@ -669,12 +712,3 @@ class IcebergRenderer:
         while value and draw.textbbox((0, 0), value + suffix, font=font)[2] > max_width:
             value = value[:-1]
         return value + suffix if value else suffix
-
-    def _lerp_color(
-        self,
-        start: tuple[int, int, int, int],
-        end: tuple[int, int, int, int],
-        ratio: float,
-    ) -> tuple[int, int, int, int]:
-        clamped = max(0.0, min(1.0, ratio))
-        return tuple(int(start[index] + (end[index] - start[index]) * clamped) for index in range(4))  # type: ignore[return-value]

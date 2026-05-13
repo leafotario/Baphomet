@@ -9,6 +9,7 @@ import discord
 from cogs.tierlist_templates.asset_repository import TierAssetRepository
 from cogs.tierlist_templates.assets import TierTemplateAssetStore
 
+from .constants import ICEBERG_DEFAULT_LAYERS, ICEBERG_MAX_LAYERS, ICEBERG_MIN_LAYERS
 from .models import (
     IcebergProject,
     ItemConfig,
@@ -23,14 +24,13 @@ from .models import (
     normalize_text,
     utc_now_iso,
 )
-from .renderer import IcebergRenderer
+from .renderer import IcebergRenderer, IcebergTemplateError
 from .repository import IcebergRepository
 from .sources.providers import IcebergSourceProviderRegistry, IcebergUserError
 from .themes import DEFAULT_THEME_ID, default_layers, get_theme
 
 
 LOGGER = logging.getLogger("baphomet.iceberg.service")
-MAX_LAYERS = 12
 MAX_ITEMS_PER_PROJECT = 120
 
 
@@ -56,9 +56,10 @@ class IcebergService:
         owner_id: int,
         guild_id: int | None,
         name: str,
-        layer_count: int = 5,
+        layer_count: int = ICEBERG_DEFAULT_LAYERS,
         theme_id: str = DEFAULT_THEME_ID,
     ) -> IcebergProject:
+        layer_count = self._validate_layer_count(layer_count, code_prefix="layers")
         theme = get_theme(theme_id)
         clean_name = normalize_text(name, max_length=MAX_PROJECT_NAME_LENGTH, fallback="Iceberg") or "Iceberg"
         now = utc_now_iso()
@@ -113,9 +114,8 @@ class IcebergService:
             if (name := normalize_text(raw, max_length=MAX_LAYER_NAME_LENGTH))
         ]
         if not clean_names:
-            raise IcebergUserError("⚠️ Informe pelo menos uma camada.", code="layers_empty")
-        if len(clean_names) > MAX_LAYERS:
-            raise IcebergUserError(f"⚠️ Use no máximo {MAX_LAYERS} camadas.", code="layers_too_many")
+            raise IcebergUserError(f"⚠️ Use no mínimo {ICEBERG_MIN_LAYERS} camadas.", code="layers_too_few")
+        self._validate_layer_count(len(clean_names), code_prefix="layers")
         project = await self.get_project_for_user(project_id, owner_id=owner_id)
         old_by_name = {layer.name.casefold(): layer for layer in project.layers}
         old_by_order = {layer.order: layer for layer in project.layers}
@@ -246,14 +246,19 @@ class IcebergService:
     async def delete_project(self, project_id: str, *, owner_id: int) -> None:
         await self.repository.mark_deleted(project_id, owner_id=owner_id)
 
-    async def render_project(self, project_id: str, *, owner_id: int) -> tuple[IcebergProject, Any]:
+    async def render_project(self, project_id: str, *, owner_id: int, preview: bool = False) -> tuple[IcebergProject, Any]:
         project = await self.get_project_for_user(project_id, owner_id=owner_id)
+        self._validate_project_layers(project, code_prefix="render_layers")
         asset_bytes = await self.load_asset_bytes_by_item(project)
-        buffer = await asyncio.to_thread(
-            self.renderer.render_project,
-            project,
-            asset_bytes_by_item_id=asset_bytes,
-        )
+        try:
+            buffer = await asyncio.to_thread(
+                self.renderer.render_project,
+                project,
+                asset_bytes_by_item_id=asset_bytes,
+                preview=preview,
+            )
+        except IcebergTemplateError as exc:
+            raise IcebergUserError(str(exc), code="template_unavailable") from exc
         return project, buffer
 
     async def load_asset_bytes_by_item(self, project: IcebergProject) -> dict[str, bytes]:
@@ -290,6 +295,7 @@ class IcebergService:
             project = IcebergProject.from_dict(payload)
         except (TypeError, ValueError) as exc:
             raise IcebergUserError("⚠️ Esse JSON não bate com o formato esperado de um iceberg.", code="import_shape_invalid", detail=str(exc)) from exc
+        self._validate_project_layers(project, code_prefix="import_layers")
         if force_new_id:
             project.id = new_uuid()
         project.owner_id = int(owner_id)
@@ -332,3 +338,17 @@ class IcebergService:
         for layer in project.layers:
             for index, item in enumerate(project.ordered_items_for_layer(layer.id)):
                 item.sort_order = index
+
+    def _validate_project_layers(self, project: IcebergProject, *, code_prefix: str) -> int:
+        return self._validate_layer_count(len(project.layers), code_prefix=code_prefix)
+
+    def _validate_layer_count(self, layer_count: int, *, code_prefix: str) -> int:
+        try:
+            count = int(layer_count)
+        except (TypeError, ValueError):
+            count = 0
+        if count < ICEBERG_MIN_LAYERS:
+            raise IcebergUserError(f"⚠️ Use no mínimo {ICEBERG_MIN_LAYERS} camadas.", code=f"{code_prefix}_too_few")
+        if count > ICEBERG_MAX_LAYERS:
+            raise IcebergUserError(f"⚠️ Use no máximo {ICEBERG_MAX_LAYERS} camadas.", code=f"{code_prefix}_too_many")
+        return count
