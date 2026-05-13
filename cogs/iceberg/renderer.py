@@ -83,14 +83,15 @@ class IcebergRenderer:
         crop_height = bounds[layer_count]
         image = template.crop((0, 0, template.width, crop_height)).convert("RGBA")
         theme = self._theme_for_canvas(project.theme, image.size)
+        render_project = replace(project, theme=theme)
         item_safe_box = self._item_safe_box(image.width)
 
-        self._draw_project_title(image, project, theme, item_safe_box)
+        self._draw_project_title(image, render_project, theme, item_safe_box)
 
-        layer_boxes = self._build_layer_boxes(project, bounds=bounds, item_safe_box=item_safe_box)
+        layer_boxes = self._build_layer_boxes(render_project, bounds=bounds, item_safe_box=item_safe_box)
         for layer_box in layer_boxes:
-            items = project.ordered_items_for_layer(layer_box.layer.id)
-            self._draw_items_for_layer(image, project, layer_box, items, asset_bytes_by_item_id)
+            items = render_project.ordered_items_for_layer(layer_box.layer.id)
+            self._draw_items_for_layer(image, render_project, layer_box, items, asset_bytes_by_item_id)
         if preview:
             image = self._resize_preview(image)
 
@@ -162,7 +163,6 @@ class IcebergRenderer:
             item_radius=scaled(theme.item_radius),
             layer_inner_padding_x=scaled(theme.layer_inner_padding_x),
             layer_inner_padding_y=scaled(theme.layer_inner_padding_y),
-            footer_height=scaled(theme.footer_height),
             item_stroke_width=scaled(theme.item_stroke_width, 0),
         )
 

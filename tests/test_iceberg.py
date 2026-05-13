@@ -97,10 +97,13 @@ def make_project(layer_count: int = 7) -> IcebergProject:
         "Camada 10",
     ]
     height_weights = [0.8, 1.2, 1.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-    layers = [
-        LayerConfig(id=f"layer-{index + 1}", name=layer_names[index], order=index, height_weight=height_weights[index])
-        for index in range(layer_count)
-    ]
+    layers = []
+    for index in range(layer_count):
+        name = layer_names[index] if index < len(layer_names) else f"Camada {index + 1}"
+        height_weight = height_weights[index] if index < len(height_weights) else 1.0
+        layers.append(
+            LayerConfig(id=f"layer-{index + 1}", name=name, order=index, height_weight=height_weight)
+        )
     return IcebergProject(
         id="project-1",
         owner_id=42,
@@ -235,6 +238,27 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
         self.assertEqual(image.size, (100, 101))
         self.assertEqual(image.getpixel((1, image.height - 1)), TEMPLATE_TIER_COLORS[9])
 
+    def test_renderer_crops_template_for_9_layers(self) -> None:
+        project = make_project(layer_count=9)
+        project.items = []
+        image = self.render_with_template(project)
+        bounds = template_bounds(101)
+        present_colors = {image.getpixel((1, y)) for y in range(image.height)}
+        self.assertEqual(image.size, (100, bounds[9]))
+        self.assertIn(TEMPLATE_TIER_COLORS[8], present_colors)
+        self.assertNotIn(TEMPLATE_TIER_COLORS[9], present_colors)
+
+    def test_renderer_rejects_layer_counts_outside_template_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            template_path = Path(tmp) / "icebergtemplate.png"
+            write_test_template(template_path)
+            renderer = IcebergRenderer(template_path=template_path)
+
+            with self.assertRaisesRegex(ValueError, "mínimo 7"):
+                renderer.render_project(make_project(layer_count=6))
+            with self.assertRaisesRegex(ValueError, "máximo 10"):
+                renderer.render_project(make_project(layer_count=11))
+
     def test_renderer_preview_resizes_after_crop(self) -> None:
         project = make_project(layer_count=8)
         project.items = []
@@ -263,6 +287,33 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
         ]
         image = self.render_with_template(project, width=1200, height=2000)
         self.assertEqual(image.size, (1200, template_bounds(2000)[7]))
+
+    def test_renderer_uses_template_scaled_theme_for_items(self) -> None:
+        class CapturingRenderer(IcebergRenderer):
+            captured_width: int | None = None
+
+            def _draw_item(self, image, theme, item, box, image_bytes):
+                self.captured_width = theme.canvas_width
+
+        project = make_project(layer_count=7)
+        project.items = [
+            ItemConfig(
+                id="text-scaled",
+                layer_id="layer-3",
+                title="Escalado",
+                source=ItemSource(type=ItemSourceType.TEXT, value="Escalado"),
+                display_style=ItemDisplayStyle.CHIP,
+                sort_order=0,
+                created_at="2026-01-01T00:00:00+00:00",
+                updated_at="2026-01-01T00:00:00+00:00",
+            )
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            template_path = Path(tmp) / "icebergtemplate.png"
+            write_test_template(template_path, width=1600, height=2000)
+            renderer = CapturingRenderer(template_path=template_path)
+            renderer.render_project(project)
+        self.assertEqual(renderer.captured_width, 1600)
 
     def test_renderer_errors_when_template_is_missing(self) -> None:
         project = make_project(layer_count=7)
@@ -302,6 +353,105 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
             project.layers[0].layout_mode = LayerLayoutMode.MASONRY
             buffer_masonry = renderer.render_project(project, asset_bytes_by_item_id={"image-1": png_bytes()})
             self.assertIsNotNone(buffer_masonry)
+
+    def test_renderer_draws_chip_card_and_sticker_styles(self) -> None:
+        project = make_project(layer_count=7)
+        project.items = [
+            ItemConfig(
+                id="chip-1",
+                layer_id="layer-3",
+                title="Chip",
+                source=ItemSource(type=ItemSourceType.TEXT, value="Chip"),
+                display_style=ItemDisplayStyle.CHIP,
+                sort_order=0,
+                created_at="2026-01-01T00:00:00+00:00",
+                updated_at="2026-01-01T00:00:00+00:00",
+            ),
+            ItemConfig(
+                id="card-1",
+                layer_id="layer-4",
+                title="Card",
+                source=ItemSource(type=ItemSourceType.ATTACHMENT, value="card.png", asset_id="card-asset"),
+                display_style=ItemDisplayStyle.CARD,
+                sort_order=0,
+                created_at="2026-01-01T00:00:00+00:00",
+                updated_at="2026-01-01T00:00:00+00:00",
+            ),
+            ItemConfig(
+                id="sticker-1",
+                layer_id="layer-5",
+                title="Sticker",
+                source=ItemSource(type=ItemSourceType.ATTACHMENT, value="sticker.png", asset_id="sticker-asset"),
+                display_style=ItemDisplayStyle.STICKER,
+                sort_order=0,
+                created_at="2026-01-01T00:00:00+00:00",
+                updated_at="2026-01-01T00:00:00+00:00",
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            template_path = Path(tmp) / "icebergtemplate.png"
+            write_test_template(template_path, width=1600, height=2200)
+            buffer = IcebergRenderer(template_path=template_path).render_project(
+                project,
+                asset_bytes_by_item_id={
+                    "card-1": png_bytes((20, 180, 80, 255)),
+                    "sticker-1": png_bytes((180, 20, 80, 255)),
+                },
+            )
+        image = Image.open(buffer).convert("RGBA")
+        self.assertEqual(image.size, (1600, template_bounds(2200)[7]))
+
+    def test_renderer_draw_order_uses_z_index_then_sort_order(self) -> None:
+        class OrderingRenderer(IcebergRenderer):
+            def __init__(self, **kwargs):
+                super().__init__(**kwargs)
+                self.drawn_ids: list[str] = []
+
+            def _draw_item(self, image, theme, item, box, image_bytes):
+                self.drawn_ids.append(item.id)
+
+        project = make_project(layer_count=7)
+        project.items = [
+            ItemConfig(
+                id="z2-sort0",
+                layer_id="layer-3",
+                title="A",
+                source=ItemSource(type=ItemSourceType.TEXT, value="A"),
+                display_style=ItemDisplayStyle.CHIP,
+                placement=PlacementConfig(z_index=2),
+                sort_order=0,
+                created_at="2026-01-01T00:00:00+00:00",
+                updated_at="2026-01-01T00:00:00+00:00",
+            ),
+            ItemConfig(
+                id="z1-sort1",
+                layer_id="layer-3",
+                title="B",
+                source=ItemSource(type=ItemSourceType.TEXT, value="B"),
+                display_style=ItemDisplayStyle.CHIP,
+                placement=PlacementConfig(z_index=1),
+                sort_order=1,
+                created_at="2026-01-01T00:00:00+00:00",
+                updated_at="2026-01-01T00:00:00+00:00",
+            ),
+            ItemConfig(
+                id="z1-sort0",
+                layer_id="layer-3",
+                title="C",
+                source=ItemSource(type=ItemSourceType.TEXT, value="C"),
+                display_style=ItemDisplayStyle.CHIP,
+                placement=PlacementConfig(z_index=1),
+                sort_order=0,
+                created_at="2026-01-01T00:00:00+00:00",
+                updated_at="2026-01-01T00:00:00+00:00",
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            template_path = Path(tmp) / "icebergtemplate.png"
+            write_test_template(template_path, width=1600, height=2200)
+            renderer = OrderingRenderer(template_path=template_path)
+            renderer.render_project(project)
+        self.assertEqual(renderer.drawn_ids, ["z1-sort0", "z1-sort1", "z2-sort0"])
 
     def test_renderer_overflow_raises_error(self) -> None:
         from cogs.iceberg.models import LayerLayoutMode, ItemConfig, ItemSource, ItemSourceType, ItemDisplayStyle
@@ -353,6 +503,25 @@ class IcebergServiceValidationTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(IcebergUserError, "máximo 10"):
             await service.create_project(owner_id=42, guild_id=99, name="Muitas", layer_count=ICEBERG_MAX_LAYERS + 1)
+
+    async def test_update_layers_rejects_outside_range_without_sqlite(self) -> None:
+        service = self.make_service()
+        await service.repository.save_project(make_project())
+
+        with self.assertRaisesRegex(IcebergUserError, "mínimo 7"):
+            await service.update_layers("project-1", owner_id=42, names=[f"Camada {index}" for index in range(1, 7)])
+
+        with self.assertRaisesRegex(IcebergUserError, "máximo 10"):
+            await service.update_layers("project-1", owner_id=42, names=[f"Camada {index}" for index in range(1, ICEBERG_MAX_LAYERS + 2)])
+
+    async def test_import_rejects_projects_outside_layer_range_without_sqlite(self) -> None:
+        service = self.make_service()
+
+        with self.assertRaisesRegex(IcebergUserError, "mínimo 7"):
+            await service.import_project_json(make_project(layer_count=6).to_json(), owner_id=42, guild_id=99)
+
+        with self.assertRaisesRegex(IcebergUserError, "máximo 10"):
+            await service.import_project_json(make_project(layer_count=ICEBERG_MAX_LAYERS + 1).to_json(), owner_id=42, guild_id=99)
 
     async def test_render_converts_template_error_to_user_error_without_sqlite(self) -> None:
         class BrokenRenderer:
