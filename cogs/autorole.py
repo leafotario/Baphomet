@@ -28,6 +28,17 @@ DB_PATH = DATA_DIR / "autorole.sqlite3"
 
 DEFAULT_COLOR = 0x5865F2
 CUSTOM_EMOJI_RE = re.compile(r"^<a?:[A-Za-z0-9_]{2,32}:\d{17,22}>$")
+BUTTON_LABEL_LIMIT = 80
+SELECT_LABEL_LIMIT = 100
+SELECT_DESCRIPTION_LIMIT = 100
+SELECT_PLACEHOLDER_LIMIT = 150
+SELECT_CUSTOM_ID_LIMIT = 100
+EMBED_TITLE_LIMIT = 256
+EMBED_DESCRIPTION_LIMIT = 4096
+EMBED_FIELD_NAME_LIMIT = 256
+EMBED_FIELD_VALUE_LIMIT = 1024
+MODAL_TITLE_LIMIT = 45
+ROLE_SELECT_OPTION_LIMIT = 25
 
 # Self-assign de Administrator/Manage Roles quase sempre é um acidente grave.
 # Troque para False se o seu servidor realmente precisar permitir isso.
@@ -105,32 +116,45 @@ def _utc_now_iso() -> str:
 
 def _clip_text(value: str, limit: int) -> str:
     value = value.strip()
+    if limit <= 0:
+        return ""
     if len(value) <= limit:
         return value
+    if limit <= 3:
+        return value[:limit]
     return value[: limit - 3].rstrip() + "..."
 
 
 def _sanitize_label(value: str | None, fallback: str) -> str:
-    label = (value or fallback).strip()
+    label = str(value or fallback).strip()
     if not label:
         label = fallback
-    return _clip_text(label, 80)
+    return _clip_text(label, BUTTON_LABEL_LIMIT)
 
 
 def _sanitize_description(value: str | None) -> str | None:
     if value is None:
         return None
-    value = value.strip()
+    value = str(value).strip()
     if not value:
         return None
-    return _clip_text(value, 100)
+    return _clip_text(value, SELECT_DESCRIPTION_LIMIT)
+
+
+def _sanitize_placeholder(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = str(value).strip()
+    if not value:
+        return None
+    return _clip_text(value, SELECT_PLACEHOLDER_LIMIT)
 
 
 def _sanitize_emoji(value: str | None) -> str | None:
     if value is None:
         return None
 
-    value = value.strip()
+    value = str(value).strip()
     if not value:
         return None
 
@@ -152,6 +176,34 @@ def _component_emoji(value: str | None) -> str | discord.PartialEmoji | None:
     if CUSTOM_EMOJI_RE.fullmatch(value):
         return discord.PartialEmoji.from_str(value)
     return value
+
+
+def _safe_int(value: object, fallback: int = 0) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _safe_color(value: object) -> int:
+    color = _safe_int(value, DEFAULT_COLOR)
+    if 0 <= color <= 0xFFFFFF:
+        return color
+    return DEFAULT_COLOR
+
+
+def _safe_mode(value: object) -> AutoroleMode:
+    mode = str(value or "").lower()
+    if mode in {"unico", "multi", "deci"}:
+        return mode  # type: ignore[return-value]
+    return "multi"
+
+
+def _safe_selection_mode(value: object) -> SelectionMode:
+    mode = str(value or "").lower()
+    if mode in {"single", "multiple"}:
+        return mode  # type: ignore[return-value]
+    return "multiple"
 
 
 def _parse_color(value: str | None) -> int:
@@ -244,12 +296,180 @@ class AutoroleDatabase:
                             ON DELETE CASCADE,
                         UNIQUE (message_id, role_id)
                     );
+                    """
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_messages",
+                    "message_id",
+                    "ALTER TABLE autorole_messages ADD COLUMN message_id INTEGER NOT NULL DEFAULT 0",
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_messages",
+                    "guild_id",
+                    "ALTER TABLE autorole_messages ADD COLUMN guild_id INTEGER NOT NULL DEFAULT 0",
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_messages",
+                    "channel_id",
+                    "ALTER TABLE autorole_messages ADD COLUMN channel_id INTEGER NOT NULL DEFAULT 0",
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_messages",
+                    "mode",
+                    "ALTER TABLE autorole_messages ADD COLUMN mode TEXT NOT NULL DEFAULT 'multi'",
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_messages",
+                    "title",
+                    "ALTER TABLE autorole_messages ADD COLUMN title TEXT NOT NULL DEFAULT 'Autorole'",
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_messages",
+                    "description",
+                    "ALTER TABLE autorole_messages ADD COLUMN description TEXT NOT NULL DEFAULT 'Use os componentes abaixo para gerenciar seus cargos.'",
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_messages",
+                    "color",
+                    f"ALTER TABLE autorole_messages ADD COLUMN color INTEGER NOT NULL DEFAULT {DEFAULT_COLOR}",
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_messages",
+                    "selection_mode",
+                    "ALTER TABLE autorole_messages ADD COLUMN selection_mode TEXT NOT NULL DEFAULT 'multiple'",
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_messages",
+                    "remove_on_click",
+                    "ALTER TABLE autorole_messages ADD COLUMN remove_on_click INTEGER NOT NULL DEFAULT 1",
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_messages",
+                    "created_by",
+                    "ALTER TABLE autorole_messages ADD COLUMN created_by INTEGER NOT NULL DEFAULT 0",
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_messages",
+                    "created_at",
+                    "ALTER TABLE autorole_messages ADD COLUMN created_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'",
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_messages",
+                    "placeholder",
+                    "ALTER TABLE autorole_messages ADD COLUMN placeholder TEXT NULL",
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_roles",
+                    "id",
+                    "ALTER TABLE autorole_roles ADD COLUMN id INTEGER",
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_roles",
+                    "message_id",
+                    "ALTER TABLE autorole_roles ADD COLUMN message_id INTEGER NOT NULL DEFAULT 0",
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_roles",
+                    "role_id",
+                    "ALTER TABLE autorole_roles ADD COLUMN role_id INTEGER NOT NULL DEFAULT 0",
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_roles",
+                    "label",
+                    "ALTER TABLE autorole_roles ADD COLUMN label TEXT NOT NULL DEFAULT 'Cargo'",
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_roles",
+                    "emoji",
+                    "ALTER TABLE autorole_roles ADD COLUMN emoji TEXT NULL",
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_roles",
+                    "description",
+                    "ALTER TABLE autorole_roles ADD COLUMN description TEXT NULL",
+                )
+                self._ensure_column(
+                    conn,
+                    "autorole_roles",
+                    "order_index",
+                    "ALTER TABLE autorole_roles ADD COLUMN order_index INTEGER NOT NULL DEFAULT 0",
+                )
+                conn.executescript(
+                    f"""
+                    UPDATE autorole_messages
+                    SET
+                        mode = CASE WHEN mode IN ('unico', 'multi', 'deci') THEN mode ELSE 'multi' END,
+                        title = COALESCE(NULLIF(TRIM(title), ''), 'Autorole'),
+                        description = COALESCE(NULLIF(TRIM(description), ''), 'Use os componentes abaixo para gerenciar seus cargos.'),
+                        color = CASE WHEN color BETWEEN 0 AND 16777215 THEN color ELSE {DEFAULT_COLOR} END,
+                        selection_mode = CASE WHEN selection_mode IN ('single', 'multiple') THEN selection_mode ELSE 'multiple' END,
+                        remove_on_click = CASE WHEN remove_on_click = 0 THEN 0 ELSE 1 END,
+                        created_at = COALESCE(NULLIF(TRIM(created_at), ''), '1970-01-01T00:00:00+00:00');
 
+                    UPDATE autorole_roles
+                    SET
+                        id = COALESCE(id, rowid),
+                        label = COALESCE(NULLIF(TRIM(label), ''), 'Cargo'),
+                        order_index = COALESCE(order_index, id, rowid, 0);
+
+                    DELETE FROM autorole_roles
+                    WHERE message_id IS NULL OR role_id IS NULL OR role_id <= 0;
+                    """
+                )
+                conn.execute(
+                    """
+                    DELETE FROM autorole_messages
+                    WHERE message_id IS NULL OR message_id <= 0
+                    """
+                )
+                conn.execute(
+                    """
+                    DELETE FROM autorole_roles
+                    WHERE message_id NOT IN (
+                        SELECT message_id FROM autorole_messages
+                    )
+                    """
+                )
+                conn.execute(
+                    """
                     CREATE INDEX IF NOT EXISTS idx_autorole_messages_guild
                         ON autorole_messages(guild_id);
-
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_autorole_messages_channel
+                        ON autorole_messages(channel_id);
+                    """
+                )
+                conn.execute(
+                    """
                     CREATE INDEX IF NOT EXISTS idx_autorole_roles_message
                         ON autorole_roles(message_id, order_index);
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_autorole_roles_role
+                        ON autorole_roles(role_id);
                     """
                 )
                 conn.commit()
@@ -257,6 +477,17 @@ class AutoroleDatabase:
                 conn.close()
 
         await asyncio.to_thread(sync_run)
+
+    @staticmethod
+    def _ensure_column(
+        conn: sqlite3.Connection,
+        table_name: str,
+        column_name: str,
+        alter_sql: str,
+    ) -> None:
+        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})")}
+        if column_name not in columns:
+            conn.execute(alter_sql)
 
     async def save_autorole(
         self,
@@ -267,8 +498,16 @@ class AutoroleDatabase:
             conn = self._open_connection()
             try:
                 conn.execute(
+                    "DELETE FROM autorole_roles WHERE message_id = ?",
+                    (config.message_id,),
+                )
+                conn.execute(
+                    "DELETE FROM autorole_messages WHERE message_id = ?",
+                    (config.message_id,),
+                )
+                conn.execute(
                     """
-                    INSERT OR REPLACE INTO autorole_messages (
+                    INSERT INTO autorole_messages (
                         guild_id, channel_id, message_id, mode, title, description,
                         color, selection_mode, remove_on_click, created_by,
                         created_at, placeholder
@@ -289,10 +528,6 @@ class AutoroleDatabase:
                         config.created_at,
                         config.placeholder,
                     ),
-                )
-                conn.execute(
-                    "DELETE FROM autorole_roles WHERE message_id = ?",
-                    (config.message_id,),
                 )
                 conn.executemany(
                     """
@@ -344,7 +579,7 @@ class AutoroleDatabase:
                     SELECT role_id, label, emoji, description, order_index
                     FROM autorole_roles
                     WHERE message_id = ?
-                    ORDER BY order_index ASC, id ASC
+                    ORDER BY order_index ASC, role_id ASC
                     """,
                     (message_id,),
                 )
@@ -353,16 +588,28 @@ class AutoroleDatabase:
                 conn.close()
 
         rows = await asyncio.to_thread(sync_run)
-        return [
-            AutoroleRoleOption(
-                role_id=int(row["role_id"]),
-                label=str(row["label"]),
-                emoji=row["emoji"],
-                description=row["description"],
-                order_index=int(row["order_index"]),
+        roles: list[AutoroleRoleOption] = []
+        for row in rows:
+            role_id = _safe_int(row["role_id"])
+            if role_id <= 0:
+                continue
+
+            try:
+                emoji = _sanitize_emoji(row["emoji"])
+            except AutoroleUserError:
+                LOGGER.info("Emoji inválido ignorado no autorole %s para cargo %s", message_id, role_id)
+                emoji = None
+
+            roles.append(
+                AutoroleRoleOption(
+                    role_id=role_id,
+                    label=_sanitize_label(row["label"], f"Cargo {role_id}"),
+                    emoji=emoji,
+                    description=_sanitize_description(row["description"]),
+                    order_index=_safe_int(row["order_index"]),
+                )
             )
-            for row in rows
-        ]
+        return roles
 
     async def get_record(self, message_id: int) -> AutoroleRecord | None:
         config = await self.get_config(message_id)
@@ -392,7 +639,7 @@ class AutoroleDatabase:
             try:
                 cur = conn.execute(
                     """
-                    SELECT m.*, COUNT(r.id) AS role_count
+                    SELECT m.*, COUNT(r.role_id) AS role_count
                     FROM autorole_messages AS m
                     LEFT JOIN autorole_roles AS r ON r.message_id = m.message_id
                     WHERE m.guild_id = ?
@@ -418,6 +665,10 @@ class AutoroleDatabase:
         def sync_run() -> int:
             conn = self._open_connection()
             try:
+                conn.execute(
+                    "DELETE FROM autorole_roles WHERE message_id = ?",
+                    (message_id,),
+                )
                 cur = conn.execute(
                     "DELETE FROM autorole_messages WHERE message_id = ?",
                     (message_id,),
@@ -464,7 +715,7 @@ class AutoroleDatabase:
                         FROM autorole_messages AS m
                         LEFT JOIN autorole_roles AS r ON r.message_id = m.message_id
                         GROUP BY m.message_id
-                        HAVING COUNT(r.id) = 0
+                        HAVING COUNT(r.role_id) = 0
                     )
                     """
                 )
@@ -479,18 +730,21 @@ class AutoroleDatabase:
     @staticmethod
     def _config_from_row(row: sqlite3.Row) -> AutoroleConfig:
         return AutoroleConfig(
-            guild_id=int(row["guild_id"]),
-            channel_id=int(row["channel_id"]),
-            message_id=int(row["message_id"]),
-            mode=row["mode"],
-            title=str(row["title"]),
-            description=str(row["description"]),
-            color=int(row["color"]),
-            selection_mode=row["selection_mode"],
-            remove_on_click=bool(row["remove_on_click"]),
-            created_by=int(row["created_by"]),
-            created_at=str(row["created_at"]),
-            placeholder=row["placeholder"],
+            guild_id=_safe_int(row["guild_id"]),
+            channel_id=_safe_int(row["channel_id"]),
+            message_id=_safe_int(row["message_id"]),
+            mode=_safe_mode(row["mode"]),
+            title=_clip_text(str(row["title"] or "Autorole"), EMBED_TITLE_LIMIT),
+            description=_clip_text(
+                str(row["description"] or "Use os componentes abaixo para gerenciar seus cargos."),
+                EMBED_DESCRIPTION_LIMIT,
+            ),
+            color=_safe_color(row["color"]),
+            selection_mode=_safe_selection_mode(row["selection_mode"]),
+            remove_on_click=bool(_safe_int(row["remove_on_click"], 1)),
+            created_by=_safe_int(row["created_by"]),
+            created_at=str(row["created_at"] or "1970-01-01T00:00:00+00:00"),
+            placeholder=_sanitize_placeholder(row["placeholder"]),
         )
 
 
@@ -503,7 +757,7 @@ class AutoroleButton(discord.ui.Button):
         style: discord.ButtonStyle = discord.ButtonStyle.secondary,
     ) -> None:
         super().__init__(
-            label=_clip_text(option.label, 80),
+            label=_clip_text(option.label, BUTTON_LABEL_LIMIT),
             emoji=_component_emoji(option.emoji),
             style=style,
             custom_id=f"autorole:button:{message_id}:{option.role_id}",
@@ -513,9 +767,10 @@ class AutoroleButton(discord.ui.Button):
         self.role_id = option.role_id
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        message_id = interaction.message.id if interaction.message else self.message_id
         await self.cog.handle_autorole_interaction(
             interaction,
-            message_id=self.message_id,
+            message_id=message_id,
             selected_role_ids=[self.role_id],
         )
 
@@ -540,20 +795,28 @@ class AutoroleSelect(discord.ui.Select):
         config: AutoroleConfig,
         roles: Sequence[AutoroleRoleOption],
     ) -> None:
+        if not roles:
+            raise ValueError("AutoroleSelect precisa de pelo menos um cargo.")
+
+        custom_id = f"autorole:select:{config.message_id}"
+        if len(custom_id) > SELECT_CUSTOM_ID_LIMIT:
+            raise ValueError("custom_id do autorole ultrapassou o limite do Discord.")
+
+        option_limit = min({"unico": 1, "multi": 5, "deci": 15}.get(config.mode, 15), ROLE_SELECT_OPTION_LIMIT)
         options = [
             discord.SelectOption(
-                label=_clip_text(role.label, 100),
+                label=_clip_text(role.label, SELECT_LABEL_LIMIT),
                 value=str(role.role_id),
                 description=_sanitize_description(role.description),
                 emoji=_component_emoji(role.emoji),
             )
-            for role in roles[:25]
+            for role in roles[:option_limit]
         ]
         max_values = 1 if config.selection_mode == "single" else max(1, min(len(options), 15))
         placeholder = config.placeholder or "Escolha seus cargos"
         super().__init__(
-            custom_id=f"autorole:select:{config.message_id}",
-            placeholder=_clip_text(placeholder, 100),
+            custom_id=custom_id,
+            placeholder=_clip_text(placeholder, SELECT_PLACEHOLDER_LIMIT),
             min_values=1,
             max_values=max_values,
             options=options,
@@ -563,9 +826,10 @@ class AutoroleSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         role_ids = [int(value) for value in self.values]
+        message_id = interaction.message.id if interaction.message else self.message_id
         await self.cog.handle_autorole_interaction(
             interaction,
-            message_id=self.message_id,
+            message_id=message_id,
             selected_role_ids=role_ids,
         )
 
@@ -623,12 +887,15 @@ class AutoroleSetupRemoveSelect(discord.ui.Select):
     def __init__(self, setup_view: AutoroleSetupView) -> None:
         options = [
             discord.SelectOption(
-                label=_clip_text(option.label, 100),
+                label=_clip_text(option.label, SELECT_LABEL_LIMIT),
                 value=str(option.role_id),
-                description=f"Remover {option.label} da configuração",
+                description=_clip_text(
+                    f"Remover {option.label} da configuração",
+                    SELECT_DESCRIPTION_LIMIT,
+                ),
                 emoji=_component_emoji(option.emoji),
             )
-            for option in (setup_view.state.roles or [])[:25]
+            for option in (setup_view.state.roles or [])[:ROLE_SELECT_OPTION_LIMIT]
         ]
         super().__init__(
             placeholder="Remover um cargo adicionado",
@@ -661,27 +928,29 @@ class AutoroleRoleDetailsModal(discord.ui.Modal):
         role: discord.Role,
         existing: AutoroleRoleOption | None,
     ) -> None:
-        super().__init__(title=f"Configurar {role.name}", timeout=300)
+        super().__init__(title=_clip_text(f"Configurar {role.name}", MODAL_TITLE_LIMIT), timeout=300)
         self.setup_view = setup_view
         self.role = role
 
         self.label_input = discord.ui.TextInput(
             label="Texto exibido",
-            default=(existing.label if existing else role.name)[:80],
-            max_length=80,
+            default=(existing.label if existing else role.name)[:BUTTON_LABEL_LIMIT],
+            max_length=BUTTON_LABEL_LIMIT,
             required=True,
         )
         self.emoji_input = discord.ui.TextInput(
             label="Emoji opcional",
-            default=(existing.emoji if existing and existing.emoji else ""),
+            default=(existing.emoji if existing and existing.emoji else "")[:80],
             max_length=80,
             required=False,
             placeholder="Ex.: 🔔 ou <:nome:123456789012345678>",
         )
         self.description_input = discord.ui.TextInput(
             label="Descrição curta opcional",
-            default=(existing.description if existing and existing.description else ""),
-            max_length=100,
+            default=(existing.description if existing and existing.description else "")[
+                :SELECT_DESCRIPTION_LIMIT
+            ],
+            max_length=SELECT_DESCRIPTION_LIMIT,
             required=False,
             style=discord.TextStyle.short,
             placeholder="Aparece no select menu e na embed",
@@ -711,6 +980,7 @@ class AutoroleRoleDetailsModal(discord.ui.Modal):
             return
 
         self.setup_view.rebuild_items()
+        await interaction.response.defer(ephemeral=True, thinking=True)
         if self.setup_view.message is not None:
             try:
                 await self.setup_view.message.edit(
@@ -720,7 +990,7 @@ class AutoroleRoleDetailsModal(discord.ui.Modal):
             except discord.HTTPException:
                 LOGGER.warning("Falha ao editar painel ephemeral de autorole", exc_info=True)
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Cargo {self.role.mention} salvo no painel de configuração.",
             ephemeral=True,
         )
@@ -738,9 +1008,9 @@ class AutoroleSetupView(discord.ui.View):
     async def ensure_owner(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id == self.state.admin_id:
             return True
-        await interaction.response.send_message(
+        await self.cog._send_error(
+            interaction,
             "Apenas quem iniciou esta configuração pode usar este painel.",
-            ephemeral=True,
         )
         return False
 
@@ -799,7 +1069,7 @@ class AutoroleSetupView(discord.ui.View):
                 f"Modo: {_format_selection_mode(self.state.selection_mode)}\n"
                 f"Remover ao selecionar de novo: {_format_bool(self.state.remove_on_click)}"
             ),
-            color=discord.Color(self.state.color),
+            color=discord.Color(_safe_color(self.state.color)),
         )
         if roles:
             lines = []
@@ -807,7 +1077,7 @@ class AutoroleSetupView(discord.ui.View):
                 emoji = f"{option.emoji} " if option.emoji else ""
                 desc = f" - {option.description}" if option.description else ""
                 lines.append(f"{index}. {emoji}**{option.label}** (<@&{option.role_id}>{desc})")
-            embed.add_field(name="Cargos", value="\n".join(lines)[:1024], inline=False)
+            self.cog.add_lines_to_embed(embed, "Cargos", lines)
         else:
             embed.add_field(
                 name="Cargos",
@@ -881,6 +1151,13 @@ class AutoroleSetupView(discord.ui.View):
             LOGGER.warning("Falha HTTP ao publicar autorole", exc_info=True)
             await interaction.followup.send(
                 "O Discord recusou a publicação da mensagem. Revise emojis, permissões e tente novamente.",
+                ephemeral=True,
+            )
+            return
+        except Exception:
+            LOGGER.exception("Erro inesperado ao publicar autorole")
+            await interaction.followup.send(
+                "Ocorreu um erro interno ao publicar o autorole. Nada foi salvo.",
                 ephemeral=True,
             )
             return
@@ -969,6 +1246,7 @@ class AutoroleCog(commands.Cog):
         config: AutoroleConfig,
         roles: Sequence[AutoroleRoleOption],
     ) -> discord.ui.View:
+        roles = self.clamp_roles_for_config(config, roles)
         if config.mode == "deci" or len(roles) > 5:
             return AutoroleSelectView(self, config, roles)
         return AutoroleButtonView(self, config, roles)
@@ -978,6 +1256,7 @@ class AutoroleCog(commands.Cog):
         config: AutoroleConfig,
         roles: Sequence[AutoroleRoleOption],
     ) -> discord.ui.View:
+        roles = self.clamp_roles_for_config(config, roles)
         view = discord.ui.View(timeout=60)
         if config.mode == "deci" or len(roles) > 5:
             select = AutoroleSelect(self, config, roles)
@@ -988,7 +1267,7 @@ class AutoroleCog(commands.Cog):
         style = discord.ButtonStyle.primary if config.mode == "unico" else discord.ButtonStyle.secondary
         for option in roles[:5]:
             button = discord.ui.Button(
-                label=_clip_text(option.label, 80),
+                label=_clip_text(option.label, BUTTON_LABEL_LIMIT),
                 emoji=_component_emoji(option.emoji),
                 style=style,
                 disabled=True,
@@ -1019,15 +1298,16 @@ class AutoroleCog(commands.Cog):
         *,
         preview: bool = False,
     ) -> discord.Embed:
+        roles = self.clamp_roles_for_config(config, roles)
         title = config.title or "Autorole"
         description = config.description or "Use os componentes abaixo para gerenciar seus cargos."
         if preview:
             title = f"[Preview] {title}"
 
         embed = discord.Embed(
-            title=_clip_text(title, 256),
-            description=description[:4096],
-            color=discord.Color(config.color),
+            title=_clip_text(title, EMBED_TITLE_LIMIT),
+            description=_clip_text(description, EMBED_DESCRIPTION_LIMIT),
+            color=discord.Color(_safe_color(config.color)),
         )
 
         if config.mode == "unico" and roles:
@@ -1045,7 +1325,7 @@ class AutoroleCog(commands.Cog):
                 emoji = f"{option.emoji} " if option.emoji else ""
                 desc = f" - {option.description}" if option.description else ""
                 lines.append(f"{index}. {emoji}**{option.label}**: <@&{option.role_id}>{desc}")
-            embed.add_field(name="Cargos disponíveis", value="\n".join(lines)[:1024], inline=False)
+            self.add_lines_to_embed(embed, "Cargos disponíveis", lines)
 
         embed.add_field(name="Modo", value=_format_selection_mode(config.selection_mode), inline=True)
         embed.add_field(
@@ -1056,6 +1336,46 @@ class AutoroleCog(commands.Cog):
         embed.set_footer(text="Clique abaixo para gerenciar seus cargos.")
         return embed
 
+    def clamp_roles_for_config(
+        self,
+        config: AutoroleConfig,
+        roles: Sequence[AutoroleRoleOption],
+    ) -> list[AutoroleRoleOption]:
+        limit = {"unico": 1, "multi": 5, "deci": 15}.get(config.mode, 15)
+        return list(roles[:limit])
+
+    def add_lines_to_embed(self, embed: discord.Embed, base_name: str, lines: Sequence[str]) -> None:
+        if not lines:
+            return
+
+        current: list[str] = []
+        current_len = 0
+        part = 1
+        for line in lines:
+            safe_line = _clip_text(line, EMBED_FIELD_VALUE_LIMIT)
+            additional_len = len(safe_line) + (1 if current else 0)
+            if current and current_len + additional_len > EMBED_FIELD_VALUE_LIMIT:
+                name = base_name if part == 1 else f"{base_name} {part}"
+                embed.add_field(
+                    name=_clip_text(name, EMBED_FIELD_NAME_LIMIT),
+                    value="\n".join(current),
+                    inline=False,
+                )
+                current = [safe_line]
+                current_len = len(safe_line)
+                part += 1
+            else:
+                current.append(safe_line)
+                current_len += additional_len
+
+        if current:
+            name = base_name if part == 1 else f"{base_name} {part}"
+            embed.add_field(
+                name=_clip_text(name, EMBED_FIELD_NAME_LIMIT),
+                value="\n".join(current),
+                inline=False,
+            )
+
     async def resolve_setup_channel(
         self,
         interaction: discord.Interaction,
@@ -1065,7 +1385,14 @@ class AutoroleCog(commands.Cog):
             raise AutoroleUserError("Esse comando só pode ser usado em servidor.")
         channel = interaction.guild.get_channel(channel_id)
         if channel is None:
-            fetched = await self.bot.fetch_channel(channel_id)
+            try:
+                fetched = await self.bot.fetch_channel(channel_id)
+            except discord.NotFound as exc:
+                raise AutoroleUserError("O canal escolhido não existe mais.") from exc
+            except discord.Forbidden as exc:
+                raise AutoroleUserError("Não tenho acesso ao canal escolhido.") from exc
+            except discord.HTTPException as exc:
+                raise AutoroleUserError("Não consegui consultar o canal escolhido agora.") from exc
             channel = fetched if isinstance(fetched, discord.TextChannel) else None
         if not isinstance(channel, discord.TextChannel):
             raise AutoroleUserError("O canal escolhido não existe mais ou não é um canal de texto.")
@@ -1083,7 +1410,10 @@ class AutoroleCog(commands.Cog):
         if member is None:
             member = interaction.guild.get_member(interaction.user.id)
         if member is None:
-            member = await interaction.guild.fetch_member(interaction.user.id)
+            try:
+                member = await interaction.guild.fetch_member(interaction.user.id)
+            except discord.HTTPException as exc:
+                raise AutoroleUserError("Não consegui validar suas permissões neste servidor.") from exc
 
         if not (member.guild_permissions.manage_roles or member.guild_permissions.administrator):
             raise AutoroleUserError("Você precisa de Gerenciar Cargos ou Administrador para usar autorole.")
@@ -1098,9 +1428,14 @@ class AutoroleCog(commands.Cog):
 
         if channel is not None:
             permissions = channel.permissions_for(me)
-            if not permissions.view_channel or not permissions.send_messages or not permissions.embed_links:
+            if (
+                not permissions.view_channel
+                or not permissions.send_messages
+                or not permissions.embed_links
+                or not permissions.read_message_history
+            ):
                 raise AutoroleUserError(
-                    "Eu preciso ver o canal, enviar mensagens e incorporar links no canal escolhido."
+                    "Eu preciso ver o canal, enviar mensagens, incorporar links e ler histórico no canal escolhido."
                 )
         return member
 
@@ -1111,6 +1446,8 @@ class AutoroleCog(commands.Cog):
     ) -> None:
         if interaction.guild is None:
             raise AutoroleUserError("Esse comando só pode ser usado em servidor.")
+        if role.guild.id != interaction.guild.id:
+            raise AutoroleUserError("Esse cargo não pertence a este servidor.")
 
         admin = await self.ensure_setup_permissions(interaction)
         me = interaction.guild.me
@@ -1153,6 +1490,14 @@ class AutoroleCog(commands.Cog):
         if interaction.guild is None:
             raise AutoroleUserError("Esse comando só pode ser usado em servidor.")
 
+        roles = self.normalize_role_options(mode, roles)
+        title = _clip_text(title or "Autorole", EMBED_TITLE_LIMIT)
+        description = _clip_text(
+            description or "Use os componentes abaixo para gerenciar seus cargos.",
+            EMBED_DESCRIPTION_LIMIT,
+        )
+        color = _safe_color(color)
+        placeholder = _sanitize_placeholder(placeholder)
         temp_config = AutoroleConfig(
             guild_id=interaction.guild.id,
             channel_id=channel.id,
@@ -1167,28 +1512,83 @@ class AutoroleCog(commands.Cog):
             created_at=_utc_now_iso(),
             placeholder=placeholder,
         )
-        message = await channel.send(embed=self.build_autorole_embed(temp_config, roles))
+        message: discord.Message | None = None
+        saved = False
 
-        config = AutoroleConfig(
-            guild_id=interaction.guild.id,
-            channel_id=channel.id,
-            message_id=message.id,
-            mode=mode,
-            title=title,
-            description=description,
-            color=color,
-            selection_mode=selection_mode,
-            remove_on_click=remove_on_click,
-            created_by=interaction.user.id,
-            created_at=_utc_now_iso(),
-            placeholder=placeholder,
-        )
-        await self.db.save_autorole(config, roles)
-        view = self.build_persistent_view(config, roles)
-        await message.edit(embed=self.build_autorole_embed(config, roles), view=view)
-        self.bot.add_view(view, message_id=message.id)
-        self._registered_views.add(message.id)
-        return message
+        try:
+            message = await channel.send(embed=self.build_autorole_embed(temp_config, roles))
+            config = AutoroleConfig(
+                guild_id=interaction.guild.id,
+                channel_id=channel.id,
+                message_id=message.id,
+                mode=mode,
+                title=title,
+                description=description,
+                color=color,
+                selection_mode=selection_mode,
+                remove_on_click=remove_on_click,
+                created_by=interaction.user.id,
+                created_at=_utc_now_iso(),
+                placeholder=placeholder,
+            )
+            view = self.build_persistent_view(config, roles)
+            await self.db.save_autorole(config, roles)
+            saved = True
+            await message.edit(embed=self.build_autorole_embed(config, roles), view=view)
+            if message.id not in self._registered_views:
+                self.bot.add_view(view, message_id=message.id)
+                self._registered_views.add(message.id)
+            return message
+        except Exception:
+            if saved and message is not None:
+                await self.db.delete_autorole(message.id)
+                self._registered_views.discard(message.id)
+            if message is not None:
+                try:
+                    await message.delete()
+                except discord.HTTPException:
+                    LOGGER.info("Não foi possível apagar mensagem de autorole incompleta", exc_info=True)
+            raise
+
+    def normalize_role_options(
+        self,
+        mode: AutoroleMode,
+        roles: Sequence[AutoroleRoleOption],
+    ) -> list[AutoroleRoleOption]:
+        min_roles = {"unico": 1, "multi": 2, "deci": 6}[mode]
+        max_roles = {"unico": 1, "multi": 5, "deci": 15}[mode]
+        if not (min_roles <= len(roles) <= max_roles):
+            raise AutoroleUserError(
+                f"Autorole {mode} precisa de {min_roles} a {max_roles} cargo(s)."
+            )
+
+        normalized: list[AutoroleRoleOption] = []
+        seen: set[int] = set()
+        for index, option in enumerate(roles):
+            role_id = _safe_int(option.role_id)
+            if role_id <= 0 or role_id in seen:
+                continue
+            seen.add(role_id)
+            try:
+                emoji = _sanitize_emoji(option.emoji)
+            except AutoroleUserError:
+                emoji = None
+            normalized.append(
+                AutoroleRoleOption(
+                    role_id=role_id,
+                    label=_sanitize_label(option.label, f"Cargo {role_id}"),
+                    emoji=emoji,
+                    description=_sanitize_description(option.description),
+                    order_index=index,
+                )
+            )
+
+        if not (min_roles <= len(normalized) <= max_roles):
+            raise AutoroleUserError(
+                f"Depois da validação, restaram {len(normalized)} cargo(s). "
+                f"Autorole {mode} precisa de {min_roles} a {max_roles}."
+            )
+        return normalized
 
     async def handle_autorole_interaction(
         self,
@@ -1197,27 +1597,40 @@ class AutoroleCog(commands.Cog):
         message_id: int,
         selected_role_ids: Sequence[int],
     ) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer(ephemeral=True, thinking=True)
+        except discord.HTTPException:
+            LOGGER.info("Falha ao deferir interação de autorole", exc_info=True)
+            return
+
         try:
             message = await self.apply_role_changes(interaction, message_id, selected_role_ids)
         except AutoroleUserError as exc:
-            await interaction.followup.send(str(exc), ephemeral=True)
+            await self._send_error(interaction, str(exc))
             return
         except discord.Forbidden:
-            await interaction.followup.send(
+            await self._send_error(
+                interaction,
                 "Não consegui alterar seus cargos por falta de permissão ou hierarquia.",
-                ephemeral=True,
             )
             return
         except discord.HTTPException:
             LOGGER.warning("Falha HTTP ao alternar autorole", exc_info=True)
-            await interaction.followup.send(
+            await self._send_error(
+                interaction,
                 "O Discord recusou a alteração de cargo. Tente novamente em alguns segundos.",
-                ephemeral=True,
+            )
+            return
+        except Exception:
+            LOGGER.exception("Erro inesperado ao processar autorole")
+            await self._send_error(
+                interaction,
+                "Ocorreu um erro interno ao processar esse autorole. A configuração foi preservada para revisão.",
             )
             return
 
-        await interaction.followup.send(message, ephemeral=True)
+        await self._send_error(interaction, message)
 
     async def apply_role_changes(
         self,
@@ -1232,7 +1645,10 @@ class AutoroleCog(commands.Cog):
         if member is None:
             member = interaction.guild.get_member(interaction.user.id)
         if member is None:
-            member = await interaction.guild.fetch_member(interaction.user.id)
+            try:
+                member = await interaction.guild.fetch_member(interaction.user.id)
+            except discord.HTTPException as exc:
+                raise AutoroleUserError("Não consegui buscar seu membro no servidor agora.") from exc
 
         record = await self.db.get_record(message_id)
         if record is None or not record.roles:
@@ -1243,7 +1659,13 @@ class AutoroleCog(commands.Cog):
             raise AutoroleUserError("Essa configuração pertence a outro servidor.")
 
         configured_ids = {option.role_id for option in record.roles}
-        selected_ids = [role_id for role_id in selected_role_ids if role_id in configured_ids]
+        selected_ids: list[int] = []
+        seen_selected: set[int] = set()
+        for raw_role_id in selected_role_ids:
+            role_id = _safe_int(raw_role_id)
+            if role_id in configured_ids and role_id not in seen_selected:
+                selected_ids.append(role_id)
+                seen_selected.add(role_id)
         if not selected_ids:
             raise AutoroleUserError("Esse cargo não faz mais parte desta configuração.")
 
@@ -1267,21 +1689,35 @@ class AutoroleCog(commands.Cog):
             await self.refresh_autorole_message(record.config.message_id)
 
         manageable_selected: list[discord.Role] = []
+        skipped: list[str] = []
         for role_id in selected_ids:
             role = guild_roles.get(role_id)
             if role is None:
+                skipped.append(f"`{role_id}` não existe mais")
                 continue
-            self.validate_role_for_runtime(me, role)
-            manageable_selected.append(role)
+            try:
+                self.validate_role_for_runtime(me, role)
+            except AutoroleUserError as exc:
+                skipped.append(str(exc))
+            else:
+                manageable_selected.append(role)
 
         if not manageable_selected:
+            detail = "\n".join(f"- {item}" for item in skipped[:5])
+            if detail:
+                raise AutoroleUserError(f"Nenhum cargo selecionado pôde ser alterado:\n{detail}")
             raise AutoroleUserError(
                 "Esse cargo não existe mais ou minha hierarquia está abaixo dele. Peça para um admin revisar a mensagem."
             )
 
         if record.config.selection_mode == "single":
-            return await self.apply_single_mode(member, me, record, guild_roles, manageable_selected[0])
-        return await self.apply_multiple_mode(member, record, manageable_selected)
+            result = await self.apply_single_mode(member, me, record, guild_roles, manageable_selected[0])
+        else:
+            result = await self.apply_multiple_mode(member, record, manageable_selected)
+
+        if skipped:
+            result = f"{result}\nIgnorados: " + "; ".join(skipped[:5])
+        return result
 
     def validate_role_for_runtime(self, me: discord.Member, role: discord.Role) -> None:
         if role == role.guild.default_role:
@@ -1315,23 +1751,25 @@ class AutoroleCog(commands.Cog):
             for role_id, role in guild_roles.items()
             if role_id != target_role.id and role_id in current_role_ids
         ]
+        reason = f"Autorole single na mensagem {record.config.message_id}"
+        if had_target:
+            if not record.config.remove_on_click:
+                return f"Você já possui {target_role.mention}."
+            await member.remove_roles(target_role, reason=reason)
+            return f"Cargo {target_role.mention} removido com sucesso."
+
         for role in other_roles:
             self.validate_role_for_runtime(me, role)
-
-        reason = f"Autorole single na mensagem {record.config.message_id}"
-        if had_target and record.config.remove_on_click:
-            roles_to_remove = other_roles + [target_role]
-            if roles_to_remove:
-                await member.remove_roles(*roles_to_remove, reason=reason)
-            return f"Cargo {target_role.mention} removido com sucesso."
 
         if other_roles:
             await member.remove_roles(*other_roles, reason=reason)
 
-        if had_target:
-            return f"Você já possui {target_role.mention}. Outros cargos desta mensagem foram removidos."
-
         await member.add_roles(target_role, reason=reason)
+        if other_roles:
+            return (
+                f"Cargo {target_role.mention} adicionado com sucesso.\n"
+                "Removidos por seleção única: " + ", ".join(role.mention for role in other_roles)
+            )
         return f"Cargo {target_role.mention} adicionado com sucesso."
 
     async def apply_multiple_mode(
@@ -1377,6 +1815,17 @@ class AutoroleCog(commands.Cog):
         channel = guild.get_channel(record.config.channel_id) if guild else None
         if channel is None:
             channel = self.bot.get_channel(record.config.channel_id)
+        if channel is None:
+            try:
+                fetched = await self.bot.fetch_channel(record.config.channel_id)
+                channel = fetched if isinstance(fetched, discord.TextChannel) else None
+            except discord.NotFound:
+                await self.db.delete_autorole(message_id)
+                self._registered_views.discard(message_id)
+                return
+            except (discord.Forbidden, discord.HTTPException):
+                LOGGER.info("Não foi possível consultar canal do autorole %s", message_id, exc_info=True)
+                return
         if not isinstance(channel, discord.TextChannel):
             return
 
@@ -1386,7 +1835,10 @@ class AutoroleCog(commands.Cog):
                 embed=self.build_autorole_embed(record.config, record.roles),
                 view=self.build_persistent_view(record.config, record.roles),
             )
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        except discord.NotFound:
+            await self.db.delete_autorole(message_id)
+            self._registered_views.discard(message_id)
+        except (discord.Forbidden, discord.HTTPException):
             LOGGER.info("Não foi possível atualizar autorole %s", message_id, exc_info=True)
 
     async def _interaction_channel_or_default(
@@ -1401,10 +1853,13 @@ class AutoroleCog(commands.Cog):
         raise AutoroleUserError("Informe um canal de texto para publicar o autorole.")
 
     async def _send_error(self, interaction: discord.Interaction, message: str) -> None:
-        if interaction.response.is_done():
-            await interaction.followup.send(message, ephemeral=True)
-        else:
-            await interaction.response.send_message(message, ephemeral=True)
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except discord.HTTPException:
+            LOGGER.info("Não foi possível responder uma interação de autorole", exc_info=True)
 
     @app_commands.command(
         name="autorole_unico",
@@ -1477,6 +1932,13 @@ class AutoroleCog(commands.Cog):
             LOGGER.warning("Falha ao criar autorole único", exc_info=True)
             await interaction.followup.send(
                 "Não consegui criar a mensagem. Verifique permissões, emoji e tente novamente.",
+                ephemeral=True,
+            )
+            return
+        except Exception:
+            LOGGER.exception("Erro inesperado ao criar autorole único")
+            await interaction.followup.send(
+                "Ocorreu um erro interno ao criar o autorole. Nada foi salvo.",
                 ephemeral=True,
             )
             return
@@ -1600,28 +2062,49 @@ class AutoroleCog(commands.Cog):
         except AutoroleUserError as exc:
             await self._send_error(interaction, str(exc))
             return
+        except discord.HTTPException:
+            LOGGER.warning("Falha ao iniciar wizard de autorole", exc_info=True)
+            await self._send_error(
+                interaction,
+                "Não consegui validar o canal ou suas permissões agora. Tente novamente em alguns segundos.",
+            )
+            return
+        except Exception:
+            LOGGER.exception("Erro inesperado ao iniciar wizard de autorole")
+            await self._send_error(
+                interaction,
+                "Ocorreu um erro interno ao iniciar o painel de autorole.",
+            )
+            return
 
         state = AutoroleSetupState(
             admin_id=interaction.user.id,
             guild_id=interaction.guild_id or 0,
             channel_id=target_channel.id,
             mode=mode,
-            title=title,
-            description=description,
+            title=_clip_text(title, EMBED_TITLE_LIMIT),
+            description=_clip_text(description, EMBED_DESCRIPTION_LIMIT),
             color=color,
             selection_mode=selection_mode,  # type: ignore[arg-type]
             remove_on_click=remove_on_click,
             min_roles=min_roles,
             max_roles=max_roles,
-            placeholder=placeholder,
+            placeholder=_sanitize_placeholder(placeholder),
         )
         view = AutoroleSetupView(self, state)
-        await interaction.response.send_message(
-            embed=view.build_panel_embed(),
-            view=view,
-            ephemeral=True,
-        )
-        view.message = await interaction.original_response()
+        try:
+            await interaction.response.send_message(
+                embed=view.build_panel_embed(),
+                view=view,
+                ephemeral=True,
+            )
+            view.message = await interaction.original_response()
+        except discord.HTTPException:
+            LOGGER.warning("Falha ao enviar wizard de autorole", exc_info=True)
+            await self._send_error(
+                interaction,
+                "Não consegui abrir o painel de configuração. Revise os dados e tente novamente.",
+            )
 
     @app_commands.command(
         name="autorole_remover",
@@ -1660,6 +2143,12 @@ class AutoroleCog(commands.Cog):
         deleted_message = False
         if apagar_mensagem:
             channel = interaction.guild.get_channel(record.config.channel_id) if interaction.guild else None
+            if channel is None:
+                try:
+                    fetched = await self.bot.fetch_channel(record.config.channel_id)
+                    channel = fetched if isinstance(fetched, discord.TextChannel) else None
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    channel = None
             if isinstance(channel, discord.TextChannel):
                 try:
                     message = await channel.fetch_message(message_id)
@@ -1736,6 +2225,12 @@ class AutoroleCog(commands.Cog):
     async def try_disable_autorole_message(self, config: AutoroleConfig) -> None:
         guild = self.bot.get_guild(config.guild_id)
         channel = guild.get_channel(config.channel_id) if guild else self.bot.get_channel(config.channel_id)
+        if channel is None:
+            try:
+                fetched = await self.bot.fetch_channel(config.channel_id)
+                channel = fetched if isinstance(fetched, discord.TextChannel) else None
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                return
         if not isinstance(channel, discord.TextChannel):
             return
         try:
