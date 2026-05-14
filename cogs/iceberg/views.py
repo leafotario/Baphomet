@@ -7,6 +7,7 @@ import discord
 
 from .models import IcebergProject, ItemConfig, ItemSourceType
 from .sources.providers import IcebergUserError
+from .themes import default_layer_name
 
 if TYPE_CHECKING:
     from .commands import IcebergCog
@@ -30,7 +31,6 @@ class IcebergEditorView(discord.ui.View):
 
     def _apply_custom_ids(self) -> None:
         self.general_button.custom_id = iceberg_component_id(self.project_id, "general")
-        self.layers_button.custom_id = iceberg_component_id(self.project_id, "layers")
         self.add_item_button.custom_id = iceberg_component_id(self.project_id, "add")
         self.manage_items_button.custom_id = iceberg_component_id(self.project_id, "items")
         self.render_button.custom_id = iceberg_component_id(self.project_id, "render")
@@ -53,24 +53,6 @@ class IcebergEditorView(discord.ui.View):
                 project_id=project.id,
                 owner_id=project.owner_id,
                 current_name=project.name,
-                panel_message=interaction.message,
-            )
-        )
-
-    @discord.ui.button(label="Configurar Camadas", emoji="📝", style=discord.ButtonStyle.secondary, row=0, custom_id="iceberg:layers")
-    async def layers_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        from .modals import IcebergLayersModal
-
-        project = await self.cog.service.get_project_for_user(self.project_id, owner_id=self.owner_id)
-        layer_lines = "\n".join(layer.name for layer in project.ordered_layers())
-        weights = ", ".join(f"{layer.height_weight:g}" for layer in project.ordered_layers())
-        await interaction.response.send_modal(
-            IcebergLayersModal(
-                self.cog,
-                project_id=project.id,
-                owner_id=project.owner_id,
-                layer_lines=layer_lines,
-                weight_line=weights,
                 panel_message=interaction.message,
             )
         )
@@ -260,7 +242,10 @@ class IcebergManageItemsView(discord.ui.View):
     def options(self) -> list[discord.SelectOption]:
         if not self.project.items:
             return [discord.SelectOption(label="Nenhum item", value=NO_ITEM_VALUE)]
-        layer_names = {layer.id: layer.name for layer in self.project.layers}
+        layer_names = {
+            layer.id: default_layer_name(index)
+            for index, layer in enumerate(self.project.ordered_layers())
+        }
         options: list[discord.SelectOption] = []
         ordered = sorted(self.project.items, key=lambda item: (self.project.layer_by_id(item.layer_id).order if self.project.layer_by_id(item.layer_id) else 999, item.sort_order))
 
@@ -278,6 +263,12 @@ class IcebergManageItemsView(discord.ui.View):
             )
         return options
 
+    def _layer_display_name(self, layer_id: str) -> str:
+        for index, layer in enumerate(self.project.ordered_layers()):
+            if layer.id == layer_id:
+                return default_layer_name(index)
+        return layer_id
+
     def build_embed(self) -> discord.Embed:
         selected = self._selected_item()
         total_pages = max(1, (len(self.project.items) + 24) // 25)
@@ -287,8 +278,11 @@ class IcebergManageItemsView(discord.ui.View):
             color=discord.Color.blurple(),
         )
         if selected:
-            layer = self.project.layer_by_id(selected.layer_id)
-            embed.add_field(name="Selecionado", value=f"**{discord.utils.escape_markdown(selected.title)}**\nCamada: {layer.name if layer else selected.layer_id}", inline=False)
+            embed.add_field(
+                name="Selecionado",
+                value=f"**{discord.utils.escape_markdown(selected.title)}**\nCamada: {self._layer_display_name(selected.layer_id)}",
+                inline=False,
+            )
         else:
             embed.add_field(name="Selecionado", value="Escolha um item no menu.", inline=False)
         return embed
@@ -348,7 +342,6 @@ class IcebergManageItemsView(discord.ui.View):
         if selected is None:
             await interaction.response.send_message("⚠️ Escolha um item primeiro.", ephemeral=True)
             return
-        layer = self.project.layer_by_id(selected.layer_id)
         await interaction.response.send_modal(
             IcebergEditItemModal(
                 self.cog,
@@ -356,7 +349,7 @@ class IcebergManageItemsView(discord.ui.View):
                 owner_id=self.owner_id,
                 item_id=selected.id,
                 current_title=selected.title,
-                current_layer=layer.name if layer else selected.layer_id,
+                current_layer=self._layer_display_name(selected.layer_id),
                 current_placement=selected.placement,
                 panel_message=self.panel_message,
             )

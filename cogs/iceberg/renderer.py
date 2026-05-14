@@ -16,8 +16,10 @@ from .constants import (
     ICEBERG_MIN_LAYERS,
     ICEBERG_TEMPLATE_FILENAME,
     ICEBERG_TEMPLATE_TIER_COUNT,
+    ICEBERG_TITLE_MAX_LENGTH,
 )
 from .models import IcebergProject, ItemConfig, ItemDisplayStyle, ItemSourceType, LayerConfig, LayerLayoutMode, ThemeConfig
+from .themes import default_layer_name
 
 
 LOGGER = logging.getLogger("baphomet.iceberg.renderer")
@@ -25,6 +27,12 @@ MASK_SCALE = 3
 MAX_TEXT_LINES = 3
 PREVIEW_MAX_WIDTH = 900
 TEMPLATE_ITEM_SAFE_RIGHT_RATIO = 1288 / 1580
+TITLE_BAR_BACKGROUND = (255, 255, 255, 255)
+TITLE_BAR_TEXT_COLOR = (14, 18, 24, 255)
+TITLE_HORIZONTAL_PADDING_RATIO = 0.045
+TITLE_VERTICAL_PADDING_RATIO = 0.018
+TITLE_FONT_SIZE_RATIO = 0.045
+TITLE_MIN_FONT_SIZE_RATIO = 0.022
 Image.MAX_IMAGE_PIXELS = 25_000_000
 
 
@@ -81,17 +89,18 @@ class IcebergRenderer:
         template = self._load_template()
         bounds = self._template_bounds(template.height)
         crop_height = bounds[layer_count]
-        image = template.crop((0, 0, template.width, crop_height)).convert("RGBA")
-        theme = self._theme_for_canvas(project.theme, image.size)
+        iceberg_image = template.crop((0, 0, template.width, crop_height)).convert("RGBA")
+        theme = self._theme_for_canvas(project.theme, iceberg_image.size)
         render_project = replace(project, theme=theme)
-        item_safe_box = self._item_safe_box(image.width)
-
-        self._draw_project_title(image, render_project, theme, item_safe_box)
+        item_safe_box = self._item_safe_box(iceberg_image.width)
 
         layer_boxes = self._build_layer_boxes(render_project, bounds=bounds, item_safe_box=item_safe_box)
         for layer_box in layer_boxes:
             items = render_project.ordered_items_for_layer(layer_box.layer.id)
-            self._draw_items_for_layer(image, render_project, layer_box, items, asset_bytes_by_item_id)
+            self._draw_items_for_layer(iceberg_image, render_project, layer_box, items, asset_bytes_by_item_id)
+        self._draw_layer_labels(iceberg_image, layer_boxes, theme)
+
+        image = self._compose_with_title_bar(iceberg_image, render_project, theme)
         if preview:
             image = self._resize_preview(image)
 
@@ -171,32 +180,148 @@ class IcebergRenderer:
         safe_right = max(1, min(canvas_width, safe_right))
         return 0, safe_right
 
-    def _draw_project_title(
+    def _compose_with_title_bar(
         self,
-        image: Image.Image,
+        iceberg_image: Image.Image,
         project: IcebergProject,
         theme: ThemeConfig,
-        item_safe_box: tuple[int, int],
-    ) -> None:
-        title = re.sub(r"\s+", " ", project.name.strip()) or "Iceberg"
-        draw = ImageDraw.Draw(image, "RGBA")
-        left, right = item_safe_box
-        title_left = max(left + theme.padding_x, 0)
-        title_right = max(title_left + 1, min(right - theme.padding_x, image.width))
-        title_top = min(theme.title_top, max(0, image.height - theme.title_height))
-        title_bottom = min(image.height, title_top + theme.title_height)
-        max_width = max(1, title_right - title_left)
-        min_size = max(8, min(30, theme.title_font_size))
-        title_font = self._fit_font(
+    ) -> Image.Image:
+        title_bar = self._build_title_bar(project, theme, iceberg_image.width)
+        final_image = Image.new(
+            "RGBA",
+            (iceberg_image.width, title_bar.height + iceberg_image.height),
+            TITLE_BAR_BACKGROUND,
+        )
+        final_image.alpha_composite(title_bar, (0, 0))
+        final_image.alpha_composite(iceberg_image, (0, title_bar.height))
+        return final_image
+
+    def _build_title_bar(self, project: IcebergProject, theme: ThemeConfig, width: int) -> Image.Image:
+        measure = Image.new("RGBA", (width, 1), TITLE_BAR_BACKGROUND)
+        draw = ImageDraw.Draw(measure, "RGBA")
+        title = self._title_text(project.name)
+        horizontal_padding = min(
+            max(12, int(width * TITLE_HORIZONTAL_PADDING_RATIO)),
+            max(12, width // 4),
+        )
+        vertical_padding = max(18, int(width * TITLE_VERTICAL_PADDING_RATIO))
+        max_width = max(1, width - horizontal_padding * 2)
+        start_size = max(24, int(width * TITLE_FONT_SIZE_RATIO))
+        min_size = max(12, int(width * TITLE_MIN_FONT_SIZE_RATIO))
+        font = self._fit_font(
             draw,
             title,
             theme,
-            start_size=max(theme.title_font_size, min_size),
+            start_size=max(start_size, min_size),
             max_width=max_width,
             min_size=min_size,
             bold=True,
         )
-        self._draw_centered_text(draw, (title_left, title_top, title_right, title_bottom), title, title_font, theme.title_color)
+        if draw.textbbox((0, 0), title, font=font)[2] <= max_width:
+            lines = [title]
+        else:
+            font = self._font(theme, min_size, bold=True)
+            lines = self._wrap_lines(draw, title, font, max_width, max_lines=2)
+        spacing = max(4, int(getattr(font, "size", min_size) * 0.18))
+        text = "\n".join(lines)
+        left, top, right, bottom = draw.multiline_textbbox((0, 0), text, font=font, spacing=spacing, align="center")
+        text_height = max(1, bottom - top)
+        min_height = max(48, int(width * 0.08))
+        bar_height = max(min_height, text_height + vertical_padding * 2)
+        title_bar = Image.new("RGBA", (width, bar_height), TITLE_BAR_BACKGROUND)
+        title_draw = ImageDraw.Draw(title_bar, "RGBA")
+        self._draw_multiline_centered(
+            title_draw,
+            (horizontal_padding, vertical_padding, width - horizontal_padding, bar_height - vertical_padding),
+            lines,
+            font,
+            TITLE_BAR_TEXT_COLOR,
+            spacing=spacing,
+        )
+        return title_bar
+
+    def _title_text(self, value: str) -> str:
+        title = re.sub(r"\s+", " ", (value or "").strip()) or "Iceberg"
+        if len(title) <= ICEBERG_TITLE_MAX_LENGTH:
+            return title
+        return title[: ICEBERG_TITLE_MAX_LENGTH - 3].rstrip() + "..."
+
+    def _draw_layer_labels(self, image: Image.Image, layer_boxes: list[LayerRenderBox], theme: ThemeConfig) -> None:
+        draw = ImageDraw.Draw(image, "RGBA")
+        label_left = self._item_safe_box(image.width)[1]
+        label_width = max(1, image.width - label_left)
+        padding_x = max(6, int(label_width * 0.08))
+        for index, layer_box in enumerate(layer_boxes):
+            top_y = max(0, layer_box.top_y)
+            bottom_y = min(image.height, layer_box.bottom_y)
+            if bottom_y <= top_y:
+                continue
+            padding_y = max(4, min(24, int((bottom_y - top_y) * 0.12)))
+            box = (
+                label_left + padding_x,
+                top_y + padding_y,
+                image.width - padding_x,
+                bottom_y - padding_y,
+            )
+            if box[2] <= box[0] or box[3] <= box[1]:
+                continue
+            label = default_layer_name(index)
+            max_width = max(1, box[2] - box[0])
+            max_height = max(1, box[3] - box[1])
+            start_size = max(10, min(theme.layer_label_font_size, int(max_height * 0.45), int(label_width * 0.22)))
+            min_size = max(8, min(16, start_size))
+            font, lines, spacing = self._fit_multiline_text(
+                draw,
+                label,
+                theme,
+                start_size=start_size,
+                max_width=max_width,
+                max_height=max_height,
+                min_size=min_size,
+                max_lines=2,
+            )
+            fill, stroke = self._label_text_colors(image.crop((label_left, top_y, image.width, bottom_y)))
+            self._draw_multiline_centered(
+                draw,
+                box,
+                lines,
+                font,
+                fill,
+                spacing=spacing,
+                stroke_width=2,
+                stroke_fill=stroke,
+            )
+
+    def _label_text_colors(self, region: Image.Image) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]]:
+        sample = region.resize((1, 1), Image.Resampling.BOX).convert("RGBA").getpixel((0, 0))
+        r, g, b, _ = sample
+        luminance = (0.299 * r) + (0.587 * g) + (0.114 * b)
+        if luminance < 150:
+            return (255, 255, 255, 255), (0, 0, 0, 175)
+        return (14, 18, 24, 255), (255, 255, 255, 190)
+
+    def _fit_multiline_text(
+        self,
+        draw: ImageDraw.ImageDraw,
+        text: str,
+        theme: ThemeConfig,
+        *,
+        start_size: int,
+        max_width: int,
+        max_height: int,
+        min_size: int,
+        max_lines: int,
+    ) -> tuple[ImageFont.ImageFont, list[str], int]:
+        for size in range(start_size, min_size - 1, -2):
+            font = self._font(theme, size, bold=True)
+            lines = self._wrap_lines(draw, text, font, max_width, max_lines=max_lines)
+            spacing = max(2, int(getattr(font, "size", size) * 0.12))
+            left, top, right, bottom = draw.multiline_textbbox((0, 0), "\n".join(lines), font=font, spacing=spacing, align="center")
+            if right - left <= max_width and bottom - top <= max_height:
+                return font, lines, spacing
+        font = self._font(theme, min_size, bold=True)
+        spacing = max(2, int(getattr(font, "size", min_size) * 0.12))
+        return font, [self._clip_text(draw, text, font, max_width)], spacing
 
     def _resize_preview(self, image: Image.Image) -> Image.Image:
         if image.width <= PREVIEW_MAX_WIDTH:
@@ -669,6 +794,31 @@ class IcebergRenderer:
             kwargs["stroke_width"] = stroke_width
             kwargs["stroke_fill"] = stroke_fill
         draw.text((x, y), text, **kwargs)
+
+    def _draw_multiline_centered(
+        self,
+        draw: ImageDraw.ImageDraw,
+        box: tuple[int, int, int, int],
+        lines: list[str],
+        font: ImageFont.ImageFont,
+        fill: tuple[int, int, int, int],
+        *,
+        spacing: int,
+        stroke_width: int = 0,
+        stroke_fill: tuple[int, int, int, int] | None = None,
+    ) -> None:
+        text = "\n".join(lines)
+        left, top, right, bottom = draw.multiline_textbbox((0, 0), text, font=font, spacing=spacing, align="center")
+        text_w = right - left
+        text_h = bottom - top
+        x1, y1, x2, y2 = box
+        x = int(x1 + (x2 - x1 - text_w) / 2 - left)
+        y = int(y1 + (y2 - y1 - text_h) / 2 - top)
+        kwargs = {"font": font, "fill": fill, "spacing": spacing, "align": "center"}
+        if stroke_width > 0 and stroke_fill:
+            kwargs["stroke_width"] = stroke_width
+            kwargs["stroke_fill"] = stroke_fill
+        draw.multiline_text((x, y), text, **kwargs)
 
     def _centered_text_pos(
         self,

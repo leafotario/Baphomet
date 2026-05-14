@@ -13,7 +13,18 @@ DEFAULT_LAYER_NAMES = (
     "Submerso",
     "Profundo",
     "Abismo",
+    "Camada 6",
+    "Camada 7",
+    "Camada 8",
+    "Camada 9",
+    "Camada 10",
 )
+
+
+def default_layer_name(index: int) -> str:
+    if 0 <= index < len(DEFAULT_LAYER_NAMES):
+        return DEFAULT_LAYER_NAMES[index]
+    return f"Camada {index + 1}"
 
 
 def classic_iceberg_theme() -> ThemeConfig:
@@ -132,11 +143,10 @@ def default_layers(count: int = ICEBERG_DEFAULT_LAYERS) -> list[LayerConfig]:
     safe_count = max(ICEBERG_MIN_LAYERS, min(ICEBERG_MAX_LAYERS, int(count or ICEBERG_DEFAULT_LAYERS)))
     layers: list[LayerConfig] = []
     for index in range(safe_count):
-        name = DEFAULT_LAYER_NAMES[index] if index < len(DEFAULT_LAYER_NAMES) else f"Camada {index + 1}"
         layers.append(
             LayerConfig(
                 id=f"layer-{index + 1}",
-                name=name,
+                name=default_layer_name(index),
                 order=index,
                 height_weight=1.0,
             )

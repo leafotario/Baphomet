@@ -9,7 +9,7 @@ import discord
 from cogs.tierlist_templates.asset_repository import TierAssetRepository
 from cogs.tierlist_templates.assets import TierTemplateAssetStore
 
-from .constants import ICEBERG_DEFAULT_LAYERS, ICEBERG_MAX_LAYERS, ICEBERG_MIN_LAYERS
+from .constants import ICEBERG_DEFAULT_LAYERS, ICEBERG_MAX_LAYERS, ICEBERG_MIN_LAYERS, ICEBERG_TITLE_MAX_LENGTH
 from .models import (
     IcebergProject,
     ItemConfig,
@@ -27,7 +27,7 @@ from .models import (
 from .renderer import IcebergRenderer, IcebergTemplateError
 from .repository import IcebergRepository
 from .sources.providers import IcebergSourceProviderRegistry, IcebergUserError
-from .themes import DEFAULT_THEME_ID, default_layers, get_theme
+from .themes import DEFAULT_THEME_ID, default_layer_name, default_layers, get_theme
 
 
 LOGGER = logging.getLogger("baphomet.iceberg.service")
@@ -61,7 +61,7 @@ class IcebergService:
     ) -> IcebergProject:
         layer_count = self._validate_layer_count(layer_count, code_prefix="layers")
         theme = get_theme(theme_id)
-        clean_name = normalize_text(name, max_length=MAX_PROJECT_NAME_LENGTH, fallback="Iceberg") or "Iceberg"
+        clean_name = self._clean_project_title(name, fallback="Iceberg")
         now = utc_now_iso()
         project = IcebergProject(
             id=new_uuid(),
@@ -96,7 +96,7 @@ class IcebergService:
     ) -> IcebergProject:
         project = await self.get_project_for_user(project_id, owner_id=owner_id)
         if name is not None:
-            project.name = normalize_text(name, max_length=MAX_PROJECT_NAME_LENGTH, fallback=project.name) or project.name
+            project.name = self._clean_project_title(name, fallback=project.name)
         project.touch()
         return await self.repository.save_project(project)
 
@@ -322,6 +322,12 @@ class IcebergService:
         by_name = next((layer for layer in project.layers if layer.name.casefold() == clean.casefold()), None)
         if by_name is not None:
             return by_name
+        by_default_name = next(
+            (layer for index, layer in enumerate(project.ordered_layers()) if default_layer_name(index).casefold() == clean.casefold()),
+            None,
+        )
+        if by_default_name is not None:
+            return by_default_name
         raise IcebergUserError("⚠️ Não encontrei essa camada. Use o número ou o nome dela.", code="layer_not_found")
 
     def require_item(self, project: IcebergProject, item_id: str) -> ItemConfig:
@@ -341,6 +347,15 @@ class IcebergService:
 
     def _validate_project_layers(self, project: IcebergProject, *, code_prefix: str) -> int:
         return self._validate_layer_count(len(project.layers), code_prefix=code_prefix)
+
+    def _clean_project_title(self, value: str, *, fallback: str) -> str:
+        clean = normalize_text(value, max_length=MAX_PROJECT_NAME_LENGTH, fallback=fallback) or fallback
+        if len(clean) > ICEBERG_TITLE_MAX_LENGTH:
+            raise IcebergUserError(
+                f"⚠️ O título do iceberg pode ter no máximo {ICEBERG_TITLE_MAX_LENGTH} caracteres.",
+                code="title_too_long",
+            )
+        return clean
 
     def _validate_layer_count(self, layer_count: int, *, code_prefix: str) -> int:
         try:

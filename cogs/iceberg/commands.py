@@ -13,13 +13,13 @@ from cogs.tierlist_templates.database import DatabaseManager as TierAssetDatabas
 from cogs.tierlist_templates.downloads import SafeImageDownloader
 from cogs.tierlist_wikipedia.wikipedia import WikipediaImageService
 
-from .constants import ICEBERG_DEFAULT_LAYERS, ICEBERG_MAX_LAYERS, ICEBERG_MIN_LAYERS
+from .constants import ICEBERG_DEFAULT_LAYERS, ICEBERG_MAX_LAYERS, ICEBERG_MIN_LAYERS, ICEBERG_TITLE_MAX_LENGTH
 from .models import IcebergProject, ItemSourceType
 from .repository import IcebergDatabaseManager, IcebergRepository
 from .renderer import IcebergRenderer
 from .service import IcebergService
 from .sources.providers import IcebergSourceProviderRegistry, IcebergUserError
-from .themes import DEFAULT_THEME_ID
+from .themes import DEFAULT_THEME_ID, default_layer_name
 
 
 LOGGER = logging.getLogger("baphomet.iceberg.commands")
@@ -65,7 +65,7 @@ class IcebergCog(commands.Cog):
     async def criar(
         self,
         interaction: discord.Interaction,
-        nome: app_commands.Range[str, 1, 90],
+        nome: app_commands.Range[str, 1, ICEBERG_TITLE_MAX_LENGTH],
         camadas: app_commands.Range[int, ICEBERG_MIN_LAYERS, ICEBERG_MAX_LAYERS] = ICEBERG_DEFAULT_LAYERS,
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -238,17 +238,17 @@ class IcebergCog(commands.Cog):
                 f"**Projeto:** `{project.id}`\n"
                 f"**Camadas:** {len(project.layers)}\n"
                 f"**Itens:** {len(project.items)}\n\n"
-                "Use os botões abaixo para editar título, configurar camadas, adicionar itens e finalizar."
+                "Use os botões abaixo para editar título, adicionar itens e finalizar."
             ),
             color=discord.Color.from_rgb(56, 149, 196),
         )
-        for layer in project.ordered_layers():
+        for index, layer in enumerate(project.ordered_layers()):
             items = project.ordered_items_for_layer(layer.id)
             item_summary = ", ".join(item.title for item in items[:6])
             if len(items) > 6:
                 item_summary += f" +{len(items) - 6}"
             embed.add_field(
-                name=f"{layer.order + 1}. {layer.name} ({layer.height_weight:g}x)",
+                name=f"{index + 1}. {default_layer_name(index)}",
                 value=discord.utils.escape_markdown(item_summary) if item_summary else "Sem itens",
                 inline=False,
             )

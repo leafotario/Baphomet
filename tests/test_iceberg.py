@@ -24,12 +24,12 @@ from cogs.iceberg.models import (
     LayerConfig,
     PlacementConfig,
 )
-from cogs.iceberg.renderer import IcebergRenderer, IcebergTemplateError
+from cogs.iceberg.renderer import IcebergRenderer, IcebergTemplateError, TEMPLATE_ITEM_SAFE_RIGHT_RATIO
 from cogs.iceberg.repository import IcebergDatabaseManager, IcebergRepository
 from cogs.iceberg.service import IcebergService
 from cogs.iceberg.sources.providers import AttachmentImageProvider, IcebergUserError, TextItemProvider
-from cogs.iceberg.themes import get_theme
-from cogs.iceberg.constants import ICEBERG_MAX_LAYERS, ICEBERG_TEMPLATE_TIER_COUNT
+from cogs.iceberg.themes import default_layer_name, get_theme
+from cogs.iceberg.constants import ICEBERG_MAX_LAYERS, ICEBERG_TEMPLATE_TIER_COUNT, ICEBERG_TITLE_MAX_LENGTH
 
 
 AIOSQLITE_AVAILABLE = importlib.util.find_spec("aiosqlite") is not None
@@ -82,27 +82,40 @@ def write_test_template(path: Path, *, width: int = 100, height: int = 101) -> N
     image.save(path, format="PNG")
 
 
+def template_start_y(image: Image.Image) -> int:
+    for y in range(image.height):
+        if image.getpixel((1, y)) == TEMPLATE_TIER_COLORS[0]:
+            return y
+    raise AssertionError("template não encontrada na renderização")
+
+
+def label_area_changed(image: Image.Image, *, template_top: int, template_height: int, layer_index: int) -> bool:
+    bounds = template_bounds(template_height)
+    label_left = int(round(image.width * TEMPLATE_ITEM_SAFE_RIGHT_RATIO))
+    region = image.crop(
+        (
+            label_left,
+            template_top + bounds[layer_index],
+            image.width,
+            template_top + bounds[layer_index + 1],
+        )
+    )
+    base_color = TEMPLATE_TIER_COLORS[layer_index]
+    for y in range(region.height):
+        for x in range(region.width):
+            if region.getpixel((x, y)) != base_color:
+                return True
+    return False
+
+
 def make_project(layer_count: int = 7) -> IcebergProject:
     theme = get_theme()
-    layer_names = [
-        "Ponta",
-        "Raso",
-        "Submerso",
-        "Profundo",
-        "Abismo",
-        "Camada 6",
-        "Camada 7",
-        "Camada 8",
-        "Camada 9",
-        "Camada 10",
-    ]
     height_weights = [0.8, 1.2, 1.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
     layers = []
     for index in range(layer_count):
-        name = layer_names[index] if index < len(layer_names) else f"Camada {index + 1}"
         height_weight = height_weights[index] if index < len(height_weights) else 1.0
         layers.append(
-            LayerConfig(id=f"layer-{index + 1}", name=name, order=index, height_weight=height_weight)
+            LayerConfig(id=f"layer-{index + 1}", name=default_layer_name(index), order=index, height_weight=height_weight)
         )
     return IcebergProject(
         id="project-1",
@@ -166,6 +179,38 @@ class MemoryIcebergRepository:
 
 
 class IcebergManageItemsViewTests(unittest.IsolatedAsyncioTestCase):
+    async def test_editor_view_does_not_expose_layer_configuration(self) -> None:
+        import cogs.iceberg.modals as iceberg_modals
+        from cogs.iceberg.views import IcebergEditorView
+
+        view = IcebergEditorView(cog=SimpleNamespace(), project=make_project())
+        labels = {getattr(child, "label", "") for child in view.children}
+        custom_ids = {getattr(child, "custom_id", "") for child in view.children}
+        self.assertNotIn("Configurar Camadas", labels)
+        self.assertFalse(any(custom_id.endswith(":layers") for custom_id in custom_ids))
+        self.assertFalse(hasattr(iceberg_modals, "IcebergLayersModal"))
+
+    async def test_manage_items_view_uses_default_layer_names_for_old_custom_layers(self) -> None:
+        from cogs.iceberg.views import IcebergManageItemsView
+
+        project = make_project()
+        project.layers[0].name = "Nome Antigo Customizado"
+        view = IcebergManageItemsView(cog=SimpleNamespace(), project=project, panel_message=None)
+        self.assertIn("Ponta", view.options()[0].description)
+        self.assertNotIn("Nome Antigo", view.options()[0].description)
+
+    async def test_general_modal_clips_legacy_long_title_default(self) -> None:
+        from cogs.iceberg.modals import IcebergGeneralModal
+
+        modal = IcebergGeneralModal(
+            SimpleNamespace(),
+            project_id="project-1",
+            owner_id=42,
+            current_name="Titulo antigo importado com mais de quarenta caracteres",
+            panel_message=None,
+        )
+        self.assertLessEqual(len(str(modal.name_input.default)), ICEBERG_TITLE_MAX_LENGTH)
+
     async def test_pagination_options_slice(self) -> None:
         from cogs.iceberg.views import IcebergManageItemsView
         project = make_project()
@@ -217,7 +262,11 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
         project.items = []
         image = self.render_with_template(project)
         bounds = template_bounds(101)
-        self.assertEqual(image.size, (100, bounds[7]))
+        top = template_start_y(image)
+        self.assertGreater(top, 0)
+        self.assertEqual(image.getpixel((1, 0)), (255, 255, 255, 255))
+        self.assertEqual(image.getpixel((1, top)), TEMPLATE_TIER_COLORS[0])
+        self.assertEqual(image.size, (100, top + bounds[7]))
         self.assertEqual(image.getpixel((1, image.height - 1)), TEMPLATE_TIER_COLORS[6])
 
     def test_renderer_crops_template_for_8_layers(self) -> None:
@@ -225,8 +274,9 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
         project.items = []
         image = self.render_with_template(project)
         bounds = template_bounds(101)
-        present_colors = {image.getpixel((1, y)) for y in range(image.height)}
-        self.assertEqual(image.size, (100, bounds[8]))
+        top = template_start_y(image)
+        present_colors = {image.getpixel((1, y)) for y in range(top, image.height)}
+        self.assertEqual(image.size, (100, top + bounds[8]))
         self.assertIn(TEMPLATE_TIER_COLORS[7], present_colors)
         self.assertNotIn(TEMPLATE_TIER_COLORS[8], present_colors)
         self.assertNotIn(TEMPLATE_TIER_COLORS[9], present_colors)
@@ -235,7 +285,8 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
         project = make_project(layer_count=10)
         project.items = []
         image = self.render_with_template(project)
-        self.assertEqual(image.size, (100, 101))
+        top = template_start_y(image)
+        self.assertEqual(image.size, (100, top + 101))
         self.assertEqual(image.getpixel((1, image.height - 1)), TEMPLATE_TIER_COLORS[9])
 
     def test_renderer_crops_template_for_9_layers(self) -> None:
@@ -243,10 +294,51 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
         project.items = []
         image = self.render_with_template(project)
         bounds = template_bounds(101)
-        present_colors = {image.getpixel((1, y)) for y in range(image.height)}
-        self.assertEqual(image.size, (100, bounds[9]))
+        top = template_start_y(image)
+        present_colors = {image.getpixel((1, y)) for y in range(top, image.height)}
+        self.assertEqual(image.size, (100, top + bounds[9]))
         self.assertIn(TEMPLATE_TIER_COLORS[8], present_colors)
         self.assertNotIn(TEMPLATE_TIER_COLORS[9], present_colors)
+
+    def test_renderer_adds_white_title_bar_above_template(self) -> None:
+        project = make_project(layer_count=7)
+        project.items = []
+        image = self.render_with_template(project, width=500, height=1000)
+        top = template_start_y(image)
+        self.assertGreater(top, 0)
+        self.assertEqual(image.getpixel((1, 0)), (255, 255, 255, 255))
+        self.assertEqual(image.getpixel((image.width - 2, top - 1)), (255, 255, 255, 255))
+        self.assertEqual(image.getpixel((1, top)), TEMPLATE_TIER_COLORS[0])
+        self.assertEqual(image.height, top + template_bounds(1000)[7])
+
+    def test_renderer_handles_long_and_legacy_titles_inside_title_bar(self) -> None:
+        project = make_project(layer_count=7)
+        project.items = []
+        project.name = "T" * ICEBERG_TITLE_MAX_LENGTH
+        image = self.render_with_template(project, width=500, height=1000)
+        self.assertGreater(template_start_y(image), 0)
+
+        project.name = "Titulo antigo com mais de quarenta caracteres importado de JSON"
+        image = self.render_with_template(project, width=500, height=1000)
+        self.assertGreater(template_start_y(image), 0)
+
+    def test_renderer_draws_default_layer_labels_in_visible_sidebar(self) -> None:
+        project = make_project(layer_count=7)
+        project.items = []
+        image = self.render_with_template(project, width=1580, height=1200)
+        top = template_start_y(image)
+        for index in range(7):
+            self.assertTrue(label_area_changed(image, template_top=top, template_height=1200, layer_index=index), index)
+        self.assertEqual(image.height, top + template_bounds(1200)[7])
+
+    def test_renderer_draws_all_layer_labels_for_full_template(self) -> None:
+        project = make_project(layer_count=10)
+        project.items = []
+        image = self.render_with_template(project, width=1580, height=1200)
+        top = template_start_y(image)
+        for index in range(10):
+            self.assertTrue(label_area_changed(image, template_top=top, template_height=1200, layer_index=index), index)
+        self.assertEqual(image.height, top + 1200)
 
     def test_renderer_rejects_layer_counts_outside_template_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -265,10 +357,11 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             template_path = Path(tmp) / "icebergtemplate.png"
             write_test_template(template_path, width=1000, height=1001)
-            buffer = IcebergRenderer(template_path=template_path).render_project(project, preview=True)
+            renderer = IcebergRenderer(template_path=template_path)
+            full = Image.open(renderer.render_project(project)).convert("RGBA")
+            buffer = renderer.render_project(project, preview=True)
             image = Image.open(buffer).convert("RGBA")
-        cropped_height = template_bounds(1001)[8]
-        self.assertEqual(image.size, (900, round(cropped_height * 900 / 1000)))
+        self.assertEqual(image.size, (900, round(full.height * 900 / full.width)))
 
     def test_renderer_accepts_manual_rotation_opacity_and_placement(self) -> None:
         project = make_project(layer_count=7)
@@ -286,7 +379,8 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
             )
         ]
         image = self.render_with_template(project, width=1200, height=2000)
-        self.assertEqual(image.size, (1200, template_bounds(2000)[7]))
+        top = template_start_y(image)
+        self.assertEqual(image.size, (1200, top + template_bounds(2000)[7]))
 
     def test_renderer_uses_template_scaled_theme_for_items(self) -> None:
         class CapturingRenderer(IcebergRenderer):
@@ -399,7 +493,8 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
                 },
             )
         image = Image.open(buffer).convert("RGBA")
-        self.assertEqual(image.size, (1600, template_bounds(2200)[7]))
+        top = template_start_y(image)
+        self.assertEqual(image.size, (1600, top + template_bounds(2200)[7]))
 
     def test_renderer_draw_order_uses_z_index_then_sort_order(self) -> None:
         class OrderingRenderer(IcebergRenderer):
@@ -504,6 +599,18 @@ class IcebergServiceValidationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(IcebergUserError, "máximo 10"):
             await service.create_project(owner_id=42, guild_id=99, name="Muitas", layer_count=ICEBERG_MAX_LAYERS + 1)
 
+    async def test_project_title_limit_allows_40_and_rejects_41_chars(self) -> None:
+        service = self.make_service()
+        project = await service.create_project(owner_id=42, guild_id=99, name="A" * ICEBERG_TITLE_MAX_LENGTH)
+        self.assertEqual(project.name, "A" * ICEBERG_TITLE_MAX_LENGTH)
+
+        with self.assertRaisesRegex(IcebergUserError, "máximo 40 caracteres"):
+            await service.create_project(owner_id=42, guild_id=99, name="B" * (ICEBERG_TITLE_MAX_LENGTH + 1))
+
+        await service.repository.save_project(project)
+        with self.assertRaisesRegex(IcebergUserError, "máximo 40 caracteres"):
+            await service.update_general(project.id, owner_id=42, name="C" * (ICEBERG_TITLE_MAX_LENGTH + 1))
+
     async def test_update_layers_rejects_outside_range_without_sqlite(self) -> None:
         service = self.make_service()
         await service.repository.save_project(make_project())
@@ -513,6 +620,13 @@ class IcebergServiceValidationTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(IcebergUserError, "máximo 10"):
             await service.update_layers("project-1", owner_id=42, names=[f"Camada {index}" for index in range(1, ICEBERG_MAX_LAYERS + 2)])
+
+    async def test_resolve_layer_keeps_old_custom_names_and_accepts_default_fallback(self) -> None:
+        service = self.make_service()
+        project = make_project()
+        project.layers[0].name = "Nome Antigo Customizado"
+        self.assertIs(service.resolve_layer(project, "Nome Antigo Customizado"), project.layers[0])
+        self.assertIs(service.resolve_layer(project, "Ponta"), project.layers[0])
 
     async def test_import_rejects_projects_outside_layer_range_without_sqlite(self) -> None:
         service = self.make_service()

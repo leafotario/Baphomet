@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from .constants import ICEBERG_TITLE_MAX_LENGTH
 from .models import ItemSourceType, PlacementConfig
 from .sources.providers import IcebergUserError
 
@@ -25,9 +26,9 @@ class IcebergGeneralModal(discord.ui.Modal, title="Editar Título"):
         self.panel_message = panel_message
         self.name_input = discord.ui.TextInput(
             label="Título do iceberg",
-            default=current_name,
+            default=self._title_default(current_name),
             min_length=1,
-            max_length=90,
+            max_length=ICEBERG_TITLE_MAX_LENGTH,
             required=True,
         )
         self.add_item(self.name_input)
@@ -50,65 +51,11 @@ class IcebergGeneralModal(discord.ui.Modal, title="Editar Título"):
         await self.cog.refresh_panel_message(self.panel_message, project)
         await interaction.followup.send("✅ Título atualizado.", ephemeral=True)
 
-
-class IcebergLayersModal(discord.ui.Modal, title="Configurar Camadas"):
-    def __init__(self, cog: IcebergCog, *, project_id: str, owner_id: int, layer_lines: str, weight_line: str, panel_message: discord.Message | None) -> None:
-        super().__init__(timeout=300)
-        self.cog = cog
-        self.project_id = project_id
-        self.owner_id = owner_id
-        self.panel_message = panel_message
-        self.layers_input = discord.ui.TextInput(
-            label="Camadas em ordem",
-            default=layer_lines,
-            placeholder="Uma camada por linha",
-            style=discord.TextStyle.paragraph,
-            min_length=1,
-            max_length=700,
-            required=True,
-        )
-        self.weights_input = discord.ui.TextInput(
-            label="Alturas relativas",
-            default=weight_line,
-            placeholder="Ex: 1, 1, 1.4, 1.8, 2.2",
-            min_length=0,
-            max_length=120,
-            required=False,
-        )
-        self.add_item(self.layers_input)
-        self.add_item(self.weights_input)
-
-    async def on_submit(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        names = [line.strip() for line in re.split(r"[\n,]+", str(self.layers_input.value)) if line.strip()]
-        weights = self._parse_weights(str(self.weights_input.value or ""))
-        try:
-            project = await self.cog.service.update_layers(
-                self.project_id,
-                owner_id=self.owner_id,
-                names=names,
-                weights=weights,
-            )
-        except IcebergUserError as exc:
-            await interaction.followup.send(exc.user_message, ephemeral=True)
-            return
-        except Exception:
-            LOGGER.exception("iceberg_layers_update_failed project_id=%s", self.project_id)
-            await interaction.followup.send("❌ Não consegui atualizar as camadas. O erro foi registrado.", ephemeral=True)
-            return
-        await self.cog.refresh_panel_message(self.panel_message, project)
-        await interaction.followup.send("✅ Camadas atualizadas.", ephemeral=True)
-
-    def _parse_weights(self, raw: str) -> list[float]:
-        weights: list[float] = []
-        for token in re.split(r"[,;\s]+", raw.strip()):
-            if not token:
-                continue
-            try:
-                weights.append(float(token.replace(",", ".")))
-            except ValueError:
-                continue
-        return weights
+    def _title_default(self, value: str) -> str:
+        title = re.sub(r"\s+", " ", (value or "").strip()) or "Iceberg"
+        if len(title) <= ICEBERG_TITLE_MAX_LENGTH:
+            return title
+        return title[: ICEBERG_TITLE_MAX_LENGTH - 3].rstrip() + "..."
 
 
 class IcebergAddItemModal(discord.ui.Modal):
