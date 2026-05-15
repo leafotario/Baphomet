@@ -189,6 +189,7 @@ class XpPublicCommands(commands.Cog):
         view.message = await interaction.original_response()
 
 
+@app_commands.default_permissions(administrator=True)
 class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Comandos De XP, Glória E Configuração ✨"):
     def __init__(self, bot: commands.Bot) -> None:
         super().__init__()

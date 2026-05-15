@@ -1801,7 +1801,7 @@ class VinculoRequestView(discord.ui.View):
 
 class VinculosCog(commands.Cog):
     vinculo = app_commands.Group(name="vinculo", description="Pactos, fios e bônus de XP entre usuários.")
-    config = app_commands.Group(name="config", description="Configura interesses e parâmetros do altar.")
+    config = app_commands.Group(name="config", description="Configura interesses e parâmetros do altar.", default_permissions=discord.Permissions(administrator=True))
 
     def __init__(self, bot: commands.Bot, repository: VinculoRepository) -> None:
         self.bot = bot

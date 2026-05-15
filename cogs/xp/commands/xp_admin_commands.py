@@ -11,6 +11,7 @@ from ..xp_runtime import XpRuntime
 from ..utils import XpDifficulty
 
 
+@app_commands.default_permissions(administrator=True)
 class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Comandos De XP, Glória E Configuração ✨"):
     def __init__(self, bot: commands.Bot, runtime: XpRuntime) -> None:
         super().__init__()
