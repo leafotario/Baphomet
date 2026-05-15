@@ -1801,7 +1801,7 @@ class VinculoRequestView(discord.ui.View):
 
 class VinculosCog(commands.Cog):
     vinculo = app_commands.Group(name="vinculo", description="Pactos, fios e bônus de XP entre usuários.")
-    config = app_commands.Group(name="config", description="Configura interesses e parâmetros do altar.", default_permissions=discord.Permissions(administrator=True))
+    vinculo_config = app_commands.Group(name="vinculo_config", description="Configura interesses e parâmetros do altar.", default_permissions=discord.Permissions(administrator=True))
 
     def __init__(self, bot: commands.Bot, repository: VinculoRepository) -> None:
         self.bot = bot
@@ -2224,7 +2224,7 @@ class VinculosCog(commands.Cog):
         )
         await self._send_embed(interaction, embed)
 
-    @config.command(name="adicionar", description="Registra um cargo como interesse de vínculo.")
+    @vinculo_config.command(name="adicionar", description="Registra um cargo como interesse de vínculo.")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
@@ -2242,7 +2242,7 @@ class VinculosCog(commands.Cog):
             return
         await self._send_text(interaction, f"📜 Interesse registrado no grimório: {cargo.mention}.")
 
-    @config.command(name="remover", description="Remove um cargo da lista de interesses.")
+    @vinculo_config.command(name="remover", description="Remove um cargo da lista de interesses.")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
@@ -2257,7 +2257,7 @@ class VinculosCog(commands.Cog):
             return
         await self._send_text(interaction, f"🕯️ Interesse removido do grimório: {cargo.mention}.")
 
-    @config.command(name="listar", description="Lista os cargos configurados como interesses.")
+    @vinculo_config.command(name="listar", description="Lista os cargos configurados como interesses.")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
@@ -2270,7 +2270,7 @@ class VinculosCog(commands.Cog):
         embed.description = self._format_role_ids(interaction.guild, role_ids) if role_ids else "Nenhum cargo de interesse configurado ainda."
         await self._send_embed(interaction, embed)
 
-    @config.command(name="limpar", description="Remove todos os cargos configurados como interesses.")
+    @vinculo_config.command(name="limpar", description="Remove todos os cargos configurados como interesses.")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
@@ -2281,7 +2281,7 @@ class VinculosCog(commands.Cog):
         removed = await self.repository.clear_interest_roles(interaction.guild.id)
         await self._send_text(interaction, f"⚰️ O grimório foi limpo. **{removed}** interesse(s) foram apagados deste servidor.")
 
-    @config.command(name="canal-fofoca", description="Define o canal público dos anúncios de vínculos.")
+    @vinculo_config.command(name="canal-fofoca", description="Define o canal público dos anúncios de vínculos.")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
@@ -2296,7 +2296,7 @@ class VinculosCog(commands.Cog):
             return
         await self._send_text(interaction, f"📣 O altar agora sussurra em <#{settings.gossip_channel_id}>.")
 
-    @config.command(name="afinidade", description="Configura os dias necessários para afinidade 2 e 3.")
+    @vinculo_config.command(name="afinidade", description="Configura os dias necessários para afinidade 2 e 3.")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
@@ -2319,7 +2319,7 @@ class VinculosCog(commands.Cog):
             ),
         )
 
-    @config.command(name="maldicao", description="Configura a maldição de ruptura.")
+    @vinculo_config.command(name="maldicao", description="Configura a maldição de ruptura.")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
@@ -2338,7 +2338,7 @@ class VinculosCog(commands.Cog):
             f"🩸 Ruptura configurada: **{settings.rupture_penalty_delta:.2f}x** por **{settings.rupture_penalty_hours}h**.",
         )
 
-    @config.command(name="doacao", description="Configura a taxa das doações de XP entre parceiros.")
+    @vinculo_config.command(name="doacao", description="Configura a taxa das doações de XP entre parceiros.")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
@@ -2353,7 +2353,7 @@ class VinculosCog(commands.Cog):
         settings = await self.repository.update_transfer_settings(interaction.guild.id, taxa_percent)
         await self._send_text(interaction, f"🪙 Taxa de doação configurada em **{settings.transfer_tax_rate:.0%}**.")
 
-    @config.command(name="ressonancia", description="Configura presença recente e bônus de ressonância.")
+    @vinculo_config.command(name="ressonancia", description="Configura presença recente e bônus de ressonância.")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
@@ -2375,8 +2375,6 @@ class VinculosCog(commands.Cog):
                 f"bônus de **{settings.resonance_bonus:.0%}**."
             ),
         )
-
-    vinculo.add_command(config)
 
     @vinculo.command(name="ajuda", description="Mostra o grimório público da mecânica de vínculos.")
     @app_commands.guild_only()
@@ -2497,7 +2495,7 @@ class VinculosCog(commands.Cog):
 
         await self._send_embed(interaction, embed, ephemeral=False)
 
-    @vinculo.command(name="relatorio", description="Mostra o relatório administrativo do altar de vínculos.")
+    @vinculo_config.command(name="relatorio", description="Mostra o relatório administrativo do altar de vínculos.")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
