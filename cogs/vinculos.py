@@ -2164,7 +2164,7 @@ class VinculosCog(commands.Cog):
         embed.add_field(name="Doações", value=_clip_embed_value(transfer_value), inline=False)
         await self._send_embed(interaction, embed)
 
-    @vinculo.command(name="doar_xp", description="Doa XP ao parceiro de vínculo com taxa ritual.")
+    @vinculo.command(name="doar-xp", description="Doa XP ao parceiro de vínculo com taxa ritual.")
     @app_commands.guild_only()
     @app_commands.describe(usuario="Parceiro que receberá o XP", quantidade="Quantidade bruta retirada do doador")
     async def doar_xp(
@@ -2378,7 +2378,7 @@ class VinculosCog(commands.Cog):
 
     vinculo.add_command(config)
 
-    @app_commands.command(name="vinculo_ajuda", description="Mostra o grimório público da mecânica de vínculos.")
+    @vinculo.command(name="ajuda", description="Mostra o grimório público da mecânica de vínculos.")
     @app_commands.guild_only()
     async def vinculo_ajuda(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
@@ -2466,7 +2466,7 @@ class VinculosCog(commands.Cog):
         embed.add_field(
             name="🪙 Doação de XP",
             value=(
-                "Com `/vinculo doar_xp`, você pode transferir XP para uma pessoa com vínculo ativo.\n"
+                "Com `/vinculo doar-xp`, você pode transferir XP para uma pessoa com vínculo ativo.\n"
                 f"A taxa ritual atual é de **{settings.transfer_tax_rate:.0%}**: essa parte some no vazio, "
                 "e o restante chega para o parceiro.\n"
             ),
@@ -2488,16 +2488,16 @@ class VinculosCog(commands.Cog):
             value=(
                 "`/vinculo criar` - oferece um pacto.\n"
                 "`/vinculo status` - mostra afinidade, ressonância, maldições, doações e bônus registrado.\n"
-                "`/vinculo doar_xp` - doa XP com taxa ritual.\n"
+                "`/vinculo doar-xp` - doa XP com taxa ritual.\n"
                 "`/vinculo encerrar` - rompe o vínculo e aceita a consequência.\n"
-                "`/vinculo_ajuda` - abre este grimório público."
+                "`/vinculo ajuda` - abre este grimório público."
             ),
             inline=False,
         )
 
         await self._send_embed(interaction, embed, ephemeral=False)
 
-    @app_commands.command(name="vinculo_relatorio", description="Mostra o relatório administrativo do altar de vínculos.")
+    @vinculo.command(name="relatorio", description="Mostra o relatório administrativo do altar de vínculos.")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.guild_only()
