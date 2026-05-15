@@ -2374,6 +2374,152 @@ class VinculosCog(commands.Cog):
 
     vinculo.add_command(config)
 
+    @app_commands.command(name="vinculo_ajuda", description="Mostra o grimório público da mecânica de vínculos.")
+    @app_commands.guild_only()
+    async def vinculo_ajuda(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await self._send_text(interaction, "🕯️ Este ritual só existe dentro de um servidor.")
+            return
+
+        settings = await self.repository.get_guild_settings(interaction.guild.id)
+        role_ids = await self.repository.list_interest_role_ids(interaction.guild.id)
+
+        interest_summary = (
+            f"**{len(role_ids)}** cargo(s) inscrito(s) no grimório deste servidor."
+            if role_ids
+            else "Nenhum cargo de interesse configurado ainda. Sem interesses, sem pacto. O altar não faz milagre sem ingrediente."
+        )
+        gossip_channel = f"<#{settings.gossip_channel_id}>" if settings.gossip_channel_id else "Não configurado"
+
+        bond_types = "\n".join(
+            f"{metadata.emoji} **{metadata.label}** — {metadata.pending_title.replace(metadata.emoji, '').strip().lower()}."
+            for metadata in VINCULO_TYPE_METADATA.values()
+        )
+
+        embed = discord.Embed(
+            title="📖 Grimório público dos vínculos",
+            description=(
+                "Aproximem-se, criaturas efêmeras. O sistema de vínculos é o altar onde duas almas "
+                "costuram interesses em comum, presença recente, afinidade e XP. Não é só amizade com glitter sombrio: "
+                "tem regra, consequência e fofoca pública quando o servidor permite."
+            ),
+            color=VINCULO_COLOR,
+        )
+
+        embed.add_field(
+            name="🧵 Como um vínculo nasce",
+            value=(
+                "Use `/vinculo criar` e escolha uma pessoa e um tipo de pacto.\n"
+                "O alvo recebe uma mensagem pública com botões para **aceitar** ou **recusar**.\n"
+                f"O pedido expira em **{REQUEST_TIMEOUT_SECONDS}s**, e só a pessoa marcada pode decidir. "
+                f"Quem pediu precisa esperar **{REQUEST_COOLDOWN_SECONDS}s** antes de oferecer outro pacto."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="📜 Condições do altar",
+            value=(
+                "• Não dá para criar vínculo consigo mesma. Narciso já sofreu o bastante.\n"
+                "• Bots não assinam pacto; lata não sangra.\n"
+                "• As duas pessoas precisam ter pelo menos **um cargo de interesse em comum**.\n"
+                "• Só pode existir **um vínculo ativo entre a mesma dupla** por vez.\n"
+                f"• Interesses atuais: {interest_summary}"
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="🎭 Tipos de vínculo",
+            value=(
+                f"{bond_types}\n\n"
+                "O tipo muda a estética, o texto e a aura do pacto. A parte mecânica do XP continua sendo guiada "
+                "por **afinidade**, **ressonância** e possíveis **maldições**."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="🩸 Afinidade e bônus de XP",
+            value=(
+                "Todo pacto começa no **nível 1 — fio fino**, com bônus elegível de **+5%**.\n"
+                f"Depois de **{settings.affinity_level_2_days}d**, vira **nível 2 — fio de sangue**, com **+10%**.\n"
+                f"Depois de **{settings.affinity_level_3_days}d**, vira **nível 3 — laço da alma**, com **+15%**.\n"
+                "O multiplicador parte de **1.0x** e soma os bônus elegíveis dos vínculos ativos, descontando maldições quando houver."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="👁️ Ressonância",
+            value=(
+                "O vínculo não gosta de alma desaparecida. A presença recente é registrada quando alguém conversa no servidor.\n"
+                f"No ganho de XP, o altar considera o parceiro visto nas últimas **{XP_RESONANCE_WINDOW_MINUTES // 60}h** "
+                "para liberar o bônus de afinidade daquele pacto.\n"
+                f"No `/vinculo status`, a janela exibida/configurável deste servidor está em **{settings.resonance_window_minutes}min**."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="🪙 Doação de XP",
+            value=(
+                "Com `/vinculo doar_xp`, você pode transferir XP para uma pessoa com vínculo ativo.\n"
+                f"A taxa ritual atual é de **{settings.transfer_tax_rate:.0%}**: essa parte some no vazio, "
+                "e o restante chega para o parceiro.\n"
+                "Sem saldo, sem vínculo ou tentando doar para si mesma? O altar fecha a cara."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="⚰️ Romper um vínculo",
+            value=(
+                "Use `/vinculo encerrar` para cortar um pacto ativo.\n"
+                "O vínculo deixa de contar para XP imediatamente, e quem rompe recebe uma maldição temporária.\n"
+                f"Configuração atual: **{settings.rupture_penalty_delta:.2f}x** por **{settings.rupture_penalty_hours}h**."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="🔮 Comandos principais",
+            value=(
+                "`/vinculo criar` — oferece um pacto.\n"
+                "`/vinculo status` — mostra afinidade, ressonância, maldições, doações e bônus registrado.\n"
+                "`/vinculo doar_xp` — doa XP com taxa ritual.\n"
+                "`/vinculo encerrar` — rompe o vínculo e aceita a consequência.\n"
+                "`/vinculo_ajuda` — abre este grimório público."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="🛠️ Para administradores",
+            value=(
+                "`/vinculo config adicionar` e `/remover` — controlam cargos de interesse.\n"
+                "`/vinculo config listar` e `/limpar` — revisam ou apagam o grimório.\n"
+                "`/vinculo config canal-fofoca` — define onde anúncios públicos aparecem.\n"
+                "`/vinculo config afinidade`, `/maldicao`, `/doacao`, `/ressonancia` — ajustam as regras do altar.\n"
+                "`/vinculo_status` — relatório administrativo completo."
+            ),
+            inline=False,
+        )
+
+        embed.add_field(
+            name="📣 Canal de fofoca do altar",
+            value=(
+                f"Canal atual: {gossip_channel}.\n"
+                "Quando configurado, o Baphomet anuncia pactos aceitos, rupturas e amadurecimentos de afinidade. "
+                "Porque pacto secreto é estética, mas fofoca pública é infraestrutura."
+            ),
+            inline=False,
+        )
+
+        embed.set_footer(text="Baphomet observa os fios. Use com juízo, ou pelo menos com estilo.")
+
+        await self._send_embed(interaction, embed, ephemeral=False)
+
     @app_commands.command(name="vinculo_status", description="Mostra o relatório administrativo do altar de vínculos.")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
