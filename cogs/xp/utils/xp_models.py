@@ -91,6 +91,42 @@ class XpChangeResult:
     delta_xp: int = 0
 
 
+@dataclass(slots=True, frozen=True)
+class BondContribution:
+    vinculo_id: int
+    partner_id: int
+    bond_type: str
+    affinity_level: int
+    bonus_rate: float
+    resonance_active: bool
+    partner_last_seen_at: Optional[str] = None
+    resonance_window_seconds: int = 86_400
+    allocated_bonus_xp: int = 0
+
+
+@dataclass(slots=True, frozen=True)
+class PenaltyContribution:
+    penalty_id: int
+    multiplier_delta: float
+    reason: str
+    expires_at: Optional[str] = None
+
+
+@dataclass(slots=True, frozen=True)
+class VinculoXpContext:
+    base_xp: int
+    final_xp: int
+    final_multiplier: float
+    positive_bonus_rate: float
+    penalty_rate: float
+    positive_bonus_pool: int
+    penalty_pool: int
+    bond_contributions: tuple[BondContribution, ...] = ()
+    penalty_contributions: tuple[PenaltyContribution, ...] = ()
+    source: str = "none"
+    unallocated_bonus_xp: int = 0
+
+
 @dataclass(slots=True)
 class RankSnapshot:
     guild_id: int

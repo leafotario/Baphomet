@@ -18,12 +18,20 @@ from .utils import (
     LeaderboardEntry,
     PageResult,
     RankSnapshot,
+    VINCULO_RESONANCE_WINDOW_SECONDS,
+    VinculoXpContext,
     XpChangeResult,
     build_progress_snapshot,
+    calculate_vinculo_xp_context,
     normalize_message_content,
     utc_now,
 )
 from .db import XpRepository
+
+
+class VinculoXpContextProvider(Protocol):
+    async def get_xp_context(self, guild_id: int, user_id: int, base_xp: int) -> VinculoXpContext:
+        ...
 
 
 class VinculoMultiplierProvider(Protocol):
@@ -38,7 +46,7 @@ class XpService:
         *,
         rng: random.Random | None = None,
         logger: logging.Logger | None = None,
-        vinculos_provider: VinculoMultiplierProvider | None = None,
+        vinculos_provider: VinculoXpContextProvider | VinculoMultiplierProvider | None = None,
     ) -> None:
         self.repository = repository
         self.rng = rng or random.Random()
@@ -143,19 +151,77 @@ class XpService:
     def _remember_fingerprint(self, guild_id: int, user_id: int, normalized: str, now_ts: float) -> None:
         self._recent_fingerprints[(guild_id, user_id)].append((normalized, now_ts))
 
-    async def _apply_vinculo_multiplier(self, guild_id: int, user_id: int, base_xp: int) -> int:
+    async def _build_base_vinculo_context(self, base_xp: int, *, source: str = "none") -> VinculoXpContext:
+        return calculate_vinculo_xp_context(
+            base_xp=base_xp,
+            bonds=(),
+            penalties=(),
+            source=source,
+        )
+
+    async def _resolve_vinculo_context(
+        self,
+        guild_id: int,
+        user_id: int,
+        base_xp: int,
+        awarded_at_iso: str,
+    ) -> VinculoXpContext:
         if self.vinculos_provider is None:
-            return base_xp
+            return await self._build_base_vinculo_context(base_xp)
+
+        rich_getter = getattr(self.vinculos_provider, "get_xp_context", None)
+        if callable(rich_getter):
+            try:
+                rich_value = await rich_getter(guild_id, user_id, base_xp)
+                if isinstance(rich_value, VinculoXpContext):
+                    return rich_value
+            except Exception:
+                self.logger.exception(
+                    "falha ao calcular contexto rico de vínculos guild_id=%s user_id=%s",
+                    guild_id,
+                    user_id,
+                )
+                return await self._build_base_vinculo_context(base_xp, source="provider_failed")
+
         try:
-            multiplier = await self.vinculos_provider.get_xp_multiplier(guild_id, user_id)
+            rich_context = await self.repository.get_vinculo_xp_context(
+                guild_id=guild_id,
+                user_id=user_id,
+                base_xp=base_xp,
+                awarded_at_iso=awarded_at_iso,
+                resonance_window_seconds=VINCULO_RESONANCE_WINDOW_SECONDS,
+            )
+            if rich_context.source != "none":
+                return rich_context
         except Exception:
             self.logger.exception(
-                "falha ao calcular multiplicador de vínculos guild_id=%s user_id=%s",
+                "falha ao calcular contexto de vínculos guild_id=%s user_id=%s",
                 guild_id,
                 user_id,
             )
-            return base_xp
-        return max(0, int(round(base_xp * multiplier)))
+
+        try:
+            multiplier = await self.vinculos_provider.get_xp_multiplier(guild_id, user_id)
+            multiplier_value = float(multiplier)
+        except Exception:
+            self.logger.exception(
+                "falha ao calcular multiplicador legado de vínculos guild_id=%s user_id=%s",
+                guild_id,
+                user_id,
+            )
+            return await self._build_base_vinculo_context(base_xp, source="provider_failed")
+
+        safe_base_xp = max(0, int(base_xp))
+        return VinculoXpContext(
+            base_xp=safe_base_xp,
+            final_xp=max(0, int(round(safe_base_xp * multiplier_value))),
+            final_multiplier=multiplier_value,
+            positive_bonus_rate=max(0.0, multiplier_value - 1.0),
+            penalty_rate=max(0.0, 1.0 - multiplier_value),
+            positive_bonus_pool=0,
+            penalty_pool=0,
+            source="legacy_multiplier",
+        )
 
     async def process_message(self, message: discord.Message) -> XpChangeResult | None:
         if message.guild is None or not isinstance(message.author, discord.Member):
@@ -183,20 +249,22 @@ class XpService:
             )
             if not passes_repeat:
                 return None
-            delta_xp = await self._apply_vinculo_multiplier(
+            vinculo_context = await self._resolve_vinculo_context(
                 message.guild.id,
                 message.author.id,
                 base_delta_xp,
+                now_iso,
             )
             awarded, _, old_total, new_total = await self.repository.try_add_message_xp(
                 guild_id=message.guild.id,
                 user_id=message.author.id,
-                delta_xp=delta_xp,
+                delta_xp=vinculo_context.final_xp,
                 last_known_name=message.author.display_name,
                 awarded_at_iso=now_iso,
                 cooldown_cutoff_iso=cooldown_cutoff_iso,
                 message_hash=fingerprint,
                 repeat_cutoff_iso=repeat_cutoff_iso,
+                vinculo_context=vinculo_context,
             )
             if not awarded:
                 return None
@@ -212,7 +280,7 @@ class XpService:
             old_level=old_progress.level,
             new_level=new_progress.level,
             levels_gained=max(0, new_progress.level - old_progress.level),
-            delta_xp=delta_xp,
+            delta_xp=vinculo_context.final_xp,
         )
 
     async def grant_level_rewards(self, member: discord.Member, new_level: int) -> list[discord.Role]:

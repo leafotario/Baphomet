@@ -3,13 +3,19 @@ from __future__ import annotations
 """Persistência Assíncrona Do Sistema De XP."""
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import aiosqlite
 
 from ..utils import (
+    BondContribution,
     GuildXpConfig,
+    PenaltyContribution,
     UserXpProfile,
+    VINCULO_RESONANCE_WINDOW_SECONDS,
+    VinculoXpContext,
+    calculate_vinculo_xp_context,
     normalize_difficulty,
     parse_iso,
     utc_now_iso,
@@ -19,6 +25,27 @@ from .xp_migrations import run_migrations
 
 def build_default_guild_config(guild_id: int) -> GuildXpConfig:
     return GuildXpConfig(guild_id=guild_id)
+
+
+DEFAULT_VINCULO_BOND_TYPE = "pacto_sangue"
+DEFAULT_AFFINITY_LEVEL_2_DAYS = 7
+DEFAULT_AFFINITY_LEVEL_3_DAYS = 60
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _affinity_bonus(level: int) -> float:
+    return {
+        1: 0.05,
+        2: 0.10,
+        3: 0.15,
+    }.get(level, 0.05)
 
 
 class XpRepository:
@@ -229,6 +256,178 @@ class XpRepository:
             updated_at=row["updated_at"],
         )
 
+    async def get_vinculo_xp_context(
+        self,
+        *,
+        guild_id: int,
+        user_id: int,
+        base_xp: int,
+        awarded_at_iso: str,
+        resonance_window_seconds: int = VINCULO_RESONANCE_WINDOW_SECONDS,
+    ) -> VinculoXpContext:
+        if not await self._vinculo_context_tables_ready():
+            return calculate_vinculo_xp_context(base_xp=base_xp, bonds=(), penalties=(), source="none")
+
+        awarded_at = _as_utc(parse_iso(awarded_at_iso)) or datetime.now(timezone.utc)
+        cutoff = awarded_at - timedelta(seconds=max(1, int(resonance_window_seconds)))
+        level_2_days, level_3_days = await self._get_vinculo_affinity_thresholds(guild_id)
+        vinculo_rows = await self.connection.execute_fetchall(
+            """
+            SELECT *
+            FROM vinculos
+            WHERE guild_id = ?
+              AND active = 1
+              AND (user_low_id = ? OR user_high_id = ?)
+            ORDER BY created_at ASC, id ASC
+            """,
+            (guild_id, user_id, user_id),
+        )
+        partner_ids = [
+            int(row["user_high_id"]) if int(row["user_low_id"]) == user_id else int(row["user_low_id"])
+            for row in vinculo_rows
+        ]
+        presence_by_user = await self._get_vinculo_presence_by_user(guild_id, partner_ids)
+        bonds: list[BondContribution] = []
+        for row in vinculo_rows:
+            partner_id = int(row["user_high_id"]) if int(row["user_low_id"]) == user_id else int(row["user_low_id"])
+            created_at = _as_utc(parse_iso(str(row["created_at"]))) or awarded_at
+            affinity_level = self._affinity_level_for_created_at(
+                created_at,
+                awarded_at,
+                level_2_days,
+                level_3_days,
+            )
+            partner_last_seen_at = presence_by_user.get(partner_id)
+            partner_seen = _as_utc(parse_iso(partner_last_seen_at)) if partner_last_seen_at else None
+            resonance_active = partner_seen is not None and partner_seen >= cutoff
+            bonds.append(
+                BondContribution(
+                    vinculo_id=int(row["id"]),
+                    partner_id=partner_id,
+                    bond_type=str(self._row_get(row, "bond_type", DEFAULT_VINCULO_BOND_TYPE) or DEFAULT_VINCULO_BOND_TYPE),
+                    affinity_level=affinity_level,
+                    bonus_rate=_affinity_bonus(affinity_level),
+                    resonance_active=resonance_active,
+                    partner_last_seen_at=partner_last_seen_at,
+                    resonance_window_seconds=max(1, int(resonance_window_seconds)),
+                )
+            )
+
+        penalties = await self._get_vinculo_penalty_contributions(guild_id, user_id, awarded_at)
+        return calculate_vinculo_xp_context(
+            base_xp=base_xp,
+            bonds=bonds,
+            penalties=penalties,
+            source="sqlite_vinculos",
+        )
+
+    async def _vinculo_context_tables_ready(self) -> bool:
+        rows = await self.connection.execute_fetchall(
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name IN ('vinculos', 'vinculo_presence', 'vinculo_penalties')
+            """
+        )
+        return {str(row[0]) for row in rows} == {"vinculos", "vinculo_presence", "vinculo_penalties"}
+
+    async def _table_exists(self, table_name: str) -> bool:
+        rows = await self.connection.execute_fetchall(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        )
+        return bool(rows)
+
+    async def _get_vinculo_affinity_thresholds(self, guild_id: int) -> tuple[int, int]:
+        if not await self._table_exists("vinculo_guild_settings"):
+            return DEFAULT_AFFINITY_LEVEL_2_DAYS, DEFAULT_AFFINITY_LEVEL_3_DAYS
+        rows = await self.connection.execute_fetchall(
+            """
+            SELECT affinity_level_2_days, affinity_level_3_days
+            FROM vinculo_guild_settings
+            WHERE guild_id = ?
+            """,
+            (guild_id,),
+        )
+        if not rows:
+            return DEFAULT_AFFINITY_LEVEL_2_DAYS, DEFAULT_AFFINITY_LEVEL_3_DAYS
+        level_2_days = max(1, int(rows[0]["affinity_level_2_days"]))
+        level_3_days = max(level_2_days + 1, int(rows[0]["affinity_level_3_days"]))
+        return level_2_days, level_3_days
+
+    async def _get_vinculo_presence_by_user(self, guild_id: int, user_ids: list[int]) -> dict[int, str]:
+        if not user_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in user_ids)
+        rows = await self.connection.execute_fetchall(
+            f"""
+            SELECT user_id, last_seen_at
+            FROM vinculo_presence
+            WHERE guild_id = ?
+              AND user_id IN ({placeholders})
+            """,
+            (guild_id, *user_ids),
+        )
+        return {int(row["user_id"]): str(row["last_seen_at"]) for row in rows}
+
+    async def _get_vinculo_penalty_contributions(
+        self,
+        guild_id: int,
+        user_id: int,
+        awarded_at: datetime,
+    ) -> tuple[PenaltyContribution, ...]:
+        rows = await self.connection.execute_fetchall(
+            """
+            SELECT id, multiplier_delta, reason, expires_at
+            FROM vinculo_penalties
+            WHERE guild_id = ?
+              AND user_id = ?
+              AND active = 1
+            ORDER BY expires_at ASC, id ASC
+            """,
+            (guild_id, user_id),
+        )
+        penalties: list[PenaltyContribution] = []
+        for row in rows:
+            expires_at = str(row["expires_at"])
+            expires = _as_utc(parse_iso(expires_at))
+            if expires is None or expires <= awarded_at:
+                continue
+            multiplier_delta = float(row["multiplier_delta"])
+            if multiplier_delta >= 0:
+                continue
+            penalties.append(
+                PenaltyContribution(
+                    penalty_id=int(row["id"]),
+                    multiplier_delta=multiplier_delta,
+                    reason=str(row["reason"]),
+                    expires_at=expires_at,
+                )
+            )
+        return tuple(penalties)
+
+    def _affinity_level_for_created_at(
+        self,
+        created_at: datetime,
+        awarded_at: datetime,
+        level_2_days: int,
+        level_3_days: int,
+    ) -> int:
+        level_2_at = created_at + timedelta(days=max(1, level_2_days))
+        level_3_at = created_at + timedelta(days=max(level_2_days + 1, level_3_days))
+        if awarded_at >= level_3_at:
+            return 3
+        if awarded_at >= level_2_at:
+            return 2
+        return 1
+
+    def _row_get(self, row: aiosqlite.Row, key: str, default: object = None) -> object:
+        try:
+            return row[key]
+        except (KeyError, IndexError):
+            return default
+
     async def try_add_message_xp(
         self,
         *,
@@ -240,7 +439,10 @@ class XpRepository:
         cooldown_cutoff_iso: str,
         message_hash: str,
         repeat_cutoff_iso: str,
+        vinculo_context: VinculoXpContext | None = None,
     ) -> tuple[bool, str | None, int, int]:
+        if vinculo_context is not None:
+            delta_xp = vinculo_context.final_xp
         async with self._tx_lock:
             conn = self.connection
             await conn.execute("BEGIN IMMEDIATE")
@@ -301,12 +503,84 @@ class XpRepository:
                         awarded_at_iso,
                     ),
                 )
+                if vinculo_context is not None:
+                    await self._insert_vinculo_bonus_history(
+                        conn=conn,
+                        guild_id=guild_id,
+                        user_id=user_id,
+                        context=vinculo_context,
+                        message_hash=message_hash,
+                        created_at=awarded_at_iso,
+                    )
                 updated = await self.get_profile(guild_id, user_id)
                 await conn.commit()
                 return True, None, old_total, updated.total_xp
             except Exception:
                 await conn.rollback()
                 raise
+
+    async def _insert_vinculo_bonus_history(
+        self,
+        *,
+        conn: aiosqlite.Connection,
+        guild_id: int,
+        user_id: int,
+        context: VinculoXpContext,
+        message_hash: str,
+        created_at: str,
+    ) -> None:
+        if not context.bond_contributions:
+            return
+        for bond in context.bond_contributions:
+            if not bond.resonance_active or bond.bonus_rate <= 0:
+                continue
+            await conn.execute(
+                """
+                INSERT INTO vinculo_xp_bonus_history(
+                    guild_id,
+                    vinculo_id,
+                    user_id,
+                    partner_id,
+                    bond_type,
+                    base_xp,
+                    bonus_xp,
+                    multiplier,
+                    affinity_level,
+                    resonance_active,
+                    penalty_delta,
+                    created_at,
+                    message_hash,
+                    final_xp,
+                    positive_bonus_pool,
+                    penalty_pool,
+                    bonus_rate,
+                    partner_last_seen_at,
+                    resonance_window_seconds
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    guild_id,
+                    bond.vinculo_id,
+                    user_id,
+                    bond.partner_id,
+                    bond.bond_type,
+                    context.base_xp,
+                    bond.allocated_bonus_xp,
+                    context.final_multiplier,
+                    bond.affinity_level,
+                    int(bond.resonance_active),
+                    -context.penalty_rate,
+                    created_at,
+                    message_hash,
+                    context.final_xp,
+                    context.positive_bonus_pool,
+                    context.penalty_pool,
+                    bond.bonus_rate,
+                    bond.partner_last_seen_at,
+                    bond.resonance_window_seconds,
+                ),
+            )
 
     async def adjust_xp(
         self,
