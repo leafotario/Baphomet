@@ -18,7 +18,7 @@ from .constants import (
     ICEBERG_TEMPLATE_TIER_COUNT,
     ICEBERG_TITLE_MAX_LENGTH,
 )
-from .models import IcebergProject, ItemConfig, ItemDisplayStyle, ItemSourceType, LayerConfig, LayerLayoutMode, ThemeConfig
+from .models import IcebergProject, ItemConfig, ItemDisplayStyle, ItemSourceType, LayerConfig, LayerLayoutMode, ThemeConfig, is_image_source
 from .themes import default_layer_name
 
 
@@ -38,6 +38,27 @@ Image.MAX_IMAGE_PIXELS = 25_000_000
 
 class IcebergTemplateError(RuntimeError):
     """Erro user-facing para problemas com a template fixa do iceberg."""
+
+
+def crop_center_square(image: Image.Image) -> Image.Image:
+    """Center-crop an image to 1:1 aspect ratio without distortion.
+
+    - If wider than tall, trims the sides.
+    - If taller than wide, trims top/bottom.
+    - If already square, returns unchanged.
+    """
+    w, h = image.size
+    if w == h:
+        return image
+    side = min(w, h)
+    left = (w - side) // 2
+    top = (h - side) // 2
+    return image.crop((left, top, left + side, top + side))
+
+
+def _has_caption(item: ItemConfig) -> bool:
+    """Return True only if the item has a user-provided visible caption."""
+    return bool(item.title and item.title.strip())
 
 
 @dataclass(frozen=True)
@@ -554,17 +575,18 @@ class IcebergRenderer:
     ) -> None:
         x1, y1, x2, y2 = box
         width, height = x2 - x1, y2 - y1
-        caption_h = 42 if item.title else 0
+        show_caption = _has_caption(item)
+        caption_h = 42 if show_caption else 0
         card = Image.new("RGBA", (width, height), theme.item_fill_color)
         draw = ImageDraw.Draw(card, "RGBA")
         try:
-            raw = self._open_image(image_bytes)
+            raw = crop_center_square(self._open_image(image_bytes))
             fitted = ImageOps.fit(raw, (width, max(1, height - caption_h)), method=Image.Resampling.LANCZOS)
             card.paste(fitted, (0, 0), fitted if fitted.mode == "RGBA" else None)
         except (OSError, ValueError, UnidentifiedImageError) as exc:
             LOGGER.warning("iceberg_item_image_fallback item_id=%s source_type=%s error=%s", item.id, item.source.type, exc)
             self._draw_missing_image(draw, (0, 0, width, max(1, height - caption_h)), theme)
-        if caption_h:
+        if show_caption:
             draw.rectangle((0, height - caption_h, width, height), fill=theme.item_fill_color)
             font = self._fit_font(draw, item.title, theme, start_size=theme.item_caption_font_size, max_width=width - theme.item_padding_x, min_size=11, bold=True)
             clipped = self._clip_text(draw, item.title, font, width - theme.item_padding_x)
@@ -584,13 +606,14 @@ class IcebergRenderer:
     ) -> None:
         x1, y1, x2, y2 = box
         width, height = x2 - x1, y2 - y1
-        caption_h = 28 if item.title else 0
+        show_caption = _has_caption(item)
+        caption_h = 28 if show_caption else 0
         try:
-            raw = self._open_image(image_bytes)
+            raw = crop_center_square(self._open_image(image_bytes))
             sticker = ImageOps.fit(raw, (width, max(1, height - caption_h)), method=Image.Resampling.LANCZOS)
             sticker = self._rounded(sticker, theme.item_radius)
 
-            if caption_h:
+            if show_caption:
                 # If there's a caption, we need to compose the sticker and text together first
                 composed = Image.new("RGBA", (width, height), (0, 0, 0, 0))
                 composed.paste(sticker, (0, 0), sticker)
@@ -623,7 +646,7 @@ class IcebergRenderer:
         if image_bytes:
             thumb_size = max(34, height - theme.item_padding_y * 2)
             try:
-                raw = self._open_image(image_bytes)
+                raw = crop_center_square(self._open_image(image_bytes))
                 thumb = ImageOps.fit(raw, (thumb_size, thumb_size), method=Image.Resampling.LANCZOS)
                 thumb = self._rounded(thumb, max(8, theme.item_radius - 4))
                 chip.paste(thumb, (theme.item_padding_x, (height - thumb_size) // 2), thumb)

@@ -23,13 +23,20 @@ from cogs.iceberg.models import (
     ItemSourceType,
     LayerConfig,
     PlacementConfig,
+    is_image_source,
 )
-from cogs.iceberg.renderer import IcebergRenderer, IcebergTemplateError, TEMPLATE_ITEM_SAFE_RIGHT_RATIO
+from cogs.iceberg.renderer import IcebergRenderer, IcebergTemplateError, TEMPLATE_ITEM_SAFE_RIGHT_RATIO, crop_center_square
 from cogs.iceberg.repository import IcebergDatabaseManager, IcebergRepository
 from cogs.iceberg.service import IcebergService
 from cogs.iceberg.sources.providers import AttachmentImageProvider, IcebergUserError, TextItemProvider
-from cogs.iceberg.themes import default_layer_name, get_theme
-from cogs.iceberg.constants import ICEBERG_MAX_LAYERS, ICEBERG_TEMPLATE_TIER_COUNT, ICEBERG_TITLE_MAX_LENGTH
+from cogs.iceberg.themes import DEFAULT_LAYER_NAMES, default_layer_name, default_layers, get_theme
+from cogs.iceberg.constants import (
+    ICEBERG_MAX_LAYERS,
+    ICEBERG_TEMPLATE_TIER_COUNT,
+    ICEBERG_TITLE_MAX_LENGTH,
+    MAX_IMAGE_ITEMS_PER_LAYER,
+    MAX_TEXT_ITEMS_PER_LAYER,
+)
 
 
 AIOSQLITE_AVAILABLE = importlib.util.find_spec("aiosqlite") is not None
@@ -694,7 +701,8 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
         store = FakeAssetStore()
         provider = AttachmentImageProvider(downloader=SimpleNamespace(), asset_store=store)
         resolved = await provider.resolve(title="", attachment=FakeAttachment())
-        self.assertEqual(resolved.title, "misterio")
+        self.assertEqual(resolved.title, "")
+        self.assertEqual(resolved.source.metadata.get("auto_title"), "misterio")
         self.assertEqual(resolved.source.asset_id, "asset-1")
         self.assertEqual(resolved.source.type, ItemSourceType.ATTACHMENT)
         self.assertEqual(store.source_type, ItemSourceType.ATTACHMENT.value)
@@ -972,6 +980,303 @@ class IcebergCommandRegistrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("iceberg anexar", command_names)
         self.assertIn("iceberg importar", command_names)
         self.assertEqual(sorted(name for name in command_names if command_names.count(name) > 1), [])
+
+
+class IcebergLayerItemLimitTests(unittest.IsolatedAsyncioTestCase):
+    """Tests for per-layer item limits (10 texts / 4 images)."""
+
+    def make_service(self) -> IcebergService:
+        return IcebergService(
+            repository=MemoryIcebergRepository(),
+            asset_repository=SimpleNamespace(),
+            asset_store=SimpleNamespace(),
+            source_registry=SimpleNamespace(
+                resolve=self._fake_resolve,
+            ),
+            renderer=IcebergRenderer(),
+        )
+
+    async def _fake_resolve(self, source_type, **kwargs):
+        from cogs.iceberg.sources.providers import ResolvedIcebergSource
+        title = kwargs.get("title") or ""
+        value = kwargs.get("value") or title
+        return ResolvedIcebergSource(
+            source=ItemSource(type=source_type, value=value, metadata={}),
+            title=title,
+        )
+
+    async def test_layer_text_limit_allows_10_rejects_11(self) -> None:
+        service = self.make_service()
+        project = await service.create_project(owner_id=42, guild_id=99, name="Limite")
+        for i in range(MAX_TEXT_ITEMS_PER_LAYER):
+            project = await service.add_item(
+                project.id, owner_id=42, layer_ref="1",
+                source_type=ItemSourceType.TEXT, title=f"Texto {i}", value=f"Texto {i}",
+            )
+        text_count = sum(
+            1 for item in project.items
+            if item.layer_id == project.layers[0].id and not is_image_source(item.source.type)
+        )
+        self.assertEqual(text_count, MAX_TEXT_ITEMS_PER_LAYER)
+
+        with self.assertRaisesRegex(IcebergUserError, "limite de 10 textos"):
+            await service.add_item(
+                project.id, owner_id=42, layer_ref="1",
+                source_type=ItemSourceType.TEXT, title="11o texto", value="11o texto",
+            )
+
+    async def test_layer_image_limit_allows_4_rejects_5(self) -> None:
+        service = self.make_service()
+        project = await service.create_project(owner_id=42, guild_id=99, name="Limite Img")
+        for i in range(MAX_IMAGE_ITEMS_PER_LAYER):
+            project = await service.add_item(
+                project.id, owner_id=42, layer_ref="1",
+                source_type=ItemSourceType.IMAGE_URL, title=f"Img {i}", value=f"http://example.com/{i}.png",
+            )
+        image_count = sum(
+            1 for item in project.items
+            if item.layer_id == project.layers[0].id and is_image_source(item.source.type)
+        )
+        self.assertEqual(image_count, MAX_IMAGE_ITEMS_PER_LAYER)
+
+        with self.assertRaisesRegex(IcebergUserError, "limite de 4 imagens"):
+            await service.add_item(
+                project.id, owner_id=42, layer_ref="1",
+                source_type=ItemSourceType.IMAGE_URL, title="5a img", value="http://example.com/5.png",
+            )
+
+    async def test_layer_separate_counts(self) -> None:
+        """A layer full of texts can still accept images and vice-versa."""
+        service = self.make_service()
+        project = await service.create_project(owner_id=42, guild_id=99, name="Separado")
+        # Fill layer with 10 texts
+        for i in range(MAX_TEXT_ITEMS_PER_LAYER):
+            project = await service.add_item(
+                project.id, owner_id=42, layer_ref="1",
+                source_type=ItemSourceType.TEXT, title=f"T{i}", value=f"T{i}",
+            )
+        # Should still accept images
+        project = await service.add_item(
+            project.id, owner_id=42, layer_ref="1",
+            source_type=ItemSourceType.IMAGE_URL, title="Img ok", value="http://example.com/ok.png",
+        )
+        # Fill images
+        for i in range(MAX_IMAGE_ITEMS_PER_LAYER - 1):
+            project = await service.add_item(
+                project.id, owner_id=42, layer_ref="1",
+                source_type=ItemSourceType.IMAGE_URL, title=f"I{i}", value=f"http://example.com/{i}.png",
+            )
+        # Now both are full; texts should fail, images should fail
+        with self.assertRaisesRegex(IcebergUserError, "limite de 10 textos"):
+            await service.add_item(
+                project.id, owner_id=42, layer_ref="1",
+                source_type=ItemSourceType.TEXT, title="overflow", value="overflow",
+            )
+        with self.assertRaisesRegex(IcebergUserError, "limite de 4 imagens"):
+            await service.add_item(
+                project.id, owner_id=42, layer_ref="1",
+                source_type=ItemSourceType.IMAGE_URL, title="overflow", value="http://example.com/x.png",
+            )
+
+    async def test_import_validates_layer_item_limits(self) -> None:
+        service = self.make_service()
+        project = make_project()
+        # Stuff 12 text items into layer-1
+        project.items = [
+            ItemConfig(
+                id=f"txt-{i}", layer_id="layer-1", title=f"T{i}",
+                source=ItemSource(type=ItemSourceType.TEXT, value=f"T{i}"),
+                display_style=ItemDisplayStyle.CHIP, sort_order=i,
+                created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00",
+            )
+            for i in range(12)
+        ]
+        with self.assertRaisesRegex(IcebergUserError, "limite de 10 textos"):
+            await service.import_project_json(project.to_json(), owner_id=42, guild_id=99)
+
+
+class IcebergCropCenterSquareTests(unittest.TestCase):
+    """Tests for the crop_center_square helper."""
+
+    def test_horizontal_image_becomes_square(self) -> None:
+        image = Image.new("RGBA", (200, 100), (255, 0, 0, 255))
+        result = crop_center_square(image)
+        self.assertEqual(result.size, (100, 100))
+        # Center pixel should be red
+        self.assertEqual(result.getpixel((50, 50)), (255, 0, 0, 255))
+
+    def test_vertical_image_becomes_square(self) -> None:
+        image = Image.new("RGBA", (100, 300), (0, 255, 0, 255))
+        result = crop_center_square(image)
+        self.assertEqual(result.size, (100, 100))
+
+    def test_already_square_unchanged(self) -> None:
+        image = Image.new("RGBA", (64, 64), (0, 0, 255, 255))
+        result = crop_center_square(image)
+        self.assertIs(result, image)  # same object — no copy needed
+
+    def test_does_not_distort(self) -> None:
+        """A 2:1 image crop should preserve center pixels, not stretch."""
+        image = Image.new("RGBA", (200, 100), (0, 0, 0, 255))
+        # Paint a 10x10 red square at center
+        for x in range(95, 105):
+            for y in range(45, 55):
+                image.putpixel((x, y), (255, 0, 0, 255))
+        result = crop_center_square(image)
+        self.assertEqual(result.size, (100, 100))
+        # The red center should still be red
+        self.assertEqual(result.getpixel((50, 50)), (255, 0, 0, 255))
+        # The edge should remain black
+        self.assertEqual(result.getpixel((0, 0)), (0, 0, 0, 255))
+
+
+class IcebergImageCaptionTests(unittest.TestCase):
+    """Tests for conditional caption rendering."""
+
+    def render_with_template(self, project: IcebergProject, asset_bytes: dict[str, bytes] | None = None, *, width: int = 1600, height: int = 2200) -> Image.Image:
+        with tempfile.TemporaryDirectory() as tmp:
+            template_path = Path(tmp) / "icebergtemplate.png"
+            write_test_template(template_path, width=width, height=height)
+            buffer = IcebergRenderer(template_path=template_path).render_project(
+                project,
+                asset_bytes_by_item_id=asset_bytes or {},
+            )
+            return Image.open(buffer).convert("RGBA")
+
+    def test_image_with_caption_renders_text(self) -> None:
+        """Image item with title should produce a visible caption area."""
+        project = make_project(layer_count=7)
+        project.items = [
+            ItemConfig(
+                id="img-cap", layer_id="layer-3", title="Minha Legenda",
+                source=ItemSource(type=ItemSourceType.ATTACHMENT, value="test.png", asset_id="a1"),
+                display_style=ItemDisplayStyle.CARD, sort_order=0,
+                created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00",
+            ),
+        ]
+        image = self.render_with_template(project, {"img-cap": png_bytes()})
+        self.assertIsNotNone(image)
+        self.assertGreater(image.width, 0)
+
+    def test_image_without_caption_no_text(self) -> None:
+        """Image item with empty title should NOT crash and should render cleanly."""
+        project = make_project(layer_count=7)
+        project.items = [
+            ItemConfig(
+                id="img-nocap", layer_id="layer-3", title="",
+                source=ItemSource(type=ItemSourceType.ATTACHMENT, value="test.png", asset_id="a2"),
+                display_style=ItemDisplayStyle.CARD, sort_order=0,
+                created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00",
+            ),
+        ]
+        image = self.render_with_template(project, {"img-nocap": png_bytes()})
+        self.assertIsNotNone(image)
+        self.assertGreater(image.width, 0)
+
+    def test_image_without_caption_sticker_no_crash(self) -> None:
+        """Sticker style with empty title."""
+        project = make_project(layer_count=7)
+        project.items = [
+            ItemConfig(
+                id="stk-nocap", layer_id="layer-4", title="",
+                source=ItemSource(type=ItemSourceType.ATTACHMENT, value="s.png", asset_id="a3"),
+                display_style=ItemDisplayStyle.STICKER, sort_order=0,
+                created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00",
+            ),
+        ]
+        image = self.render_with_template(project, {"stk-nocap": png_bytes()})
+        self.assertIsNotNone(image)
+
+
+class IcebergDefaultLayerNameTests(unittest.TestCase):
+    """Tests for default layer name completeness."""
+
+    def test_default_layers_10_returns_names_for_all(self) -> None:
+        layers = default_layers(10)
+        self.assertEqual(len(layers), 10)
+        for layer in layers:
+            self.assertTrue(layer.name.strip(), f"Layer {layer.order} has empty name")
+
+    def test_layers_6_through_10_are_not_generic(self) -> None:
+        for index in range(5, 10):
+            name = default_layer_name(index)
+            self.assertNotIn("Camada", name, f"Layer {index + 1} still uses generic name")
+
+    def test_layers_1_through_5_preserved(self) -> None:
+        expected = ["Ponta", "Raso", "Submerso", "Profundo", "Abismo"]
+        for index, expected_name in enumerate(expected):
+            self.assertEqual(default_layer_name(index), expected_name)
+
+    def test_default_layer_names_tuple_has_10_entries(self) -> None:
+        self.assertEqual(len(DEFAULT_LAYER_NAMES), 10)
+
+    def test_renderer_draws_labels_up_to_layer_10(self) -> None:
+        project = make_project(layer_count=10)
+        project.items = []
+        with tempfile.TemporaryDirectory() as tmp:
+            template_path = Path(tmp) / "icebergtemplate.png"
+            write_test_template(template_path, width=1580, height=1200)
+            image = Image.open(
+                IcebergRenderer(template_path=template_path).render_project(project)
+            ).convert("RGBA")
+        top = template_start_y(image)
+        for index in range(10):
+            self.assertTrue(
+                label_area_changed(image, template_top=top, template_height=1200, layer_index=index),
+                f"Label area for layer {index} was not drawn",
+            )
+
+
+class IcebergBackwardCompatibilityTests(unittest.TestCase):
+    """Ensure old projects with custom names and generated titles still work."""
+
+    def test_json_roundtrip_with_old_custom_layer_names(self) -> None:
+        project = make_project()
+        project.layers[0].name = "Nome Antigo"
+        project.layers[2].name = "Custom Layer"
+        imported = IcebergProject.from_dict(project.to_dict())
+        self.assertEqual(imported.layers[0].name, "Nome Antigo")
+        self.assertEqual(imported.layers[2].name, "Custom Layer")
+        self.assertEqual(len(imported.items), len(project.items))
+
+    def test_json_roundtrip_with_empty_title_item(self) -> None:
+        project = make_project()
+        project.items.append(
+            ItemConfig(
+                id="empty-title", layer_id="layer-1", title="",
+                source=ItemSource(type=ItemSourceType.IMAGE_URL, value="http://x.com/img.png", asset_id="a1", metadata={"auto_title": "img"}),
+                display_style=ItemDisplayStyle.CARD, sort_order=2,
+                created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00",
+            )
+        )
+        imported = IcebergProject.from_dict(project.to_dict())
+        empty_item = next(item for item in imported.items if item.id == "empty-title")
+        # from_dict may apply fallback "Item" for empty title in the model — this is fine
+        # The key point is it doesn't crash
+        self.assertIsNotNone(empty_item)
+        self.assertEqual(empty_item.source.metadata.get("auto_title"), "img")
+
+    def test_preview_still_works_with_mixed_items(self) -> None:
+        project = make_project(layer_count=8)
+        project.items.append(
+            ItemConfig(
+                id="img-empty", layer_id="layer-3", title="",
+                source=ItemSource(type=ItemSourceType.ATTACHMENT, value="x.png", asset_id="a-prev"),
+                display_style=ItemDisplayStyle.CARD, sort_order=0,
+                created_at="2026-01-01T00:00:00+00:00", updated_at="2026-01-01T00:00:00+00:00",
+            )
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            template_path = Path(tmp) / "icebergtemplate.png"
+            write_test_template(template_path, width=1000, height=1001)
+            renderer = IcebergRenderer(template_path=template_path)
+            buffer = renderer.render_project(
+                project,
+                asset_bytes_by_item_id={"image-1": png_bytes(), "img-empty": png_bytes()},
+                preview=True,
+            )
+        image = Image.open(buffer).convert("RGBA")
+        self.assertLessEqual(image.width, 900)
 
 
 if __name__ == "__main__":

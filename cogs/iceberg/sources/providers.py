@@ -69,7 +69,8 @@ class ImageUrlProvider:
             user_message = getattr(exc, "user_message", None) or str(exc)
             code = getattr(exc, "code", "image_url_error")
             raise IcebergUserError(user_message, code=str(code), detail=str(exc)) from exc
-        item_title = normalize_text(title, max_length=MAX_ITEM_TITLE_LENGTH) or self._title_from_url(downloaded.final_url)
+        user_title = normalize_text(title, max_length=MAX_ITEM_TITLE_LENGTH)
+        auto_title = self._title_from_url(downloaded.final_url)
         return ResolvedIcebergSource(
             source=ItemSource(
                 type=ItemSourceType.IMAGE_URL,
@@ -78,9 +79,10 @@ class ImageUrlProvider:
                 metadata={
                     **self._download_metadata(downloaded),
                     **self._asset_metadata(stored),
+                    "auto_title": auto_title,
                 },
             ),
-            title=item_title,
+            title=user_title or "",
         )
 
     def _download_metadata(self, downloaded: DownloadedImage) -> dict[str, Any]:
@@ -138,7 +140,10 @@ class DiscordAvatarProvider(ImageUrlProvider):
             user_message = getattr(exc, "user_message", None) or "Não consegui baixar o avatar desse usuário."
             code = getattr(exc, "code", "avatar_download_error")
             raise IcebergUserError(user_message, code=str(code), detail=str(exc)) from exc
-        item_title = normalize_text(title, max_length=MAX_ITEM_TITLE_LENGTH) or normalize_text(str(user), max_length=MAX_ITEM_TITLE_LENGTH, fallback=f"Usuário {user_id}") or f"Usuário {user_id}"
+        user_title = normalize_text(title, max_length=MAX_ITEM_TITLE_LENGTH)
+        auto_title = normalize_text(str(user), max_length=MAX_ITEM_TITLE_LENGTH, fallback=f"Usuário {user_id}") or f"Usuário {user_id}"
+        metadata["auto_title"] = auto_title
+        item_title = user_title or ""
         return ResolvedIcebergSource(
             source=ItemSource(
                 type=ItemSourceType.DISCORD_AVATAR,
@@ -290,7 +295,12 @@ class WikipediaImageProvider(ImageUrlProvider):
             )
         except AssetValidationError as exc:
             raise IcebergUserError("⚠️ A imagem da Wikipedia foi encontrada, mas não passou pela validação local.", code=getattr(exc, "code", "wiki_asset_invalid"), detail=str(exc)) from exc
-        item_title = normalize_text(title, max_length=MAX_ITEM_TITLE_LENGTH) or item.wikipedia_title or item.display_name
+        user_title = normalize_text(title, max_length=MAX_ITEM_TITLE_LENGTH)
+        auto_title = normalize_text(
+            item.wikipedia_title or item.display_name,
+            max_length=MAX_ITEM_TITLE_LENGTH,
+            fallback="Wikipedia",
+        ) or "Wikipedia"
         return ResolvedIcebergSource(
             source=ItemSource(
                 type=ItemSourceType.WIKIPEDIA,
@@ -299,9 +309,10 @@ class WikipediaImageProvider(ImageUrlProvider):
                 metadata={
                     **metadata,
                     **self._asset_metadata(stored),
+                    "auto_title": auto_title,
                 },
             ),
-            title=normalize_text(item_title, max_length=MAX_ITEM_TITLE_LENGTH, fallback="Wikipedia") or "Wikipedia",
+            title=user_title or "",
         )
 
 
@@ -337,7 +348,10 @@ class AttachmentImageProvider(ImageUrlProvider):
             )
         except (discord.HTTPException, AssetValidationError) as exc:
             raise IcebergUserError("⚠️ Não consegui validar esse attachment como imagem.", code=getattr(exc, "code", "attachment_invalid"), detail=str(exc)) from exc
-        item_title = normalize_text(title, max_length=MAX_ITEM_TITLE_LENGTH) or normalize_text(attachment.filename.rsplit(".", 1)[0], max_length=MAX_ITEM_TITLE_LENGTH, fallback="Imagem") or "Imagem"
+        user_title = normalize_text(title, max_length=MAX_ITEM_TITLE_LENGTH)
+        auto_title = normalize_text(attachment.filename.rsplit(".", 1)[0], max_length=MAX_ITEM_TITLE_LENGTH, fallback="Imagem") or "Imagem"
+        metadata["auto_title"] = auto_title
+        item_title = user_title or ""
         return ResolvedIcebergSource(
             source=ItemSource(
                 type=ItemSourceType.ATTACHMENT,

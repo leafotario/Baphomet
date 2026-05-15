@@ -244,7 +244,13 @@ class IcebergCog(commands.Cog):
         )
         for index, layer in enumerate(project.ordered_layers()):
             items = project.ordered_items_for_layer(layer.id)
-            item_summary = ", ".join(item.title for item in items[:6])
+            item_names = []
+            for item in items[:6]:
+                display = item.title.strip() if item.title else ""
+                if not display:
+                    display = item.source.metadata.get("auto_title") or item.source.type.value
+                item_names.append(display)
+            item_summary = ", ".join(item_names)
             if len(items) > 6:
                 item_summary += f" +{len(items) - 6}"
             embed.add_field(

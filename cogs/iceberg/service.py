@@ -9,7 +9,14 @@ import discord
 from cogs.tierlist_templates.asset_repository import TierAssetRepository
 from cogs.tierlist_templates.assets import TierTemplateAssetStore
 
-from .constants import ICEBERG_DEFAULT_LAYERS, ICEBERG_MAX_LAYERS, ICEBERG_MIN_LAYERS, ICEBERG_TITLE_MAX_LENGTH
+from .constants import (
+    ICEBERG_DEFAULT_LAYERS,
+    ICEBERG_MAX_LAYERS,
+    ICEBERG_MIN_LAYERS,
+    ICEBERG_TITLE_MAX_LENGTH,
+    MAX_IMAGE_ITEMS_PER_LAYER,
+    MAX_TEXT_ITEMS_PER_LAYER,
+)
 from .models import (
     IcebergProject,
     ItemConfig,
@@ -17,6 +24,7 @@ from .models import (
     ItemSourceType,
     LayerConfig,
     PlacementConfig,
+    is_image_source,
     MAX_ITEM_TITLE_LENGTH,
     MAX_LAYER_NAME_LENGTH,
     MAX_PROJECT_NAME_LENGTH,
@@ -165,6 +173,7 @@ class IcebergService:
         if len(project.items) >= MAX_ITEMS_PER_PROJECT:
             raise IcebergUserError(f"⚠️ Esse iceberg já atingiu o limite de {MAX_ITEMS_PER_PROJECT} itens.", code="items_limit")
         layer = self.resolve_layer(project, layer_ref)
+        self._validate_layer_item_limits(project, layer.id, source_type)
         resolved = await self.source_registry.resolve(
             source_type,
             title=title,
@@ -176,10 +185,16 @@ class IcebergService:
             user_id=owner_id,
         )
         now = utc_now_iso()
+        # For image items the provider returns "" when user didn't supply a title;
+        # for text items, a blank title should fall back to something visible.
+        if is_image_source(source_type):
+            clean_title = resolved.title  # may be ""
+        else:
+            clean_title = normalize_text(resolved.title, max_length=MAX_ITEM_TITLE_LENGTH, fallback="Item") or "Item"
         item = ItemConfig(
             id=new_uuid(),
             layer_id=layer.id,
-            title=normalize_text(resolved.title, max_length=MAX_ITEM_TITLE_LENGTH, fallback="Item") or "Item",
+            title=clean_title,
             source=resolved.source,
             display_style=ItemDisplayStyle.CHIP if source_type is ItemSourceType.TEXT else project.default_item_style,
             placement=PlacementConfig(),
@@ -208,7 +223,11 @@ class IcebergService:
         if title is not None:
             item.title = normalize_text(title, max_length=MAX_ITEM_TITLE_LENGTH, fallback=item.title) or item.title
         if layer_ref:
-            item.layer_id = self.resolve_layer(project, layer_ref).id
+            new_layer = self.resolve_layer(project, layer_ref)
+            if new_layer.id != item.layer_id:
+                # Validate limits on destination layer
+                self._validate_layer_item_limits(project, new_layer.id, item.source.type, exclude_item_id=item.id)
+                item.layer_id = new_layer.id
         if placement is not None:
             item.placement = placement
         item.updated_at = utc_now_iso()
@@ -296,6 +315,7 @@ class IcebergService:
         except (TypeError, ValueError) as exc:
             raise IcebergUserError("⚠️ Esse JSON não bate com o formato esperado de um iceberg.", code="import_shape_invalid", detail=str(exc)) from exc
         self._validate_project_layers(project, code_prefix="import_layers")
+        self._validate_imported_layer_item_limits(project)
         if force_new_id:
             project.id = new_uuid()
         project.owner_id = int(owner_id)
@@ -367,3 +387,48 @@ class IcebergService:
         if count > ICEBERG_MAX_LAYERS:
             raise IcebergUserError(f"⚠️ Use no máximo {ICEBERG_MAX_LAYERS} camadas.", code=f"{code_prefix}_too_many")
         return count
+
+    def _validate_layer_item_limits(
+        self,
+        project: IcebergProject,
+        layer_id: str,
+        source_type: ItemSourceType,
+        *,
+        exclude_item_id: str | None = None,
+    ) -> None:
+        """Check per-layer item limits (10 texts / 4 images) BEFORE saving."""
+        layer_items = [
+            item for item in project.items
+            if item.layer_id == layer_id and item.id != exclude_item_id
+        ]
+        if is_image_source(source_type):
+            image_count = sum(1 for item in layer_items if is_image_source(item.source.type))
+            if image_count >= MAX_IMAGE_ITEMS_PER_LAYER:
+                raise IcebergUserError(
+                    f"⚠️ Essa camada já atingiu o limite de {MAX_IMAGE_ITEMS_PER_LAYER} imagens.",
+                    code="layer_image_limit",
+                )
+        else:
+            text_count = sum(1 for item in layer_items if not is_image_source(item.source.type))
+            if text_count >= MAX_TEXT_ITEMS_PER_LAYER:
+                raise IcebergUserError(
+                    f"⚠️ Essa camada já atingiu o limite de {MAX_TEXT_ITEMS_PER_LAYER} textos.",
+                    code="layer_text_limit",
+                )
+
+    def _validate_imported_layer_item_limits(self, project: IcebergProject) -> None:
+        """Validate all layers in an imported project respect per-layer limits."""
+        for layer in project.layers:
+            layer_items = [item for item in project.items if item.layer_id == layer.id]
+            text_count = sum(1 for item in layer_items if not is_image_source(item.source.type))
+            image_count = sum(1 for item in layer_items if is_image_source(item.source.type))
+            if text_count > MAX_TEXT_ITEMS_PER_LAYER:
+                raise IcebergUserError(
+                    f"⚠️ A camada '{layer.name}' do JSON importado excede o limite de {MAX_TEXT_ITEMS_PER_LAYER} textos.",
+                    code="import_layer_text_limit",
+                )
+            if image_count > MAX_IMAGE_ITEMS_PER_LAYER:
+                raise IcebergUserError(
+                    f"⚠️ A camada '{layer.name}' do JSON importado excede o limite de {MAX_IMAGE_ITEMS_PER_LAYER} imagens.",
+                    code="import_layer_image_limit",
+                )

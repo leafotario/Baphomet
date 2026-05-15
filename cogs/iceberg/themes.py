@@ -13,11 +13,11 @@ DEFAULT_LAYER_NAMES = (
     "Submerso",
     "Profundo",
     "Abismo",
-    "Camada 6",
-    "Camada 7",
-    "Camada 8",
-    "Camada 9",
-    "Camada 10",
+    "Zona Hadal",
+    "Subglacial",
+    "Núcleo do Iceberg",
+    "Abismo Azul",
+    "Fundo do Iceberg",
 )
 
 

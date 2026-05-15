@@ -29,6 +29,19 @@ class ItemSourceType(StrEnum):
     ATTACHMENT = "ATTACHMENT"
 
 
+_IMAGE_SOURCE_TYPES = frozenset({
+    ItemSourceType.IMAGE_URL,
+    ItemSourceType.DISCORD_AVATAR,
+    ItemSourceType.WIKIPEDIA,
+    ItemSourceType.ATTACHMENT,
+})
+
+
+def is_image_source(source_type: ItemSourceType) -> bool:
+    """Return True if the source type represents an image (not pure text)."""
+    return source_type in _IMAGE_SOURCE_TYPES
+
+
 class LayerLayoutMode(StrEnum):
     SCATTER = "SCATTER"
     GRID = "GRID"

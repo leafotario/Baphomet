@@ -253,9 +253,12 @@ class IcebergManageItemsView(discord.ui.View):
         end_idx = start_idx + 25
 
         for item in ordered[start_idx:end_idx]:
+            display_title = item.title.strip() if item.title else ""
+            if not display_title:
+                display_title = item.source.metadata.get("auto_title") or item.source.type.value
             options.append(
                 discord.SelectOption(
-                    label=item.title[:100],
+                    label=display_title[:100],
                     value=item.id,
                     description=f"{layer_names.get(item.layer_id, 'Camada')} • {item.source.type.value}"[:100],
                     default=item.id == self.selected_item_id,
@@ -278,9 +281,12 @@ class IcebergManageItemsView(discord.ui.View):
             color=discord.Color.blurple(),
         )
         if selected:
+            display_title = selected.title.strip() if selected.title else ""
+            if not display_title:
+                display_title = selected.source.metadata.get("auto_title") or selected.source.type.value
             embed.add_field(
                 name="Selecionado",
-                value=f"**{discord.utils.escape_markdown(selected.title)}**\nCamada: {self._layer_display_name(selected.layer_id)}",
+                value=f"**{discord.utils.escape_markdown(display_title)}**\nCamada: {self._layer_display_name(selected.layer_id)}",
                 inline=False,
             )
         else:
