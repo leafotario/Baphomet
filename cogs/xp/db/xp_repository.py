@@ -405,7 +405,21 @@ class XpRepository:
                     expires_at=expires_at,
                 )
             )
-        return tuple(penalties)
+        return self._coalesce_vinculo_penalties(tuple(penalties))
+
+    def _coalesce_vinculo_penalties(
+        self,
+        penalties: tuple[PenaltyContribution, ...],
+    ) -> tuple[PenaltyContribution, ...]:
+        rupture_penalties = [penalty for penalty in penalties if penalty.reason == "ruptura"]
+        other_penalties = [penalty for penalty in penalties if penalty.reason != "ruptura"]
+        if rupture_penalties:
+            strongest_rupture = min(
+                rupture_penalties,
+                key=lambda penalty: (penalty.multiplier_delta, penalty.expires_at, penalty.penalty_id),
+            )
+            other_penalties.append(strongest_rupture)
+        return tuple(sorted(other_penalties, key=lambda penalty: (penalty.expires_at, penalty.penalty_id)))
 
     def _affinity_level_for_created_at(
         self,

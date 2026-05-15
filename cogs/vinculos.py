@@ -37,8 +37,9 @@ DEFAULT_AFFINITY_LEVEL_3_DAYS = 60
 DEFAULT_RUPTURE_PENALTY_DELTA = -0.10
 DEFAULT_RUPTURE_PENALTY_HOURS = 72
 DEFAULT_TRANSFER_TAX_RATE = 0.20
-DEFAULT_RESONANCE_WINDOW_MINUTES = 30
+DEFAULT_RESONANCE_WINDOW_MINUTES = 24 * 60
 DEFAULT_RESONANCE_BONUS = 0.05
+XP_RESONANCE_WINDOW_MINUTES = 24 * 60
 
 VINCULO_COLOR = discord.Color.from_rgb(93, 39, 126)
 VINCULO_SUCCESS_COLOR = discord.Color.from_rgb(132, 48, 79)
@@ -207,7 +208,8 @@ def _format_datetime(value: str | None) -> str:
     parsed = _parse_iso(value)
     if parsed is None:
         return "data desconhecida"
-    return parsed.strftime("%Y-%m-%d %H:%M UTC")
+    timestamp = int(parsed.timestamp())
+    return f"{parsed.strftime('%Y-%m-%d %H:%M UTC')} (<t:{timestamp}:R>)"
 
 
 def _format_duration(seconds: int | None) -> str:
@@ -922,6 +924,17 @@ class VinculoRepository:
                     """,
                     (now_iso, vinculo.id),
                 )
+                await conn.execute(
+                    """
+                    UPDATE vinculo_penalties
+                    SET active = 0
+                    WHERE guild_id = ?
+                      AND user_id = ?
+                      AND reason = 'ruptura'
+                      AND active = 1
+                    """,
+                    (guild_id, breaker_id),
+                )
                 cur = await conn.execute(
                     """
                     INSERT INTO vinculo_penalties(
@@ -1048,12 +1061,16 @@ class VinculoRepository:
 
         for vinculo in vinculos:
             affinity = self._affinity_for_created_at(vinculo.created_at, settings)
-            multiplier += affinity.bonus
             partner_id = vinculo.partner_id_for(user_id)
             if partner_id is not None:
-                resonance = await self._resonance_for_partner(guild_id, partner_id, settings)
+                resonance = await self._resonance_for_partner(
+                    guild_id,
+                    partner_id,
+                    settings,
+                    window_minutes=XP_RESONANCE_WINDOW_MINUTES,
+                )
                 if resonance.active:
-                    multiplier += settings.resonance_bonus
+                    multiplier += affinity.bonus
 
         penalty_delta = await self.get_active_penalty_delta(guild_id, user_id)
         multiplier += penalty_delta
@@ -1174,6 +1191,8 @@ class VinculoRepository:
         invalid = set(fields) - valid_fields
         if invalid:
             raise ValueError(f"campos de settings inválidos: {sorted(invalid)}")
+        if not fields:
+            return await self.get_guild_settings(guild_id)
         async with self._tx_lock:
             conn = self.connection
             await conn.execute("BEGIN IMMEDIATE")
@@ -1223,11 +1242,22 @@ class VinculoRepository:
                 (guild_id, user_id, now_iso),
             )
             await self.connection.commit()
-        return tuple(self._row_to_penalty(row) for row in rows)
+        return self._coalesce_active_penalties(tuple(self._row_to_penalty(row) for row in rows))
 
     async def get_active_penalty_delta(self, guild_id: int, user_id: int) -> float:
         penalties = await self.get_active_penalties(guild_id, user_id)
         return sum(penalty.multiplier_delta for penalty in penalties)
+
+    def _coalesce_active_penalties(self, penalties: tuple[PenaltySnapshot, ...]) -> tuple[PenaltySnapshot, ...]:
+        ruptura_penalties = [penalty for penalty in penalties if penalty.reason == "ruptura"]
+        other_penalties = [penalty for penalty in penalties if penalty.reason != "ruptura"]
+        if ruptura_penalties:
+            strongest_rupture = min(
+                ruptura_penalties,
+                key=lambda penalty: (penalty.multiplier_delta, penalty.expires_at, penalty.id),
+            )
+            other_penalties.append(strongest_rupture)
+        return tuple(sorted(other_penalties, key=lambda penalty: (penalty.expires_at, penalty.id)))
 
     async def get_status_snapshot(self, guild_id: int, user_id: int, partner_id: int) -> StatusSnapshot | None:
         vinculo = await self.get_active_vinculo_between(guild_id, user_id, partner_id)
@@ -1525,7 +1555,10 @@ class VinculoRepository:
         guild_id: int,
         partner_id: int,
         settings: VinculoGuildSettings,
+        *,
+        window_minutes: int | None = None,
     ) -> ResonanceSnapshot:
+        effective_window = max(1, int(window_minutes or settings.resonance_window_minutes))
         rows = await self.connection.execute_fetchall(
             """
             SELECT last_seen_at, last_channel_id
@@ -1536,21 +1569,21 @@ class VinculoRepository:
             (guild_id, partner_id),
         )
         if not rows:
-            return ResonanceSnapshot(False, None, None, None, settings.resonance_window_minutes, settings.resonance_bonus)
+            return ResonanceSnapshot(False, None, None, None, effective_window, 0.0)
 
         seen_at_raw = str(rows[0]["last_seen_at"])
         seen_at = _parse_iso(seen_at_raw)
         if seen_at is None:
-            return ResonanceSnapshot(False, seen_at_raw, rows[0]["last_channel_id"], None, settings.resonance_window_minutes, settings.resonance_bonus)
+            return ResonanceSnapshot(False, seen_at_raw, rows[0]["last_channel_id"], None, effective_window, 0.0)
 
         seconds_since = int((_utc_now() - seen_at).total_seconds())
-        active = seconds_since <= settings.resonance_window_minutes * 60
+        active = seconds_since <= effective_window * 60
         return ResonanceSnapshot(
             active=active,
             partner_last_seen_at=seen_at_raw,
             partner_last_channel_id=int(rows[0]["last_channel_id"]) if rows[0]["last_channel_id"] is not None else None,
             seconds_since_partner_seen=max(0, seconds_since),
-            window_minutes=settings.resonance_window_minutes,
+            window_minutes=effective_window,
             bonus=settings.resonance_bonus if active else 0.0,
         )
 
@@ -2061,7 +2094,10 @@ class VinculosCog(commands.Cog):
 
         snapshot = await self.repository.get_status_snapshot(interaction.guild.id, interaction.user.id, usuario.id)
         if snapshot is None:
-            await self._send_text(interaction, "👁️ Nenhum vínculo ativo foi encontrado entre vocês.")
+            await self._send_text(
+                interaction,
+                "👁️ Nenhum vínculo ativo foi encontrado entre vocês. Um pedido pendente ainda precisa ser aceito para virar pacto.",
+            )
             return
 
         metadata = _vinculo_metadata(snapshot.vinculo.bond_type)
@@ -2083,11 +2119,12 @@ class VinculosCog(commands.Cog):
 
         resonance = snapshot.resonance
         channel_hint = f" em <#{resonance.partner_last_channel_id}>" if resonance.partner_last_channel_id else ""
+        eligible_bonus = snapshot.affinity.bonus if resonance.active else 0.0
         if resonance.partner_last_seen_at:
             resonance_value = (
                 f"{'Ativa' if resonance.active else 'Adormecida'}: parceiro visto há "
                 f"**{_format_duration(resonance.seconds_since_partner_seen)}**{channel_hint}.\n"
-                f"Janela: **{resonance.window_minutes}min** | Bônus atual: **+{resonance.bonus:.0%}**"
+                f"Janela: **{resonance.window_minutes}min** | Afinidade elegível: **+{eligible_bonus:.0%}**"
             )
         else:
             resonance_value = f"Sem presença recente registrada. Janela: **{resonance.window_minutes}min**."
@@ -2105,7 +2142,7 @@ class VinculosCog(commands.Cog):
         embed.add_field(
             name="XP de vínculo",
             value=(
-                f"Estimativa atual deste pacto: **+{(snapshot.affinity.bonus + snapshot.resonance.bonus):.0%}** por ganho elegível.\n"
+                f"Estimativa atual deste pacto: **+{eligible_bonus:.0%}** por ganho elegível.\n"
                 f"Bônus registrado: **{snapshot.bonus_history.total_bonus_xp} XP** "
                 f"em **{snapshot.bonus_history.event_count}** evento(s).\n"
                 "A trilha fina está preparada para integração direta com o ganho de XP."

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from .db import ProfileDatabase
 from .repositories import ProfileRepository
 from .services import (
+    BondProvider,
     PresentationChannelService,
     ProfileBadgeService,
     ProfileModerationService,
@@ -22,3 +23,4 @@ class ProfileRuntime:
     presentation: PresentationChannelService
     renderer: ProfileRenderService
     badges: ProfileBadgeService
+    bond_provider: BondProvider

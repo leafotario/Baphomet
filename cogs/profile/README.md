@@ -10,6 +10,7 @@
 - `services/profile_render_service.py`: renderer Pillow em PNG, cache de template por tema e cache curto por revisão.
 - `services/presentation_channel_service.py`: sync do canal de apresentação com burst merge e debounce por usuário.
 - `services/level_provider.py`: protocolo/adapters para consumir XP sem acoplar a ficha ao runtime concreto.
+- `services/bond_provider.py`: protocolo/adapters para consumir vínculos vivos e escolher o vínculo primário da ficha.
 
 ## Fluxo de dados
 
@@ -71,6 +72,17 @@ A ficha consome `LevelProvider`. O adapter atual (`XpRuntimeLevelProvider`)
 consulta `bot.xp_runtime` quando disponível e degrada para `NullLevelProvider`
 se o runtime falhar. Futuras mudanças no XP devem manter o contrato de
 `LevelSnapshot`: total, level, progresso, restante e cargo-insígnia vivo.
+
+## Vínculos
+
+A ficha consome `BondProvider`. O adapter atual (`VinculosRuntimeBondProvider`)
+consulta `bot.vinculos_runtime` quando disponível e degrada para
+`NullBondProvider` se o runtime falhar. O builder resolve o vínculo primário,
+avatar do parceiro e payload visual; o renderer recebe somente dados prontos.
+Quando houver múltiplos vínculos ativos, o primário é escolhido por: maior
+afinidade, ressonância mais recente, pacto mais antigo e menor id técnico.
+Esses dados entram na assinatura viva do cache para evitar ficha stale quando
+parceiro, tipo, afinidade, ressonância ou ornamento mudarem.
 
 ## QA manual
 

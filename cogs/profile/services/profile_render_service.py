@@ -337,7 +337,20 @@ class ProfileRenderService:
     ) -> ProfileRenderResult:
         try:
             data = await self.build_profile_render_data(guild, member)
-            image_bytes = self.card_renderer.render(data)
+            cache_key = self._cache_key_for_render_data(guild.id, member.id, data)
+            lock = self._render_lock_for(guild.id, member.id)
+            async with lock:
+                cached = self._get_cached_render(cache_key)
+                if cached is not None:
+                    buffer = io.BytesIO(cached)
+                    buffer.seek(0)
+                    return ProfileRenderResult(
+                        image=buffer,
+                        filename=f"ficha_{member.id}.png",
+                        reason=None,
+                    )
+                image_bytes = self.card_renderer.render(data)
+                self._store_render(cache_key, image_bytes)
         except Exception:
             LOGGER.exception("profile_render_failed guild_id=%s user_id=%s", guild.id, member.id)
             raise
@@ -1140,6 +1153,20 @@ class ProfileRenderService:
             revision=snapshot.profile.render_revision,
             theme_key=self._theme_for(snapshot).key,
             live_signature=live_signature,
+        )
+
+    def _cache_key_for_render_data(
+        self,
+        guild_id: int,
+        user_id: int,
+        data: ProfileRenderData,
+    ) -> ProfileRenderCacheKey:
+        return ProfileRenderCacheKey(
+            guild_id=guild_id,
+            user_id=user_id,
+            revision=max(0, int(getattr(data, "render_revision", 0))),
+            theme_key=str(getattr(data, "theme_key", "classic") or "classic"),
+            live_signature=tuple(getattr(data, "live_signature", ()) or ()),
         )
 
     def _render_lock_for(self, guild_id: int, user_id: int) -> asyncio.Lock:

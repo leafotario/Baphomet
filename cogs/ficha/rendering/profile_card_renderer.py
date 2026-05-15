@@ -6,7 +6,7 @@ import json
 import math
 import os
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -65,6 +65,23 @@ class Rect:
 
 
 @dataclass(frozen=True, slots=True)
+class BondOverlayRenderData:
+    should_render: bool
+    partner_user_id: int
+    partner_display_name: str
+    partner_avatar_bytes: bytes | None = None
+    bond_type: str = "pacto_sangue"
+    bond_label: str = "Pacto de sangue"
+    affinity_level: int = 1
+    affinity_label: str = "fio fino"
+    resonance_active: bool = False
+    medal_label: str | None = None
+    line_style: str = "organic"
+    line_color: ColorA = (188, 44, 70, 235)
+    line_glow: ColorA = (188, 44, 70, 86)
+
+
+@dataclass(frozen=True, slots=True)
 class ProfileRenderData:
     user_id: int
     username: str
@@ -78,11 +95,15 @@ class ProfileRenderData:
     badge_image_bytes: bytes | None = None
     bonds_count: int = 0
     bonds_multiplier: float = 1.0
+    primary_bond: BondOverlayRenderData | None = None
     level: int = 0
     xp_current: int = 0
     xp_required: int = 1
     xp_total: int = 0
     xp_percent: float = 0.0
+    render_revision: int = 0
+    theme_key: str = "classic"
+    live_signature: tuple[object, ...] = field(default_factory=tuple)
 
 
 class FontManager:
@@ -863,12 +884,13 @@ class ProfileCardRenderer:
             max_width=420,
         )
 
+        right = "REGISTRO DO ALTAR"
         right = self._truncate_to_width(draw, right, font, 420)
         right_w = self._measure_width(draw, right, font)
 
         self._draw_text(
             draw,
-            (rect.right - 30 - right_w, rect.y + 22),
+            (rect.right - 30 - right_w, rect.y + 10),
             right,
             font,
             fill=(210, 210, 218, 255),
@@ -1158,6 +1180,10 @@ class ProfileCardRenderer:
         draw = ImageDraw.Draw(canvas, "RGBA")
 
         self._draw_section_title(draw, rect, "Vínculos")
+        primary = getattr(profile, "primary_bond", None)
+        if primary is not None and getattr(primary, "should_render", False):
+            self._draw_primary_bond_overlay(canvas, profile, primary, rect)
+            return
 
         count = max(0, int(profile.bonds_count))
         count_text = f"{count} vínculo" if count == 1 else f"{count} vínculos"
@@ -1207,6 +1233,173 @@ class ProfileCardRenderer:
             mult_font,
             self.theme.text_soft,
         )
+
+    def _draw_primary_bond_overlay(
+        self,
+        canvas: Image.Image,
+        profile: ProfileRenderData,
+        bond: BondOverlayRenderData,
+        rect: Rect,
+    ) -> None:
+        draw = ImageDraw.Draw(canvas, "RGBA")
+        color = self._rgba(getattr(bond, "line_color", None), (188, 44, 70, 235))
+        glow = self._rgba(getattr(bond, "line_glow", None), (188, 44, 70, 86))
+
+        self_center = (rect.x + 72, rect.y + 118)
+        partner_center = (rect.right - 72, rect.y + 118)
+        self._draw_bond_thread(draw, self_center, partner_center, color, glow, str(getattr(bond, "line_style", "organic")))
+
+        self_avatar = self._bond_avatar(
+            profile.avatar_bytes,
+            self._initials(profile.display_name or profile.username),
+            58,
+            color,
+        )
+        partner_avatar = self._bond_avatar(
+            getattr(bond, "partner_avatar_bytes", None),
+            self._initials(getattr(bond, "partner_display_name", "") or str(getattr(bond, "partner_user_id", "?"))),
+            68,
+            color,
+        )
+        try:
+            self._safe_paste(canvas, self_avatar, (self_center[0] - 29, self_center[1] - 29), self_avatar)
+            self._safe_paste(canvas, partner_avatar, (partner_center[0] - 34, partner_center[1] - 34), partner_avatar)
+        finally:
+            self_avatar.close()
+            partner_avatar.close()
+
+        draw.ellipse(
+            (self_center[0] - 33, self_center[1] - 33, self_center[0] + 33, self_center[1] + 33),
+            outline=color,
+            width=3,
+        )
+        draw.ellipse(
+            (partner_center[0] - 38, partner_center[1] - 38, partner_center[0] + 38, partner_center[1] + 38),
+            outline=color,
+            width=3,
+        )
+
+        partner_name = self._truncate_to_width(
+            draw,
+            str(getattr(bond, "partner_display_name", "Parceiro")),
+            self._font(18, "bold"),
+            rect.w - 60,
+        )
+        self._draw_centered_text(
+            draw,
+            Rect(rect.x + 28, rect.y + 154, rect.w - 56, 24),
+            partner_name,
+            self._font(18, "bold"),
+            self.theme.text,
+        )
+
+        bond_label = str(getattr(bond, "bond_label", "Pacto"))
+        affinity_label = str(getattr(bond, "affinity_label", "fio fino"))
+        resonance = "ressonante" if getattr(bond, "resonance_active", False) else "adormecido"
+        details = f"{bond_label} • N{int(getattr(bond, 'affinity_level', 1))} {affinity_label} • {resonance}"
+        details_font = self._fit_font_to_width_safe(
+            draw,
+            details,
+            rect.w - 52,
+            weight="regular",
+            start_size=14,
+            min_size=11,
+        )
+        details = self._truncate_to_width(draw, details, details_font, rect.w - 52)
+        details_rect = Rect(rect.x + 26, rect.y + 178, rect.w - 52, 24)
+        self._draw_field(draw, details_rect, radius=12)
+        self._draw_centered_text(draw, details_rect, details, details_font, self.theme.text_soft)
+
+        medal_label = getattr(bond, "medal_label", None)
+        if medal_label:
+            medal_rect = Rect(rect.x + 50, rect.y + 76, rect.w - 100, 28)
+            draw.rounded_rectangle(medal_rect.box, radius=14, fill=color, outline=(255, 255, 255, 90), width=1)
+            draw.ellipse((medal_rect.x + 9, medal_rect.y + 7, medal_rect.x + 23, medal_rect.y + 21), fill=(255, 239, 172, 255))
+            label = self._truncate_to_width(draw, str(medal_label), self._font(13, "bold"), medal_rect.w - 44)
+            self._draw_text(
+                draw,
+                (medal_rect.x + 30, medal_rect.y + 6),
+                label,
+                self._font(13, "bold"),
+                fill=(255, 250, 230, 255),
+                shadow=(0, 0, 0, 150),
+                offset=(1, 1),
+                max_width=medal_rect.w - 44,
+            )
+
+    def _draw_bond_thread(
+        self,
+        draw: ImageDraw.ImageDraw,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        color: ColorA,
+        glow: ColorA,
+        style: str,
+    ) -> None:
+        x1, y1 = start
+        x2, y2 = end
+        if style == "jagged":
+            points = [
+                start,
+                (x1 + 38, y1 - 20),
+                (x1 + 78, y1 + 16),
+                (x1 + 120, y1 - 10),
+                (x2 - 42, y2 + 18),
+                end,
+            ]
+            draw.line(points, fill=glow, width=12, joint="curve")
+            draw.line(points, fill=color, width=4, joint="curve")
+            for px, py in points[1:-1:2]:
+                draw.line((px - 8, py - 10, px + 8, py + 10), fill=color, width=2)
+            return
+
+        if style == "chain":
+            draw.line((x1, y1, x2, y2), fill=glow, width=12)
+            draw.line((x1, y1, x2, y2), fill=color, width=3)
+            for index in range(1, 6):
+                t = index / 6
+                cx = int(x1 + (x2 - x1) * t)
+                cy = int(y1 + (y2 - y1) * t)
+                draw.ellipse((cx - 9, cy - 5, cx + 9, cy + 5), outline=color, width=2)
+            return
+
+        control = ((x1 + x2) // 2, y1 - 30)
+        points = []
+        for step in range(32):
+            t = step / 31
+            xa = x1 + (control[0] - x1) * t
+            ya = y1 + (control[1] - y1) * t
+            xb = control[0] + (x2 - control[0]) * t
+            yb = control[1] + (y2 - control[1]) * t
+            points.append((int(xa + (xb - xa) * t), int(ya + (yb - ya) * t)))
+        draw.line(points, fill=glow, width=13, joint="curve")
+        draw.line(points, fill=color, width=5, joint="curve")
+        for index in (9, 18, 25):
+            px, py = points[index]
+            draw.ellipse((px - 3, py - 3, px + 3, py + 3), fill=(235, 93, 112, 230))
+
+    def _bond_avatar(
+        self,
+        avatar_bytes: bytes | bytearray | memoryview | None,
+        initials: str,
+        size: int,
+        accent: ColorA,
+    ) -> Image.Image:
+        source = self._safe_load_external_image(avatar_bytes)
+        if source is None:
+            return create_avatar_placeholder(
+                size,
+                initials=initials,
+                font=self._font(max(18, size // 3), "display"),
+                fill_top=(68, 64, 82, 255),
+                fill_bottom=(28, 25, 36, 255),
+                accent=accent,
+                text_fill=self.theme.text,
+            )
+        try:
+            return circular_crop(source, size)
+        finally:
+            source.close()
 
     def _draw_xp_progress(self, canvas: Image.Image, profile: ProfileRenderData) -> None:
         rect = self.layout.xp_panel

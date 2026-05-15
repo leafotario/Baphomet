@@ -166,10 +166,7 @@ class XpService:
         base_xp: int,
         awarded_at_iso: str,
     ) -> VinculoXpContext:
-        if self.vinculos_provider is None:
-            return await self._build_base_vinculo_context(base_xp)
-
-        rich_getter = getattr(self.vinculos_provider, "get_xp_context", None)
+        rich_getter = getattr(self.vinculos_provider, "get_xp_context", None) if self.vinculos_provider else None
         if callable(rich_getter):
             try:
                 rich_value = await rich_getter(guild_id, user_id, base_xp)
@@ -199,6 +196,9 @@ class XpService:
                 guild_id,
                 user_id,
             )
+
+        if self.vinculos_provider is None:
+            return await self._build_base_vinculo_context(base_xp)
 
         try:
             multiplier = await self.vinculos_provider.get_xp_multiplier(guild_id, user_id)

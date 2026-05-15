@@ -16,6 +16,7 @@ from .services import (
     ProfileModerationService,
     ProfileRenderService,
     ProfileService,
+    VinculosRuntimeBondProvider,
     XpRuntimeLevelProvider,
 )
 
@@ -38,7 +39,13 @@ async def setup(bot: commands.Bot) -> None:
         moderation_service=moderation,
     )
     badges = ProfileBadgeService(repository)
-    data_builder = ProfileCardDataBuilder(profile_service=service, bot=bot, badge_service=badges)
+    bond_provider = VinculosRuntimeBondProvider(bot)
+    data_builder = ProfileCardDataBuilder(
+        profile_service=service,
+        bot=bot,
+        badge_service=badges,
+        bond_provider=bond_provider,
+    )
     renderer = ProfileRenderService(data_builder=data_builder)
     presentation = PresentationChannelService(service)
 
@@ -50,5 +57,6 @@ async def setup(bot: commands.Bot) -> None:
         presentation=presentation,
         renderer=renderer,
         badges=badges,
+        bond_provider=bond_provider,
     )
     await bot.add_cog(ProfileCog(bot, service, renderer, presentation, badges))
