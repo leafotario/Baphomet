@@ -2225,8 +2225,8 @@ class VinculosCog(commands.Cog):
         await self._send_embed(interaction, embed)
 
     @config.command(name="adicionar", description="Registra um cargo como interesse de vínculo.")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     @app_commands.describe(cargo="Cargo que passará a contar como interesse")
     async def config_adicionar(self, interaction: discord.Interaction, cargo: discord.Role) -> None:
@@ -2243,8 +2243,8 @@ class VinculosCog(commands.Cog):
         await self._send_text(interaction, f"📜 Interesse registrado no grimório: {cargo.mention}.")
 
     @config.command(name="remover", description="Remove um cargo da lista de interesses.")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     @app_commands.describe(cargo="Cargo que deixará de contar como interesse")
     async def config_remover(self, interaction: discord.Interaction, cargo: discord.Role) -> None:
@@ -2258,8 +2258,8 @@ class VinculosCog(commands.Cog):
         await self._send_text(interaction, f"🕯️ Interesse removido do grimório: {cargo.mention}.")
 
     @config.command(name="listar", description="Lista os cargos configurados como interesses.")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     async def config_listar(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
@@ -2271,8 +2271,8 @@ class VinculosCog(commands.Cog):
         await self._send_embed(interaction, embed)
 
     @config.command(name="limpar", description="Remove todos os cargos configurados como interesses.")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     async def config_limpar(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
@@ -2282,8 +2282,8 @@ class VinculosCog(commands.Cog):
         await self._send_text(interaction, f"⚰️ O grimório foi limpo. **{removed}** interesse(s) foram apagados deste servidor.")
 
     @config.command(name="canal-fofoca", description="Define o canal público dos anúncios de vínculos.")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     @app_commands.describe(canal="Canal que receberá anúncios; vazio desativa")
     async def config_canal_fofoca(self, interaction: discord.Interaction, canal: discord.TextChannel | None = None) -> None:
@@ -2297,8 +2297,8 @@ class VinculosCog(commands.Cog):
         await self._send_text(interaction, f"📣 O altar agora sussurra em <#{settings.gossip_channel_id}>.")
 
     @config.command(name="afinidade", description="Configura os dias necessários para afinidade 2 e 3.")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     async def config_afinidade(
         self,
@@ -2320,8 +2320,8 @@ class VinculosCog(commands.Cog):
         )
 
     @config.command(name="maldicao", description="Configura a maldição de ruptura.")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     async def config_maldicao(
         self,
@@ -2339,8 +2339,8 @@ class VinculosCog(commands.Cog):
         )
 
     @config.command(name="doacao", description="Configura a taxa das doações de XP entre parceiros.")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     async def config_doacao(
         self,
@@ -2354,8 +2354,8 @@ class VinculosCog(commands.Cog):
         await self._send_text(interaction, f"🪙 Taxa de doação configurada em **{settings.transfer_tax_rate:.0%}**.")
 
     @config.command(name="ressonancia", description="Configura presença recente e bônus de ressonância.")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     async def config_ressonancia(
         self,
@@ -2498,8 +2498,8 @@ class VinculosCog(commands.Cog):
         await self._send_embed(interaction, embed, ephemeral=False)
 
     @vinculo.command(name="relatorio", description="Mostra o relatório administrativo do altar de vínculos.")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.guild_only()
     async def vinculo_relatorio(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
