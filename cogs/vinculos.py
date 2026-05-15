@@ -30,6 +30,7 @@ DB_PATH = DATA_DIR / "baphomet_xp.sqlite3"
 
 REQUEST_TIMEOUT_SECONDS = 120
 REQUEST_COOLDOWN_SECONDS = 15
+MIN_COMMON_INTEREST_ROLES = 2
 XP_BONUS_PER_VINCULO = 0.1
 DEFAULT_BOND_TYPE = "pacto_sangue"
 DEFAULT_AFFINITY_LEVEL_2_DAYS = 7
@@ -1989,10 +1990,13 @@ class VinculosCog(commands.Cog):
             requester=requester,
             target=target,
         )
-        if not common_role_ids:
+        if len(common_role_ids) < MIN_COMMON_INTEREST_ROLES:
             await self._send_text(
                 interaction,
-                "🧵 Criatura efêmera, os fios entre vocês sequer se tocaram. Nenhum interesse em comum foi encontrado.",
+                (
+                    "🧵 Criatura efêmera, os fios entre vocês ainda são fracos demais. "
+                    f"Vocês precisam ter pelo menos **{MIN_COMMON_INTEREST_ROLES}** interesse(s) em comum para selar um vínculo."
+                ),
             )
             return
 
