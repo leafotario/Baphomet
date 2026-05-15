@@ -2501,7 +2501,7 @@ class VinculosCog(commands.Cog):
                 "`/vinculo config listar` e `/limpar` — revisam ou apagam o grimório.\n"
                 "`/vinculo config canal-fofoca` — define onde anúncios públicos aparecem.\n"
                 "`/vinculo config afinidade`, `/maldicao`, `/doacao`, `/ressonancia` — ajustam as regras do altar.\n"
-                "`/vinculo_status` — relatório administrativo completo."
+                "`/vinculo_relatorio` — relatório administrativo completo."
             ),
             inline=False,
         )
@@ -2520,11 +2520,11 @@ class VinculosCog(commands.Cog):
 
         await self._send_embed(interaction, embed, ephemeral=False)
 
-    @app_commands.command(name="vinculo_status", description="Mostra o relatório administrativo do altar de vínculos.")
+    @app_commands.command(name="vinculo_relatorio", description="Mostra o relatório administrativo do altar de vínculos.")
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     @app_commands.guild_only()
-    async def vinculo_status(self, interaction: discord.Interaction) -> None:
+    async def vinculo_relatorio(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
             await self._send_text(interaction, "🕯️ Este ritual só existe dentro de um servidor.")
             return
