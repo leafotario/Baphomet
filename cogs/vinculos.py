@@ -2399,9 +2399,8 @@ class VinculosCog(commands.Cog):
         embed = discord.Embed(
             title="📖 Grimório público dos vínculos",
             description=(
-                "Aproximem-se, criaturas efêmeras. O sistema de vínculos é o altar onde duas almas "
-                "costuram interesses em comum, presença recente, afinidade e XP. Não é só amizade com glitter sombrio: "
-                "tem regra, consequência e fofoca pública quando o servidor permite."
+                "O sistema de vínculos é o altar onde duas almas "
+                "conectam interesse em comum, presença, afinidade e XP."
             ),
             color=VINCULO_COLOR,
         )
@@ -2420,11 +2419,10 @@ class VinculosCog(commands.Cog):
         embed.add_field(
             name="📜 Condições do altar",
             value=(
-                "• Não dá para criar vínculo consigo mesma. Narciso já sofreu o bastante.\n"
+                "• Não dá para criar vínculo consigo mesmo.\n"
                 "• Bots não assinam pacto; lata não sangra.\n"
-                "• As duas pessoas precisam ter pelo menos **um cargo de interesse em comum**.\n"
+                "• As duas pessoas precisam ter pelo menos **dois cargos de interesse em comum**.\n"
                 "• Só pode existir **um vínculo ativo entre a mesma dupla** por vez.\n"
-                f"• Interesses atuais: {interest_summary}"
             ),
             inline=False,
         )
@@ -2467,7 +2465,6 @@ class VinculosCog(commands.Cog):
                 "Com `/vinculo doar_xp`, você pode transferir XP para uma pessoa com vínculo ativo.\n"
                 f"A taxa ritual atual é de **{settings.transfer_tax_rate:.0%}**: essa parte some no vazio, "
                 "e o restante chega para o parceiro.\n"
-                "Sem saldo, sem vínculo ou tentando doar para si mesma? O altar fecha a cara."
             ),
             inline=False,
         )
@@ -2485,38 +2482,14 @@ class VinculosCog(commands.Cog):
         embed.add_field(
             name="🔮 Comandos principais",
             value=(
-                "`/vinculo criar` — oferece um pacto.\n"
-                "`/vinculo status` — mostra afinidade, ressonância, maldições, doações e bônus registrado.\n"
-                "`/vinculo doar_xp` — doa XP com taxa ritual.\n"
-                "`/vinculo encerrar` — rompe o vínculo e aceita a consequência.\n"
-                "`/vinculo_ajuda` — abre este grimório público."
+                "`/vinculo criar` - oferece um pacto.\n"
+                "`/vinculo status` - mostra afinidade, ressonância, maldições, doações e bônus registrado.\n"
+                "`/vinculo doar_xp` - doa XP com taxa ritual.\n"
+                "`/vinculo encerrar` - rompe o vínculo e aceita a consequência.\n"
+                "`/vinculo_ajuda` - abre este grimório público."
             ),
             inline=False,
         )
-
-        embed.add_field(
-            name="🛠️ Para administradores",
-            value=(
-                "`/vinculo config adicionar` e `/remover` — controlam cargos de interesse.\n"
-                "`/vinculo config listar` e `/limpar` — revisam ou apagam o grimório.\n"
-                "`/vinculo config canal-fofoca` — define onde anúncios públicos aparecem.\n"
-                "`/vinculo config afinidade`, `/maldicao`, `/doacao`, `/ressonancia` — ajustam as regras do altar.\n"
-                "`/vinculo_relatorio` — relatório administrativo completo."
-            ),
-            inline=False,
-        )
-
-        embed.add_field(
-            name="📣 Canal de fofoca do altar",
-            value=(
-                f"Canal atual: {gossip_channel}.\n"
-                "Quando configurado, o Baphomet anuncia pactos aceitos, rupturas e amadurecimentos de afinidade. "
-                "Porque pacto secreto é estética, mas fofoca pública é infraestrutura."
-            ),
-            inline=False,
-        )
-
-        embed.set_footer(text="Baphomet observa os fios. Use com juízo, ou pelo menos com estilo.")
 
         await self._send_embed(interaction, embed, ephemeral=False)
 
