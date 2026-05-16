@@ -200,7 +200,7 @@ class VinculoCardRenderer:
             return self._avatar_placeholder(size, radius, participant.fallback_initials, accent)
 
         fitted = ImageOps.fit(source.convert("RGBA"), (size, size), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
-        avatar = self._to_grayscale(fitted)
+        avatar = fitted
         mask = rounded_mask((size, size), radius)
         avatar.putalpha(mask)
         return avatar
