@@ -21,6 +21,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from cogs.vinculos_rendering.renderer import VINCULO_CARD_FILENAME, VinculoCardRenderer
+
 
 LOGGER = logging.getLogger("baphomet.vinculos")
 
@@ -1806,6 +1808,7 @@ class VinculosCog(commands.Cog):
     def __init__(self, bot: commands.Bot, repository: VinculoRepository) -> None:
         self.bot = bot
         self.repository = repository
+        self.vinculo_card_renderer = VinculoCardRenderer()
         self._request_cooldowns: dict[tuple[int, int], datetime] = {}
 
     async def cog_load(self) -> None:
@@ -2585,9 +2588,103 @@ class VinculosCog(commands.Cog):
             return None
         settings = await self.repository.get_guild_settings(guild.id)
         if settings.gossip_channel_id is None:
+            LOGGER.info("canal de fofoca de vínculos não configurado guild_id=%s", guild.id)
             return None
         channel = guild.get_channel(settings.gossip_channel_id)
-        return channel if isinstance(channel, discord.TextChannel) else None
+        if isinstance(channel, discord.TextChannel):
+            return channel
+        try:
+            fetched = await guild.fetch_channel(settings.gossip_channel_id)
+        except discord.NotFound:
+            LOGGER.warning(
+                "canal de fofoca de vínculos ausente guild_id=%s channel_id=%s",
+                guild.id,
+                settings.gossip_channel_id,
+            )
+            return None
+        except discord.Forbidden:
+            LOGGER.warning(
+                "sem permissão para acessar canal de fofoca de vínculos guild_id=%s channel_id=%s",
+                guild.id,
+                settings.gossip_channel_id,
+            )
+            return None
+        except discord.HTTPException:
+            LOGGER.warning(
+                "falha ao buscar canal de fofoca de vínculos guild_id=%s channel_id=%s",
+                guild.id,
+                settings.gossip_channel_id,
+            )
+            return None
+        if not isinstance(fetched, discord.TextChannel):
+            LOGGER.warning(
+                "canal de fofoca de vínculos incompatível guild_id=%s channel_id=%s channel_type=%s",
+                guild.id,
+                settings.gossip_channel_id,
+                type(fetched).__name__,
+            )
+            return None
+        return fetched
+
+    async def _resolve_vinculo_participant(
+        self,
+        guild: discord.Guild | None,
+        user_id: int,
+    ) -> discord.Member | discord.User | None:
+        if guild is not None:
+            member = guild.get_member(user_id)
+            if member is not None:
+                return member
+            try:
+                return await guild.fetch_member(user_id)
+            except discord.NotFound:
+                LOGGER.info("membro de vínculo não encontrado guild_id=%s user_id=%s", guild.id, user_id)
+            except discord.Forbidden:
+                LOGGER.warning("sem permissão para buscar membro de vínculo guild_id=%s user_id=%s", guild.id, user_id)
+            except discord.HTTPException:
+                LOGGER.warning("falha ao buscar membro de vínculo guild_id=%s user_id=%s", guild.id, user_id)
+
+        cached_user = self.bot.get_user(user_id)
+        if cached_user is not None:
+            return cached_user
+        try:
+            return await self.bot.fetch_user(user_id)
+        except discord.NotFound:
+            LOGGER.info("usuário de vínculo não encontrado user_id=%s", user_id)
+        except discord.HTTPException:
+            LOGGER.warning("falha ao buscar usuário de vínculo user_id=%s", user_id)
+        return None
+
+    async def _build_vinculo_acceptance_file(
+        self,
+        *,
+        guild: discord.Guild | None,
+        requester_id: int,
+        target_id: int,
+        accent: tuple[int, int, int],
+    ) -> discord.File | None:
+        try:
+            requester, target = await asyncio.gather(
+                self._resolve_vinculo_participant(guild, requester_id),
+                self._resolve_vinculo_participant(guild, target_id),
+            )
+            image = await self.vinculo_card_renderer.render(
+                participant_a=requester,
+                participant_b=target,
+                accent=accent,
+                fallback_name_a="Usuario 1",
+                fallback_name_b="Usuario 2",
+            )
+            image.seek(0)
+            return discord.File(image, filename=VINCULO_CARD_FILENAME)
+        except Exception:
+            LOGGER.exception(
+                "falha ao gerar card público de vínculo guild_id=%s requester_id=%s target_id=%s",
+                getattr(guild, "id", None),
+                requester_id,
+                target_id,
+            )
+            return None
 
     async def announce_vinculo_accepted(
         self,
@@ -2608,7 +2705,15 @@ class VinculosCog(commands.Cog):
         )
         embed.add_field(name="Tipo", value=f"{metadata.emoji} **{metadata.label}**", inline=True)
         embed.add_field(name="Afinidade inicial", value="Nível 1 — fio fino (**+5%**)", inline=True)
-        await self._send_public_embed(channel, embed)
+        file = await self._build_vinculo_acceptance_file(
+            guild=guild,
+            requester_id=requester_id,
+            target_id=target_id,
+            accent=metadata.render_accent,
+        )
+        if file is not None:
+            embed.set_image(url=f"attachment://{VINCULO_CARD_FILENAME}")
+        await self._send_public_embed(channel, embed, file=file)
 
     async def announce_vinculo_broken(
         self,
@@ -2655,11 +2760,26 @@ class VinculosCog(commands.Cog):
         embed.add_field(name="Afinidade", value=f"Nível **{affinity.level}** | bônus **+{affinity.bonus:.0%}**", inline=False)
         await self._send_public_embed(channel, embed)
 
-    async def _send_public_embed(self, channel: discord.TextChannel, embed: discord.Embed) -> None:
+    async def _send_public_embed(
+        self,
+        channel: discord.TextChannel,
+        embed: discord.Embed,
+        *,
+        file: discord.File | None = None,
+    ) -> None:
         try:
-            await channel.send(embed=embed)
-        except (discord.Forbidden, discord.HTTPException):
-            LOGGER.warning("falha ao enviar anúncio público de vínculo channel_id=%s", channel.id)
+            if file is None:
+                await channel.send(embed=embed)
+            else:
+                await channel.send(embed=embed, file=file)
+        except discord.Forbidden:
+            LOGGER.warning("sem permissão para enviar anúncio público de vínculo channel_id=%s", channel.id)
+        except discord.HTTPException:
+            LOGGER.warning(
+                "falha ao enviar anúncio público de vínculo channel_id=%s with_file=%s",
+                channel.id,
+                file is not None,
+            )
 
     async def cog_app_command_error(
         self,
