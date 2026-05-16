@@ -382,13 +382,14 @@ class XpCardRenderer:
                 self._draw_text(draw, (320, y + 30), display_name, font=name_font, fill=name_color, stroke_width=1)
                 
                 if badge_bytes:
-                    badge_img = self._create_badge_image(badge_bytes, 24)
+                    badge_size = 40
+                    badge_img = self._create_badge_image(badge_bytes, badge_size)
                     if badge_img:
                         name_bbox = draw.textbbox((0, 0), display_name, font=name_font)
                         name_w = name_bbox[2] - name_bbox[0]
                         name_h = name_bbox[3] - name_bbox[1]
                         icon_x = 320 + name_w + 12
-                        icon_y = y + 30 + (name_h - 24) // 2 + 5
+                        icon_y = y + 30 + (name_h - badge_size) // 2 + 5
                         layer.paste(badge_img, (icon_x, icon_y), badge_img)
                 
                 self._draw_text(draw, (320, y + 78), f"LVL {entry.level}  •  {entry.total_xp:,} XP", font=self._font(24, weight="regular"), fill=(200, 200, 200, 255))
