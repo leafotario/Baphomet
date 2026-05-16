@@ -2725,8 +2725,8 @@ class VinculosCog(commands.Cog):
                 participant_a=requester,
                 participant_b=target,
                 accent=accent,
-                fallback_name_a="Usuario 1",
-                fallback_name_b="Usuario 2",
+                fallback_name_a=f"Usuario {requester_id}",
+                fallback_name_b=f"Usuario {target_id}",
             )
             image.seek(0)
             return discord.File(image, filename=VINCULO_CARD_FILENAME)
