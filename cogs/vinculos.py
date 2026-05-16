@@ -14,7 +14,7 @@ import pathlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Literal
+from typing import Iterable, Literal
 
 import aiosqlite
 import discord
@@ -336,6 +336,18 @@ class BreakResult:
     vinculo: ActiveVinculo | None = None
     penalty: PenaltySnapshot | None = None
     settings: VinculoGuildSettings | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class InterestRoleMatch:
+    common_role_ids: tuple[int, ...]
+    configured_interest_role_ids: tuple[int, ...]
+    existing_interest_role_ids: tuple[int, ...]
+    missing_configured_role_ids: tuple[int, ...]
+    ignored_default_role_ids: tuple[int, ...]
+    requester_interest_role_ids: tuple[int, ...]
+    target_interest_role_ids: tuple[int, ...]
+    shared_non_interest_role_ids: tuple[int, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1830,6 +1842,39 @@ class VinculosCog(commands.Cog):
         except discord.HTTPException:
             LOGGER.warning("não foi possível responder erro de vínculo ao usuário")
 
+    async def _resolve_member_for_role_check(
+        self,
+        guild: discord.Guild,
+        user_id: int,
+        *,
+        fallback: discord.Member | None = None,
+    ) -> discord.Member | None:
+        try:
+            return await guild.fetch_member(int(user_id))
+        except discord.NotFound:
+            LOGGER.info("membro não encontrado para contagem de interesses guild_id=%s user_id=%s", guild.id, user_id)
+            return None
+        except discord.Forbidden:
+            LOGGER.warning(
+                "sem permissão para atualizar membro antes da contagem de interesses guild_id=%s user_id=%s",
+                guild.id,
+                user_id,
+            )
+        except discord.HTTPException:
+            LOGGER.warning(
+                "falha ao buscar membro atualizado antes da contagem de interesses guild_id=%s user_id=%s",
+                guild.id,
+                user_id,
+                exc_info=True,
+            )
+
+        cached = guild.get_member(int(user_id))
+        if cached is not None:
+            return cached
+        if fallback is not None and fallback.guild.id == guild.id:
+            return fallback
+        return None
+
     def _format_role_ids(self, guild: discord.Guild | None, role_ids: list[int]) -> str:
         if not role_ids:
             return "Nenhum"
@@ -1839,23 +1884,140 @@ class VinculosCog(commands.Cog):
             lines.append(role.mention if role is not None else f"Cargo ausente (`{role_id}`)")
         return _clip_embed_value("\n".join(lines))
 
+    @staticmethod
+    def _normalize_role_id_set(role_ids: Iterable[object]) -> set[int]:
+        normalized: set[int] = set()
+        for raw_role_id in role_ids:
+            try:
+                role_id = int(raw_role_id)
+            except (TypeError, ValueError):
+                LOGGER.warning("id de cargo de interesse inválido ignorado role_id=%r", raw_role_id)
+                continue
+            if role_id > 0:
+                normalized.add(role_id)
+        return normalized
+
+    @staticmethod
+    def _member_role_ids(member: discord.Member) -> set[int]:
+        return {
+            int(role.id)
+            for role in getattr(member, "roles", ())
+            if getattr(role, "id", None) is not None
+        }
+
+    def _partition_configured_interest_role_ids(
+        self,
+        guild: discord.Guild,
+        configured_role_ids: Iterable[object],
+    ) -> tuple[set[int], set[int], set[int], set[int]]:
+        configured_ids = self._normalize_role_id_set(configured_role_ids)
+        existing_interest_ids: set[int] = set()
+        missing_ids: set[int] = set()
+        default_ids: set[int] = set()
+
+        for role_id in configured_ids:
+            role = guild.get_role(role_id)
+            if role is None:
+                missing_ids.add(role_id)
+                continue
+            if role.is_default():
+                default_ids.add(role_id)
+                continue
+            existing_interest_ids.add(role_id)
+
+        return configured_ids, existing_interest_ids, missing_ids, default_ids
+
+    @staticmethod
+    def _sorted_role_ids_for_display(guild: discord.Guild, role_ids: Iterable[int]) -> tuple[int, ...]:
+        def sort_key(role_id: int) -> tuple[int, int]:
+            role = guild.get_role(role_id)
+            return (role.position if role is not None else -1, role_id)
+
+        return tuple(
+            sorted(
+                role_ids,
+                key=sort_key,
+                reverse=True,
+            )
+        )
+
+    def _build_interest_role_match(
+        self,
+        *,
+        configured_role_ids: Iterable[object],
+        requester: discord.Member,
+        target: discord.Member,
+    ) -> InterestRoleMatch:
+        guild = requester.guild
+        configured_ids, existing_interest_ids, missing_ids, default_ids = self._partition_configured_interest_role_ids(
+            guild,
+            configured_role_ids,
+        )
+        requester_role_ids = self._member_role_ids(requester)
+        target_role_ids = self._member_role_ids(target)
+        requester_interest_ids = existing_interest_ids & requester_role_ids
+        target_interest_ids = existing_interest_ids & target_role_ids
+        common_ids = requester_interest_ids & target_interest_ids
+        shared_non_interest_ids = (requester_role_ids & target_role_ids) - existing_interest_ids
+
+        return InterestRoleMatch(
+            common_role_ids=self._sorted_role_ids_for_display(guild, common_ids),
+            configured_interest_role_ids=tuple(sorted(configured_ids)),
+            existing_interest_role_ids=tuple(sorted(existing_interest_ids)),
+            missing_configured_role_ids=tuple(sorted(missing_ids)),
+            ignored_default_role_ids=tuple(sorted(default_ids)),
+            requester_interest_role_ids=tuple(sorted(requester_interest_ids)),
+            target_interest_role_ids=tuple(sorted(target_interest_ids)),
+            shared_non_interest_role_ids=tuple(sorted(shared_non_interest_ids)),
+        )
+
     def _common_interest_role_ids(
         self,
         *,
-        configured_role_ids: list[int],
+        configured_role_ids: Iterable[object],
         requester: discord.Member,
         target: discord.Member,
     ) -> list[int]:
-        requester_roles = {role.id for role in requester.roles}
-        target_roles = {role.id for role in target.roles}
-        common_ids = [role_id for role_id in configured_role_ids if role_id in requester_roles and role_id in target_roles]
-        return sorted(
-            common_ids,
-            key=lambda role_id: (
-                requester.guild.get_role(role_id).position if requester.guild.get_role(role_id) else -1,
-                role_id,
+        match = self._build_interest_role_match(
+            configured_role_ids=configured_role_ids,
+            requester=requester,
+            target=target,
+        )
+        return list(match.common_role_ids)
+
+    def _log_interest_gate_diagnostics(
+        self,
+        *,
+        guild_id: int,
+        requester_id: int,
+        target_id: int,
+        match: InterestRoleMatch,
+        blocked: bool,
+    ) -> None:
+        LOGGER.log(
+            logging.INFO if blocked else logging.DEBUG,
+            (
+                "vinculo interest gate %s guild_id=%s requester_id=%s target_id=%s "
+                "min_required=%s common_count=%s common_interest_role_ids=%s "
+                "configured_interest_role_ids=%s existing_interest_role_ids=%s "
+                "missing_configured_role_ids=%s ignored_default_role_ids=%s "
+                "requester_interest_role_ids=%s target_interest_role_ids=%s "
+                "shared_non_interest_role_ids=%s"
             ),
-            reverse=True,
+            "blocked" if blocked else "passed",
+            guild_id,
+            requester_id,
+            target_id,
+            MIN_COMMON_INTEREST_ROLES,
+            len(match.common_role_ids),
+            list(match.common_role_ids),
+            list(match.configured_interest_role_ids),
+            list(match.existing_interest_role_ids),
+            list(match.missing_configured_role_ids),
+            list(match.ignored_default_role_ids),
+            list(match.requester_interest_role_ids),
+            list(match.target_interest_role_ids),
+            list(match.shared_non_interest_role_ids),
         )
 
     def _check_request_cooldown(self, guild_id: int, user_id: int) -> int | None:
@@ -1952,14 +2114,14 @@ class VinculosCog(commands.Cog):
         usuario: discord.Member,
         tipo: app_commands.Choice[str],
     ) -> None:
-        if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        if interaction.guild is None:
             await self._send_text(interaction, "🕯️ Este ritual só existe dentro de um servidor.")
             return
 
-        requester = interaction.user
+        requester_id = int(interaction.user.id)
         target = usuario
         bond_type = _normalize_vinculo_type(tipo.value)
-        if requester.id == target.id:
+        if requester_id == target.id:
             await self._send_text(
                 interaction,
                 "🎭 Herege curioso... tentar selar um pacto consigo mesmo é apenas solidão com efeitos especiais.",
@@ -1972,7 +2134,7 @@ class VinculosCog(commands.Cog):
             await self._send_text(interaction, "👁️ Essa alma não pertence a este palco. O vínculo não pode ser iniciado.")
             return
 
-        retry_after = self._check_request_cooldown(interaction.guild.id, requester.id)
+        retry_after = self._check_request_cooldown(interaction.guild.id, requester_id)
         if retry_after is not None:
             await self._send_text(
                 interaction,
@@ -1988,12 +2150,33 @@ class VinculosCog(commands.Cog):
             )
             return
 
-        common_role_ids = self._common_interest_role_ids(
+        requester = await self._resolve_member_for_role_check(
+            interaction.guild,
+            requester_id,
+            fallback=interaction.user if isinstance(interaction.user, discord.Member) else None,
+        )
+        target = await self._resolve_member_for_role_check(interaction.guild, target.id, fallback=target)
+        if requester is None or target is None:
+            await self._send_text(
+                interaction,
+                "👁️ Não consegui confirmar os cargos de uma das almas. Tente novamente em alguns instantes.",
+            )
+            return
+
+        interest_match = self._build_interest_role_match(
             configured_role_ids=configured_role_ids,
             requester=requester,
             target=target,
         )
+        common_role_ids = list(interest_match.common_role_ids)
         if len(common_role_ids) < MIN_COMMON_INTEREST_ROLES:
+            self._log_interest_gate_diagnostics(
+                guild_id=interaction.guild.id,
+                requester_id=requester.id,
+                target_id=target.id,
+                match=interest_match,
+                blocked=True,
+            )
             await self._send_text(
                 interaction,
                 (
@@ -2002,6 +2185,13 @@ class VinculosCog(commands.Cog):
                 ),
             )
             return
+        self._log_interest_gate_diagnostics(
+            guild_id=interaction.guild.id,
+            requester_id=requester.id,
+            target_id=target.id,
+            match=interest_match,
+            blocked=False,
+        )
 
         creation = await self.repository.create_request(
             guild_id=interaction.guild.id,
