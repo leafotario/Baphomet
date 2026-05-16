@@ -12,6 +12,7 @@ from ..utils import (
     BondContribution,
     GuildXpConfig,
     PenaltyContribution,
+    RankBadge,
     UserXpProfile,
     VINCULO_RESONANCE_WINDOW_SECONDS,
     VinculoXpContext,
@@ -235,6 +236,81 @@ class XpRepository:
         await self.connection.commit()
         return cur.rowcount > 0
 
+    async def set_rank_badge(
+        self,
+        *,
+        guild_id: int,
+        role_id: int,
+        image_path: str,
+        priority: int = 0,
+        label: str | None = None,
+    ) -> RankBadge:
+        now = utc_now_iso()
+        await self.connection.execute(
+            """
+            INSERT INTO rank_badges(
+                guild_id,
+                role_id,
+                image_path,
+                priority,
+                label,
+                created_at,
+                updated_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, role_id) DO UPDATE SET
+                image_path = excluded.image_path,
+                priority = excluded.priority,
+                label = excluded.label,
+                updated_at = excluded.updated_at
+            """,
+            (guild_id, role_id, image_path, int(priority), label, now, now),
+        )
+        await self.connection.commit()
+        return RankBadge(
+            guild_id=guild_id,
+            role_id=role_id,
+            image_path=image_path,
+            priority=int(priority),
+            label=label,
+            created_at=now,
+            updated_at=now,
+        )
+
+    async def remove_rank_badge(self, guild_id: int, role_id: int) -> RankBadge | None:
+        rows = await self.connection.execute_fetchall(
+            "SELECT * FROM rank_badges WHERE guild_id = ? AND role_id = ?",
+            (guild_id, role_id),
+        )
+        if not rows:
+            return None
+        badge = self._row_to_rank_badge(rows[0])
+        await self.connection.execute(
+            "DELETE FROM rank_badges WHERE guild_id = ? AND role_id = ?",
+            (guild_id, role_id),
+        )
+        await self.connection.commit()
+        return badge
+
+    async def get_rank_badge(self, guild_id: int, role_id: int) -> RankBadge | None:
+        rows = await self.connection.execute_fetchall(
+            "SELECT * FROM rank_badges WHERE guild_id = ? AND role_id = ?",
+            (guild_id, role_id),
+        )
+        return self._row_to_rank_badge(rows[0]) if rows else None
+
+    async def list_rank_badges(self, guild_id: int) -> list[RankBadge]:
+        rows = await self.connection.execute_fetchall(
+            """
+            SELECT *
+            FROM rank_badges
+            WHERE guild_id = ?
+            ORDER BY priority DESC, role_id DESC
+            """,
+            (guild_id,),
+        )
+        return [self._row_to_rank_badge(row) for row in rows]
+
     async def get_profile(self, guild_id: int, user_id: int) -> UserXpProfile:
         rows = await self.connection.execute_fetchall(
             "SELECT * FROM xp_profiles WHERE guild_id = ? AND user_id = ?",
@@ -320,6 +396,21 @@ class XpRepository:
             penalties=penalties,
             source="sqlite_vinculos",
         )
+
+    async def count_active_vinculos(self, guild_id: int, user_id: int) -> int:
+        if not await self._table_exists("vinculos"):
+            return 0
+        rows = await self.connection.execute_fetchall(
+            """
+            SELECT COUNT(*) AS total
+            FROM vinculos
+            WHERE guild_id = ?
+              AND active = 1
+              AND (user_low_id = ? OR user_high_id = ?)
+            """,
+            (guild_id, user_id, user_id),
+        )
+        return int(rows[0]["total"])
 
     async def _vinculo_context_tables_ready(self) -> bool:
         rows = await self.connection.execute_fetchall(
@@ -780,4 +871,15 @@ class XpRepository:
             last_known_name=row["last_known_name"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+        )
+
+    def _row_to_rank_badge(self, row: aiosqlite.Row) -> RankBadge:
+        return RankBadge(
+            guild_id=int(row["guild_id"]),
+            role_id=int(row["role_id"]),
+            image_path=str(row["image_path"]),
+            priority=int(row["priority"]),
+            label=str(row["label"]) if row["label"] is not None else None,
+            created_at=str(row["created_at"]) if row["created_at"] is not None else None,
+            updated_at=str(row["updated_at"]) if row["updated_at"] is not None else None,
         )

@@ -27,10 +27,31 @@ class XpUserCommands(commands.Cog):
             await interaction.response.send_message("🤖 Bots Não Participam Do Ritual De XP.", ephemeral=True)
             return
         await interaction.response.defer(thinking=True)
+        if isinstance(target, discord.Member):
+            try:
+                sync_result = await self.runtime.service.sync_member_level_roles(
+                    target,
+                    reason="XP: sincronização antes do /rank",
+                )
+                if sync_result.changed:
+                    target = await interaction.guild.fetch_member(target.id)
+            except Exception:
+                self.runtime.service.logger.exception("falha ao sincronizar cargos antes do /rank")
         snapshot = await self.runtime.service.get_rank_snapshot(interaction.guild, target)
+        bond_summary = await self.runtime.service.get_rank_bond_summary(interaction.guild.id, target.id)
+        badge_image_bytes = None
+        if isinstance(target, discord.Member):
+            _badge, badge_image_bytes = await self.runtime.badges.resolve_member_badge_image(target)
         view = RankCardView(self.runtime.service, self.runtime.cards)
         try:
-            image = await self.runtime.cards.render_rank_card(guild=interaction.guild, member=target, snapshot=snapshot)
+            image = await self.runtime.cards.render_rank_card(
+                guild=interaction.guild,
+                member=target,
+                snapshot=snapshot,
+                badge_image_bytes=badge_image_bytes,
+                bond_count=bond_summary.count,
+                bond_multiplier=bond_summary.multiplier,
+            )
             await interaction.edit_original_response(attachments=[discord.File(image, filename="rank.png")], view=view)
         except Exception:
             embed = discord.Embed(title="🔮 Rank De Prestígio", color=discord.Color.dark_purple())
@@ -39,6 +60,7 @@ class XpUserCommands(commands.Cog):
                 f"Nível **{snapshot.level}**\n"
                 f"XP Total **{snapshot.total_xp:,}**\n"
                 f"Progresso **{snapshot.xp_into_level}/{snapshot.xp_for_next_level}**\n"
+                f"Vínculos: **{bond_summary.count} ({bond_summary.multiplier:.1f}x)**\n"
                 f"Posição **{snapshot.position or 'Sem Posição'}**"
             ).replace(",", ".")
             await interaction.edit_original_response(embed=embed, view=view)

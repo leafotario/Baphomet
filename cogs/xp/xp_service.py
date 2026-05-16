@@ -16,7 +16,9 @@ import discord
 from .utils import (
     GuildXpConfig,
     LeaderboardEntry,
+    LevelRoleSyncResult,
     PageResult,
+    RankBondSummary,
     RankSnapshot,
     VINCULO_RESONANCE_WINDOW_SECONDS,
     VinculoXpContext,
@@ -40,6 +42,8 @@ class VinculoMultiplierProvider(Protocol):
 
 
 class XpService:
+    LEVEL_ROLE_POLICY = "cumulative"
+
     def __init__(
         self,
         repository: XpRepository,
@@ -92,6 +96,211 @@ class XpService:
     async def remove_level_role(self, guild_id: int, level: int) -> tuple[GuildXpConfig, bool]:
         removed = await self.repository.remove_level_role(guild_id, level)
         return await self.refresh_guild_config(guild_id), removed
+
+    async def get_rank_bond_summary(self, guild_id: int, user_id: int) -> RankBondSummary:
+        count = 0
+        counter = getattr(self.vinculos_provider, "count_active_vinculos", None) if self.vinculos_provider else None
+        if callable(counter):
+            try:
+                count = max(0, int(await counter(guild_id, user_id)))
+            except Exception:
+                self.logger.exception("falha ao contar vínculos guild_id=%s user_id=%s", guild_id, user_id)
+        else:
+            try:
+                count = max(0, int(await self.repository.count_active_vinculos(guild_id, user_id)))
+            except Exception:
+                self.logger.exception("falha ao contar vínculos no sqlite guild_id=%s user_id=%s", guild_id, user_id)
+
+        multiplier_getter = getattr(self.vinculos_provider, "get_xp_multiplier", None) if self.vinculos_provider else None
+        if callable(multiplier_getter):
+            try:
+                return RankBondSummary(count=count, multiplier=max(0.0, float(await multiplier_getter(guild_id, user_id))))
+            except Exception:
+                self.logger.exception("falha ao obter multiplicador de vínculos guild_id=%s user_id=%s", guild_id, user_id)
+
+        return RankBondSummary(count=count, multiplier=1.0 + (count * 0.1))
+
+    def _target_level_role_ids(self, config: GuildXpConfig, level: int) -> set[int]:
+        eligible = {
+            role_id
+            for required_level, role_id in config.level_roles.items()
+            if level >= required_level
+        }
+        if self.LEVEL_ROLE_POLICY == "highest" and eligible:
+            highest_level = max(required for required in config.level_roles if level >= required)
+            return {config.level_roles[highest_level]}
+        return eligible
+
+    def _manageable_level_role(
+        self,
+        guild: discord.Guild,
+        role_id: int,
+    ) -> tuple[discord.Role | None, bool]:
+        role = guild.get_role(role_id)
+        if role is None:
+            return None, False
+        bot_member = guild.me
+        if bot_member is None:
+            return role, False
+        if not bot_member.guild_permissions.manage_roles:
+            return role, False
+        if role.is_default() or role.managed or role >= bot_member.top_role:
+            return role, False
+        return role, True
+
+    async def sync_member_level_roles(
+        self,
+        member: discord.Member,
+        *,
+        reason: str = "XP: sincronização de cargos de nível",
+    ) -> LevelRoleSyncResult:
+        config = await self.get_guild_config(member.guild.id)
+        if not config.level_roles:
+            return LevelRoleSyncResult()
+
+        profile = await self.repository.get_profile(member.guild.id, member.id)
+        progress = build_progress_snapshot(profile.total_xp, config.difficulty)
+        configured_role_ids = set(config.level_roles.values())
+        target_role_ids = self._target_level_role_ids(config, progress.level)
+        current_role_ids = {role.id for role in member.roles}
+
+        missing_role_ids: list[int] = []
+        skipped_role_ids: list[int] = []
+        roles_to_add: list[discord.Role] = []
+        roles_to_remove: list[discord.Role] = []
+
+        for role_id in sorted(target_role_ids - current_role_ids):
+            role, manageable = self._manageable_level_role(member.guild, role_id)
+            if role is None:
+                missing_role_ids.append(role_id)
+            elif manageable:
+                roles_to_add.append(role)
+            else:
+                skipped_role_ids.append(role_id)
+
+        for role_id in sorted((current_role_ids & configured_role_ids) - target_role_ids):
+            role, manageable = self._manageable_level_role(member.guild, role_id)
+            if role is None:
+                missing_role_ids.append(role_id)
+            elif manageable:
+                roles_to_remove.append(role)
+            else:
+                skipped_role_ids.append(role_id)
+
+        added_ids: tuple[int, ...] = ()
+        removed_ids: tuple[int, ...] = ()
+        if roles_to_add:
+            try:
+                await member.add_roles(*roles_to_add, reason=reason)
+                added_ids = tuple(role.id for role in roles_to_add)
+            except (discord.Forbidden, discord.HTTPException):
+                self.logger.warning(
+                    "falha ao adicionar cargos de nível guild_id=%s user_id=%s role_ids=%s",
+                    member.guild.id,
+                    member.id,
+                    [role.id for role in roles_to_add],
+                )
+                skipped_role_ids.extend(role.id for role in roles_to_add)
+
+        if roles_to_remove:
+            try:
+                await member.remove_roles(*roles_to_remove, reason=reason)
+                removed_ids = tuple(role.id for role in roles_to_remove)
+            except (discord.Forbidden, discord.HTTPException):
+                self.logger.warning(
+                    "falha ao remover cargos de nível guild_id=%s user_id=%s role_ids=%s",
+                    member.guild.id,
+                    member.id,
+                    [role.id for role in roles_to_remove],
+                )
+                skipped_role_ids.extend(role.id for role in roles_to_remove)
+
+        return LevelRoleSyncResult(
+            added_role_ids=added_ids,
+            removed_role_ids=removed_ids,
+            skipped_role_ids=tuple(sorted(set(skipped_role_ids))),
+            missing_role_ids=tuple(sorted(set(missing_role_ids))),
+        )
+
+    async def sync_guild_level_roles(
+        self,
+        guild: discord.Guild,
+        *,
+        reason: str = "XP: sincronização geral de cargos de nível",
+    ) -> dict[str, int]:
+        config = await self.get_guild_config(guild.id)
+        stats = {"members": 0, "added": 0, "removed": 0, "skipped": 0, "missing": 0}
+        if not config.level_roles:
+            return stats
+        bot_member = guild.me
+        if bot_member is None or not bot_member.guild_permissions.manage_roles:
+            self.logger.warning("sync de cargos de nível ignorado por falta de permissão guild_id=%s", guild.id)
+            return stats
+
+        index = 0
+        async for member in self._iter_members_for_level_role_sync(guild):
+            if member.bot:
+                continue
+            index += 1
+            try:
+                result = await self.sync_member_level_roles(member, reason=reason)
+            except Exception:
+                self.logger.exception("falha ao sincronizar cargos de nível guild_id=%s user_id=%s", guild.id, member.id)
+                continue
+            stats["members"] += 1
+            stats["added"] += len(result.added_role_ids)
+            stats["removed"] += len(result.removed_role_ids)
+            stats["skipped"] += len(result.skipped_role_ids)
+            stats["missing"] += len(result.missing_role_ids)
+            if index % 25 == 0:
+                await asyncio.sleep(1)
+        return stats
+
+    async def cleanup_removed_level_roles(
+        self,
+        guild: discord.Guild,
+        role_ids: set[int],
+        *,
+        reason: str = "XP: limpeza de cargo de nível removido da configuração",
+    ) -> dict[str, int]:
+        config = await self.get_guild_config(guild.id)
+        stale_role_ids = set(role_ids) - set(config.level_roles.values())
+        stats = {"members": 0, "removed": 0, "skipped": 0, "missing": 0}
+        for role_id in sorted(stale_role_ids):
+            role, manageable = self._manageable_level_role(guild, role_id)
+            if role is None:
+                stats["missing"] += 1
+                continue
+            if not manageable:
+                stats["skipped"] += 1
+                continue
+            index = 0
+            async for member in self._iter_members_for_level_role_sync(guild):
+                if member.bot or role not in member.roles:
+                    continue
+                index += 1
+                try:
+                    await member.remove_roles(role, reason=reason)
+                    stats["members"] += 1
+                    stats["removed"] += 1
+                except (discord.Forbidden, discord.HTTPException):
+                    stats["skipped"] += 1
+                if index % 25 == 0:
+                    await asyncio.sleep(1)
+        return stats
+
+    async def _iter_members_for_level_role_sync(self, guild: discord.Guild):
+        if guild.chunked:
+            for member in guild.members:
+                yield member
+            return
+        try:
+            async for member in guild.fetch_members(limit=None):
+                yield member
+        except (discord.Forbidden, discord.HTTPException):
+            self.logger.warning("nao consegui buscar membros para sync de cargos guild_id=%s", guild.id)
+            for member in guild.members:
+                yield member
 
     def _resolve_category_id(self, message: discord.Message) -> int | None:
         category_id = getattr(message.channel, "category_id", None)
@@ -284,19 +493,8 @@ class XpService:
         )
 
     async def grant_level_rewards(self, member: discord.Member, new_level: int) -> list[discord.Role]:
-        config = await self.get_guild_config(member.guild.id)
-        granted: list[discord.Role] = []
-        for level, role_id in sorted(config.level_roles.items()):
-            if new_level < level:
-                continue
-            role = member.guild.get_role(role_id)
-            if role and role not in member.roles:
-                try:
-                    await member.add_roles(role, reason=f"XP: Nível {level} Alcançado")
-                    granted.append(role)
-                except (discord.Forbidden, discord.HTTPException):
-                    continue
-        return granted
+        result = await self.sync_member_level_roles(member, reason=f"XP: Nível {new_level} alcançado")
+        return [role for role in member.guild.roles if role.id in result.added_role_ids]
 
     async def get_rank_snapshot(self, guild: discord.Guild, user: discord.Member | discord.User) -> RankSnapshot:
         config = await self.get_guild_config(guild.id)

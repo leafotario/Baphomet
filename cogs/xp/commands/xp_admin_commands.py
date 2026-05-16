@@ -11,6 +11,21 @@ from ..xp_runtime import XpRuntime
 from ..utils import XpDifficulty
 
 
+def _role_manage_error(guild: discord.Guild, role: discord.Role) -> str | None:
+    bot_member = guild.me
+    if bot_member is None:
+        return "Não consegui identificar meu cargo neste servidor."
+    if not bot_member.guild_permissions.manage_roles:
+        return "Eu preciso da permissão **Gerenciar Cargos** para sincronizar cargos de nível."
+    if role.is_default():
+        return "O cargo @everyone não pode ser usado como cargo de nível."
+    if role.managed:
+        return "Esse cargo é gerenciado por uma integração e não pode ser atribuído manualmente."
+    if role >= bot_member.top_role:
+        return "Não posso gerenciar esse cargo porque ele está acima do meu cargo mais alto."
+    return None
+
+
 @app_commands.default_permissions(administrator=True)
 class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Comandos De XP, Glória E Configuração ✨"):
     def __init__(self, bot: commands.Bot, runtime: XpRuntime) -> None:
@@ -42,7 +57,7 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
     async def difficulty(self, interaction: discord.Interaction, difficulty: app_commands.Choice[str]) -> None:
         config = await self.runtime.service.update_guild_config(interaction.guild.id, difficulty=XpDifficulty(difficulty.value))
         await interaction.response.send_message(f"⚙️ Ritual Atualizado! A Dificuldade Agora Está Em **{config.difficulty.label}**.", ephemeral=True)
-        
+
         embed = discord.Embed(title="⚙️ Dificuldade de XP Alterada", color=discord.Color.blue())
         embed.description = f"O administrador {interaction.user.mention} alterou a dificuldade para **{config.difficulty.label}**."
         await self._send_audit_log(interaction.guild, embed)
@@ -53,7 +68,7 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
     async def cooldown(self, interaction: discord.Interaction, seconds: app_commands.Range[int, 0, 3600]) -> None:
         config = await self.runtime.service.update_guild_config(interaction.guild.id, cooldown_seconds=seconds)
         await interaction.response.send_message(f"⏳ Ritmo Ajustado! O Cooldown Agora É De **{config.cooldown_seconds}S**.", ephemeral=True)
-        
+
         embed = discord.Embed(title="⏳ Cooldown de XP Alterado", color=discord.Color.blue())
         embed.description = f"O administrador {interaction.user.mention} alterou o cooldown para **{config.cooldown_seconds} segundos**."
         await self._send_audit_log(interaction.guild, embed)
@@ -117,6 +132,11 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
             return
             
         result = await self.runtime.service.give_xp(interaction.guild, member, amount, interaction.user.id, reason)
+        if result.new_level != result.old_level:
+            await self.runtime.service.sync_member_level_roles(
+                member,
+                reason=f"XP: ajuste administrativo para nível {result.new_level}",
+            )
         await interaction.response.send_message(
             f"✨ Sucesso! Adicionado **{amount:,} XP** a **{member.display_name}**.".replace(",", "."),
             ephemeral=True
@@ -129,48 +149,6 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
         if reason:
             embed.add_field(name="Motivo", value=reason, inline=False)
         await self._send_audit_log(interaction.guild, embed)
-
-class ConfirmResetView(discord.ui.View):
-    def __init__(self, runtime: XpRuntime, original_interaction: discord.Interaction):
-        super().__init__(timeout=60)
-        self.runtime = runtime
-        self.original_interaction = original_interaction
-
-    @discord.ui.button(label="Confirmar Reset", style=discord.ButtonStyle.danger, custom_id="xp_reset_confirm")
-    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.original_interaction.user.id:
-            await interaction.response.send_message("❌ Apenas quem iniciou o comando pode confirmar.", ephemeral=True)
-            return
-
-        # Desabilita botões
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(view=self)
-
-        deleted_count = await self.runtime.service.reset_guild_xp(interaction.guild, interaction.user.id)
-        
-        await interaction.followup.send(f"☠️ O Ritual Foi Reiniciado! **{deleted_count} membros** tiveram o XP completamente zerado no servidor.", ephemeral=True)
-
-        embed = discord.Embed(title="☠️ RESET GLOBAL DE XP", color=discord.Color.red())
-        embed.description = f"O administrador {interaction.user.mention} zerou o XP de absolutamente todos no servidor."
-        embed.add_field(name="Perfis Apagados", value=f"{deleted_count:,}".replace(",", "."), inline=False)
-        
-        config = await self.runtime.service.get_guild_config(interaction.guild.id)
-        if config.log_channel_id:
-            channel = interaction.guild.get_channel(config.log_channel_id)
-            if isinstance(channel, discord.TextChannel):
-                await channel.send(embed=embed)
-
-    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary, custom_id="xp_reset_cancel")
-    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.original_interaction.user.id:
-            await interaction.response.send_message("❌ Apenas quem iniciou o comando pode cancelar.", ephemeral=True)
-            return
-
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(content="🛑 Ação de Reset Cancelada.", view=self)
-
 
     @app_commands.command(name="resetar_xp_servidor", description="Zera o XP de TODOS os membros do servidor (Ação Irreversível) ☠️")
     @app_commands.default_permissions(administrator=True)
@@ -188,6 +166,10 @@ class ConfirmResetView(discord.ui.View):
     @app_commands.checks.has_permissions(administrator=True)
     async def reset(self, interaction: discord.Interaction, member: discord.Member, reason: str | None = None) -> None:
         result = await self.runtime.service.reset_xp(interaction.guild, member, interaction.user.id, reason)
+        await self.runtime.service.sync_member_level_roles(
+            member,
+            reason=f"XP: reset administrativo para nível {result.new_level}",
+        )
         await interaction.response.send_message(
             f"☠️ O Ritual Foi Reiniciado! **{member.display_name}** Teve O XP Zerado E Perdeu **{abs(result.delta_xp):,} XP** No Processo.".replace(",", "."),
             ephemeral=True,
@@ -236,7 +218,7 @@ class ConfirmResetView(discord.ui.View):
             await interaction.response.send_message(f"📣 Os Avisos De Ascensão Agora Ecoam Em <#{config.levelup_channel_id}>.", ephemeral=True)
         else:
             await interaction.response.send_message("📣 Os Avisos De Ascensão Voltarão Para O Mesmo Canal Da Mensagem.", ephemeral=True)
-            
+
         embed = discord.Embed(title="📣 Canal de Level-Up Alterado", color=discord.Color.blue())
         embed.description = f"O administrador {interaction.user.mention} definiu o canal de level-up para " + (f"<#{config.levelup_channel_id}>" if config.levelup_channel_id else "**Mesmo da Mensagem**") + "."
         await self._send_audit_log(interaction.guild, embed)
@@ -250,7 +232,7 @@ class ConfirmResetView(discord.ui.View):
             await interaction.response.send_message(f"📋 O Sistema De XP Agora Registrará Logs Em <#{config.log_channel_id}>.", ephemeral=True)
         else:
             await interaction.response.send_message("📋 O Sistema De Logs De XP Foi Desativado.", ephemeral=True)
-            
+
         if config.log_channel_id:
             embed = discord.Embed(title="📋 Canal de Logs Alterado", color=discord.Color.blue())
             embed.description = f"O administrador {interaction.user.mention} definiu este canal para receber os logs de auditoria do sistema de XP."
@@ -260,8 +242,28 @@ class ConfirmResetView(discord.ui.View):
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def level_role_add(self, interaction: discord.Interaction, level: app_commands.Range[int, 1, 1000], role: discord.Role) -> None:
+        manage_error = _role_manage_error(interaction.guild, role)
+        if manage_error is not None:
+            await interaction.response.send_message(manage_error, ephemeral=True)
+            return
+        previous_config = await self.runtime.service.get_guild_config(interaction.guild.id)
+        previous_role_id = previous_config.level_roles.get(int(level))
         await self.runtime.service.set_level_role(interaction.guild.id, level, role.id)
-        await interaction.response.send_message(f"👑 O Cargo {role.mention} Agora Será Concedido No **Nível {level}**.", ephemeral=True)
+        if previous_role_id is not None and previous_role_id != role.id:
+            await self.runtime.service.cleanup_removed_level_roles(
+                interaction.guild,
+                {previous_role_id},
+                reason=f"XP: cargo de nível {level} substituído por {interaction.user}",
+            )
+        stats = await self.runtime.service.sync_guild_level_roles(
+            interaction.guild,
+            reason=f"XP: cargo de nível {level} configurado por {interaction.user}",
+        )
+        await interaction.response.send_message(
+            f"👑 O Cargo {role.mention} Agora Será Concedido No **Nível {level}**.\n"
+            f"Sync: **{stats['members']}** membros | +**{stats['added']}** / -**{stats['removed']}**.",
+            ephemeral=True,
+        )
 
         embed = discord.Embed(title="👑 Cargo de Nível Adicionado", color=discord.Color.blue())
         embed.description = f"O administrador {interaction.user.mention} vinculou o cargo {role.mention} ao **Nível {level}**."
@@ -271,12 +273,76 @@ class ConfirmResetView(discord.ui.View):
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def level_role_remove(self, interaction: discord.Interaction, level: app_commands.Range[int, 1, 1000]) -> None:
+        previous_config = await self.runtime.service.get_guild_config(interaction.guild.id)
+        previous_role_id = previous_config.level_roles.get(int(level))
         _config, removed = await self.runtime.service.remove_level_role(interaction.guild.id, level)
         if not removed:
             await interaction.response.send_message(f"⚠️ Nenhum Cargo Automático Estava Ligado Ao **Nível {level}**.", ephemeral=True)
             return
-        await interaction.response.send_message(f"🚫 O Cargo Automático Do **Nível {level}** Foi Desfeito.", ephemeral=True)
+        cleanup_stats = await self.runtime.service.cleanup_removed_level_roles(
+            interaction.guild,
+            {previous_role_id} if previous_role_id is not None else set(),
+            reason=f"XP: cargo de nível {level} removido por {interaction.user}",
+        )
+        stats = await self.runtime.service.sync_guild_level_roles(
+            interaction.guild,
+            reason=f"XP: cargo de nível {level} removido por {interaction.user}",
+        )
+        await interaction.response.send_message(
+            f"🚫 O Cargo Automático Do **Nível {level}** Foi Desfeito.\n"
+            f"Sync: **{stats['members']}** membros | +**{stats['added']}** / -**{stats['removed'] + cleanup_stats['removed']}**.",
+            ephemeral=True,
+        )
 
         embed = discord.Embed(title="🚫 Cargo de Nível Removido", color=discord.Color.orange())
         embed.description = f"O administrador {interaction.user.mention} removeu o cargo automático do **Nível {level}**."
         await self._send_audit_log(interaction.guild, embed)
+
+class ConfirmResetView(discord.ui.View):
+    def __init__(self, runtime: XpRuntime, original_interaction: discord.Interaction):
+        super().__init__(timeout=60)
+        self.runtime = runtime
+        self.original_interaction = original_interaction
+
+    @discord.ui.button(label="Confirmar Reset", style=discord.ButtonStyle.danger, custom_id="xp_reset_confirm")
+    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.original_interaction.user.id:
+            await interaction.response.send_message("❌ Apenas quem iniciou o comando pode confirmar.", ephemeral=True)
+            return
+
+        # Desabilita botões
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=self)
+
+        deleted_count = await self.runtime.service.reset_guild_xp(interaction.guild, interaction.user.id)
+        stats = await self.runtime.service.sync_guild_level_roles(
+            interaction.guild,
+            reason=f"XP: reset global confirmado por {interaction.user}",
+        )
+
+        await interaction.followup.send(
+            f"☠️ O Ritual Foi Reiniciado! **{deleted_count} membros** tiveram o XP completamente zerado no servidor.\n"
+            f"Sync: **{stats['members']}** membros | +**{stats['added']}** / -**{stats['removed']}**.",
+            ephemeral=True,
+        )
+
+        embed = discord.Embed(title="☠️ RESET GLOBAL DE XP", color=discord.Color.red())
+        embed.description = f"O administrador {interaction.user.mention} zerou o XP de absolutamente todos no servidor."
+        embed.add_field(name="Perfis Apagados", value=f"{deleted_count:,}".replace(",", "."), inline=False)
+
+        config = await self.runtime.service.get_guild_config(interaction.guild.id)
+        if config.log_channel_id:
+            channel = interaction.guild.get_channel(config.log_channel_id)
+            if isinstance(channel, discord.TextChannel):
+                await channel.send(embed=embed)
+
+    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary, custom_id="xp_reset_cancel")
+    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.original_interaction.user.id:
+            await interaction.response.send_message("❌ Apenas quem iniciou o comando pode cancelar.", ephemeral=True)
+            return
+
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content="🛑 Ação de Reset Cancelada.", view=self)

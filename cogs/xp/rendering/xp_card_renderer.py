@@ -109,6 +109,21 @@ class XpCardRenderer:
         
         return output, dominant_color
 
+    def _create_badge_image(self, badge_image_bytes: bytes | None, size: int) -> Image.Image | None:
+        if not badge_image_bytes:
+            return None
+        try:
+            with Image.open(io.BytesIO(badge_image_bytes)) as image:
+                image = image.convert("RGBA")
+                image.thumbnail((size, size), Image.Resampling.LANCZOS)
+                output = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+                x = (size - image.width) // 2
+                y = (size - image.height) // 2
+                output.alpha_composite(image, (x, y))
+                return output
+        except Exception:
+            return None
+
     def _draw_progress_bar(
         self, 
         draw: ImageDraw.ImageDraw, 
@@ -174,9 +189,18 @@ class XpCardRenderer:
     def _truncate(self, value: str, max_chars: int) -> str:
         return value if len(value) <= max_chars else value[: max_chars - 1].rstrip() + "…"
 
-    def _build_rank_card_image(self, guild_name: str, snapshot: RankSnapshot, avatar_bytes: bytes | None, banner_bytes: bytes | None) -> io.BytesIO:
+    def _build_rank_card_image(
+        self,
+        guild_name: str,
+        snapshot: RankSnapshot,
+        avatar_bytes: bytes | None,
+        banner_bytes: bytes | None,
+        badge_image_bytes: bytes | None = None,
+        bond_count: int = 0,
+        bond_multiplier: float = 1.0,
+    ) -> io.BytesIO:
         """Função Síncrona e bloqueante que constrói o card (Deve rodar em thread)"""
-        width, height = 1040, 340
+        width, height = 1040, 420
         
         # Background Glassmorphism (Usa Banner. Se não houver, usa Avatar)
         bg_source = banner_bytes if banner_bytes else avatar_bytes
@@ -227,6 +251,29 @@ class XpCardRenderer:
         text_w = text_bbox[2] - text_bbox[0]
         text_x = bar_box[0] + (bar_box[2] - bar_box[0]) // 2 - text_w // 2
         self._draw_text(draw, (text_x, bar_box[1] + 5), progress_text, font=text_font, fill=(255, 255, 255, 255), shadow_color=(0,0,0,255), stroke_width=2, stroke_fill=(0,0,0,255))
+
+        # Faixa extra discreta: preserva o card original e adiciona apenas os novos dados.
+        extra_box = (300, 322, width - 60, 382)
+        draw.rounded_rectangle(extra_box, radius=20, fill=(0, 0, 0, 85), outline=(255, 255, 255, 32), width=1)
+
+        badge = self._create_badge_image(badge_image_bytes, 48)
+        text_start_x = extra_box[0] + 22
+        if badge is not None:
+            badge_x = extra_box[0] + 16
+            badge_y = extra_box[1] + (extra_box[3] - extra_box[1] - badge.height) // 2
+            layer.paste(badge, (badge_x, badge_y), badge)
+            text_start_x = badge_x + badge.width + 18
+
+        bond_text = f"Vínculos: {max(0, int(bond_count))} ({max(0.0, float(bond_multiplier)):.1f}x)"
+        self._draw_text(
+            draw,
+            (text_start_x, extra_box[1] + 17),
+            bond_text,
+            font=self._font(24, weight="bold"),
+            fill=(235, 235, 235, 255),
+            stroke_width=1,
+            stroke_fill=(0, 0, 0, 160),
+        )
         
         # Mesclar as Layers
         final_img = Image.alpha_composite(canvas, layer)
@@ -235,7 +282,16 @@ class XpCardRenderer:
         output.seek(0)
         return output
 
-    async def render_rank_card(self, *, guild: discord.Guild, member: discord.Member | discord.User, snapshot: RankSnapshot) -> io.BytesIO:
+    async def render_rank_card(
+        self,
+        *,
+        guild: discord.Guild,
+        member: discord.Member | discord.User,
+        snapshot: RankSnapshot,
+        badge_image_bytes: bytes | None = None,
+        bond_count: int = 0,
+        bond_multiplier: float = 1.0,
+    ) -> io.BytesIO:
         """API Assíncrona. Fetch concorrente de imagens e execução em ThreadPool."""
         
         # Download paralelo
@@ -254,7 +310,16 @@ class XpCardRenderer:
         banner_bytes = results[1]
         
         # Offload para a Thread
-        return await asyncio.to_thread(self._build_rank_card_image, guild.name, snapshot, avatar_bytes, banner_bytes)
+        return await asyncio.to_thread(
+            self._build_rank_card_image,
+            guild.name,
+            snapshot,
+            avatar_bytes,
+            banner_bytes,
+            badge_image_bytes,
+            bond_count,
+            bond_multiplier,
+        )
 
     def _build_leaderboard_image(self, guild_name: str, icon_bytes: bytes | None, entries_data: list[tuple[LeaderboardEntry, bytes | None]]) -> io.BytesIO:
         """Constrói o leaderboard com alinhamento matemático e espaçamento premium."""

@@ -141,6 +141,35 @@ class RankSnapshot:
     position: Optional[int]
 
 
+@dataclass(slots=True, frozen=True)
+class RankBadge:
+    guild_id: int
+    role_id: int
+    image_path: str
+    priority: int = 0
+    label: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+@dataclass(slots=True, frozen=True)
+class RankBondSummary:
+    count: int = 0
+    multiplier: float = 1.0
+
+
+@dataclass(slots=True, frozen=True)
+class LevelRoleSyncResult:
+    added_role_ids: tuple[int, ...] = ()
+    removed_role_ids: tuple[int, ...] = ()
+    skipped_role_ids: tuple[int, ...] = ()
+    missing_role_ids: tuple[int, ...] = ()
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.added_role_ids or self.removed_role_ids)
+
+
 @dataclass(slots=True)
 class LeaderboardEntry:
     position: int

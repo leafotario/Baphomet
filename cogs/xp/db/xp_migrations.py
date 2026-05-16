@@ -9,7 +9,7 @@ import aiosqlite
 
 from ..utils import normalize_difficulty, utc_now_iso
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 DATA_DIR = pathlib.Path("data")
 LEGACY_XP_JSON = DATA_DIR / "xp_data.json"
 LEGACY_CONFIG_JSON = DATA_DIR / "xp_config.json"
@@ -82,6 +82,17 @@ CREATE TABLE IF NOT EXISTS xp_level_roles (
     PRIMARY KEY (guild_id, level)
 );
 
+CREATE TABLE IF NOT EXISTS rank_badges (
+    guild_id INTEGER NOT NULL,
+    role_id INTEGER NOT NULL,
+    image_path TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    label TEXT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (guild_id, role_id)
+);
+
 CREATE TABLE IF NOT EXISTS xp_adjustments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id INTEGER NOT NULL,
@@ -124,6 +135,9 @@ CREATE INDEX IF NOT EXISTS idx_xp_profiles_guild_updated_at
 
 CREATE INDEX IF NOT EXISTS idx_xp_adjustments_guild_target_created
     ON xp_adjustments (guild_id, target_user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_rank_badges_guild_priority
+    ON rank_badges (guild_id, priority DESC, role_id DESC);
 
 CREATE INDEX IF NOT EXISTS idx_vinculo_bonus_history_user
     ON vinculo_xp_bonus_history(guild_id, user_id, created_at DESC);
