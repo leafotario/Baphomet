@@ -2299,6 +2299,59 @@ class VinculosCog(commands.Cog):
             return
         await self._send_text(interaction, f"📣 O altar agora sussurra em <#{settings.gossip_channel_id}>.")
 
+    @vinculo_config.command(name="testar-card", description="Gera uma prévia do card visual de vínculo.")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.guild_only()
+    @app_commands.describe(
+        solicitante="Membro que aparece como quem pediu o vínculo",
+        aceitante="Membro que aparece como quem aceitou o vínculo",
+    )
+    async def config_testar_card(
+        self,
+        interaction: discord.Interaction,
+        solicitante: discord.Member,
+        aceitante: discord.Member,
+    ) -> None:
+        if interaction.guild is None:
+            await self._send_text(interaction, "🕯️ Este ritual só existe dentro de um servidor.")
+            return
+        if solicitante.id == aceitante.id:
+            await self._send_text(interaction, "🪞 Escolha duas almas diferentes para testar o card.")
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            image = await self.vinculo_card_renderer.render(
+                participant_a=solicitante,
+                participant_b=aceitante,
+                accent=(140, 140, 140),
+                fallback_name_a=solicitante.display_name,
+                fallback_name_b=aceitante.display_name,
+            )
+            image.seek(0)
+            file = discord.File(image, filename=VINCULO_CARD_FILENAME)
+            await interaction.followup.send(
+                content=(
+                    "Prévia do card de vínculo: "
+                    f"**{discord.utils.escape_markdown(solicitante.display_name)}** como solicitante e "
+                    f"**{discord.utils.escape_markdown(aceitante.display_name)}** como aceitante."
+                ),
+                file=file,
+                ephemeral=True,
+            )
+        except Exception:
+            LOGGER.exception(
+                "falha ao gerar prévia do card de vínculo guild_id=%s solicitante_id=%s aceitante_id=%s",
+                interaction.guild.id,
+                solicitante.id,
+                aceitante.id,
+            )
+            await interaction.followup.send(
+                "Não consegui gerar a prévia do card agora.",
+                ephemeral=True,
+            )
+
     @vinculo_config.command(name="afinidade", description="Configura os dias necessários para afinidade 2 e 3.")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
