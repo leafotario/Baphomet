@@ -1868,11 +1868,16 @@ class VinculosCog(commands.Cog):
                 exc_info=True,
             )
 
+        fallback_member = fallback if fallback is not None and fallback.guild.id == guild.id else None
         cached = guild.get_member(int(user_id))
+        if fallback_member is not None and cached is not None:
+            fallback_role_count = len(self._member_role_ids(fallback_member))
+            cached_role_count = len(self._member_role_ids(cached))
+            return fallback_member if fallback_role_count >= cached_role_count else cached
+        if fallback_member is not None:
+            return fallback_member
         if cached is not None:
             return cached
-        if fallback is not None and fallback.guild.id == guild.id:
-            return fallback
         return None
 
     def _format_role_ids(self, guild: discord.Guild | None, role_ids: list[int]) -> str:
@@ -1899,26 +1904,52 @@ class VinculosCog(commands.Cog):
 
     @staticmethod
     def _member_role_ids(member: discord.Member) -> set[int]:
-        return {
-            int(role.id)
-            for role in getattr(member, "roles", ())
-            if getattr(role, "id", None) is not None
-        }
+        role_ids: set[int] = set()
+        for raw_role_id in getattr(member, "_roles", ()):
+            try:
+                role_ids.add(int(raw_role_id))
+            except (TypeError, ValueError):
+                LOGGER.warning(
+                    "id cru de cargo inválido ignorado na contagem de vínculo user_id=%s role_id=%r",
+                    getattr(member, "id", None),
+                    raw_role_id,
+                )
+        for role in getattr(member, "roles", ()):
+            raw_role_id = getattr(role, "id", None)
+            if raw_role_id is None:
+                continue
+            try:
+                role_ids.add(int(raw_role_id))
+            except (TypeError, ValueError):
+                LOGGER.warning(
+                    "id de cargo inválido ignorado na contagem de vínculo user_id=%s role_id=%r",
+                    getattr(member, "id", None),
+                    raw_role_id,
+                )
+        return role_ids
 
     def _partition_configured_interest_role_ids(
         self,
         guild: discord.Guild,
         configured_role_ids: Iterable[object],
+        held_role_ids: set[int] | None = None,
     ) -> tuple[set[int], set[int], set[int], set[int]]:
         configured_ids = self._normalize_role_id_set(configured_role_ids)
+        held_role_ids = held_role_ids or set()
         existing_interest_ids: set[int] = set()
         missing_ids: set[int] = set()
         default_ids: set[int] = set()
 
         for role_id in configured_ids:
+            if role_id == getattr(guild, "id", None):
+                default_ids.add(role_id)
+                continue
             role = guild.get_role(role_id)
             if role is None:
-                missing_ids.add(role_id)
+                if role_id in held_role_ids:
+                    existing_interest_ids.add(role_id)
+                else:
+                    missing_ids.add(role_id)
                 continue
             if role.is_default():
                 default_ids.add(role_id)
@@ -1949,12 +1980,13 @@ class VinculosCog(commands.Cog):
         target: discord.Member,
     ) -> InterestRoleMatch:
         guild = requester.guild
+        requester_role_ids = self._member_role_ids(requester)
+        target_role_ids = self._member_role_ids(target)
         configured_ids, existing_interest_ids, missing_ids, default_ids = self._partition_configured_interest_role_ids(
             guild,
             configured_role_ids,
+            held_role_ids=requester_role_ids | target_role_ids,
         )
-        requester_role_ids = self._member_role_ids(requester)
-        target_role_ids = self._member_role_ids(target)
         requester_interest_ids = existing_interest_ids & requester_role_ids
         target_interest_ids = existing_interest_ids & target_role_ids
         common_ids = requester_interest_ids & target_interest_ids
