@@ -3,19 +3,16 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
-import random
 import unicodedata
 from dataclasses import dataclass
 from threading import Lock
 
 import discord
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFont
 
 from cogs.ficha.rendering.drawing import (
     Rect,
-    add_noise_overlay,
     circular_crop,
-    create_avatar_placeholder,
     draw_soft_shadow,
     load_rgba_from_bytes,
     rounded_mask,
@@ -29,7 +26,6 @@ LOGGER = logging.getLogger("baphomet.vinculos.renderer")
 VINCULO_CARD_FILENAME = "vinculo_selado.png"
 
 Color = tuple[int, int, int]
-ColorA = tuple[int, int, int, int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,11 +93,11 @@ class VinculoCardRenderer:
         self._draw_panel(canvas, panel, accent)
 
         draw = ImageDraw.Draw(canvas)
-        self._draw_title(draw, width, panel.y + 52, accent)
+        self._draw_title(draw, width, panel.y + 54, accent)
         self._draw_connector(canvas, accent)
-        self._draw_participant(canvas, participant_a, Rect(205, 220, 510, 500), accent)
-        self._draw_participant(canvas, participant_b, Rect(885, 220, 510, 500), accent)
-        self._draw_sigil(canvas, (width // 2, 445), accent)
+        self._draw_participant(canvas, participant_a, Rect(220, 245, 470, 430), accent)
+        self._draw_participant(canvas, participant_b, Rect(910, 245, 470, 430), accent)
+        self._draw_center_mark(canvas, (width // 2, 410), accent)
 
         output = io.BytesIO()
         canvas.convert("RGBA").save(output, format="PNG")
@@ -109,132 +105,67 @@ class VinculoCardRenderer:
         return output
 
     def _draw_background(self, width: int, height: int, accent: Color) -> Image.Image:
-        canvas = vertical_gradient((width, height), (8, 8, 11, 255), (31, 28, 36, 255))
-        add_noise_overlay(canvas, opacity=34, seed=317, scale=3)
-
-        texture = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(texture)
-        rng = random.Random(923)
-        for _ in range(340):
-            x = rng.randint(-120, width + 120)
-            y = rng.randint(-80, height + 80)
-            length = rng.randint(60, 260)
-            shade = rng.choice((210, 225, 245, 20))
-            alpha = rng.randint(8, 34)
-            draw.line(
-                (x, y, x + length, y + rng.randint(-28, 28)),
-                fill=(shade, shade, shade, alpha),
-                width=rng.randint(1, 4),
-            )
-        texture = texture.filter(ImageFilter.GaussianBlur(0.55))
-        canvas.alpha_composite(texture)
-
-        glow = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        glow_draw = ImageDraw.Draw(glow)
-        glow_draw.ellipse((width // 2 - 470, 110, width // 2 + 470, 760), fill=(*accent, 34))
-        glow = glow.filter(ImageFilter.GaussianBlur(90))
-        canvas.alpha_composite(glow)
-
-        vignette = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        vignette_draw = ImageDraw.Draw(vignette)
-        for index in range(110):
-            alpha = max(0, int(180 * (1 - index / 110) ** 2))
-            vignette_draw.rectangle(
-                (index, index, width - index - 1, height - index - 1),
-                outline=(0, 0, 0, alpha),
-                width=2,
-            )
-        canvas.alpha_composite(vignette)
+        canvas = vertical_gradient((width, height), (13, 13, 15, 255), (25, 23, 27, 255))
+        draw = ImageDraw.Draw(canvas)
+        draw.rectangle((0, 0, width, 18), fill=(*accent, 140))
+        draw.rectangle((0, height - 18, width, height), fill=(5, 5, 6, 255))
+        draw.rectangle((0, height - 24, width, height - 18), fill=(*accent, 90))
         return canvas
 
     def _draw_panel(self, canvas: Image.Image, panel: Rect, accent: Color) -> None:
         draw_soft_shadow(
             canvas,
             panel,
-            64,
-            offset=(0, 22),
-            blur=34,
-            spread=8,
-            color=(0, 0, 0, 190),
+            36,
+            offset=(0, 16),
+            blur=18,
+            spread=0,
+            color=(0, 0, 0, 130),
         )
-        panel_fill = vertical_gradient(panel.size, (44, 44, 46, 244), (24, 23, 28, 244))
-        add_noise_overlay(panel_fill, opacity=16, seed=911, scale=4)
-        canvas.paste(panel_fill, (panel.x, panel.y), rounded_mask(panel.size, 64))
+        panel_fill = Image.new("RGBA", panel.size, (42, 41, 44, 255))
+        canvas.paste(panel_fill, (panel.x, panel.y), rounded_mask(panel.size, 36))
 
         draw = ImageDraw.Draw(canvas)
-        draw.rounded_rectangle(panel.box, radius=64, outline=(0, 0, 0, 255), width=18)
+        draw.rounded_rectangle(panel.box, radius=36, outline=(4, 4, 5, 255), width=10)
         draw.rounded_rectangle(
             (panel.x + 18, panel.y + 18, panel.right - 18, panel.bottom - 18),
-            radius=48,
+            radius=24,
             outline=(*accent, 120),
-            width=3,
-        )
-        draw.rounded_rectangle(
-            (panel.x + 30, panel.y + 30, panel.right - 30, panel.bottom - 30),
-            radius=38,
-            outline=(230, 220, 210, 34),
             width=2,
         )
 
     def _draw_title(self, draw: ImageDraw.ImageDraw, width: int, y: int, accent: Color) -> None:
         title = "VINCULO SELADO"
-        font = self._font(48, "display")
+        font = self._font(42, "display")
         bbox = self._text_bbox(draw, title, font)
         x = (width - self._box_width(bbox)) // 2
         draw.text(
             (x, y),
             title,
             font=font,
-            fill=(245, 238, 226, 235),
-            stroke_width=2,
-            stroke_fill=(0, 0, 0, 210),
+            fill=(238, 233, 224, 255),
         )
-        line_y = y + self._box_height(bbox) + 28
-        draw.line((width // 2 - 260, line_y, width // 2 + 260, line_y), fill=(*accent, 145), width=3)
-        draw.line((width // 2 - 130, line_y + 9, width // 2 + 130, line_y + 9), fill=(245, 238, 226, 72), width=2)
+        line_y = y + self._box_height(bbox) + 24
+        draw.line((width // 2 - 190, line_y, width // 2 + 190, line_y), fill=(*accent, 175), width=4)
 
     def _draw_connector(self, canvas: Image.Image, accent: Color) -> None:
-        width, height = canvas.size
-        center = (width // 2, 445)
-        glow = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        glow_draw = ImageDraw.Draw(glow)
-        left_start = (560, center[1])
-        right_end = (1040, center[1])
-        glow_draw.line((left_start, center), fill=(*accent, 135), width=18)
-        glow_draw.line((center, right_end), fill=(*accent, 135), width=18)
-        glow = glow.filter(ImageFilter.GaussianBlur(13))
-        canvas.alpha_composite(glow)
-
+        width, _ = canvas.size
+        center = (width // 2, 410)
         draw = ImageDraw.Draw(canvas)
-        draw.line((left_start, center), fill=(8, 6, 9, 245), width=12)
-        draw.line((center, right_end), fill=(8, 6, 9, 245), width=12)
-        draw.line((left_start, center), fill=(*accent, 210), width=4)
-        draw.line((center, right_end), fill=(*accent, 210), width=4)
-        for x in (610, 990):
-            draw.ellipse((x - 11, center[1] - 11, x + 11, center[1] + 11), fill=(*accent, 215))
-            draw.ellipse((x - 5, center[1] - 5, x + 5, center[1] + 5), fill=(245, 238, 226, 210))
+        line_y = center[1]
+        draw.line((610, line_y, 730, line_y), fill=(18, 17, 20, 255), width=10)
+        draw.line((870, line_y, 990, line_y), fill=(18, 17, 20, 255), width=10)
+        draw.line((610, line_y, 730, line_y), fill=(*accent, 190), width=3)
+        draw.line((870, line_y, 990, line_y), fill=(*accent, 190), width=3)
 
-    def _draw_sigil(self, canvas: Image.Image, center: tuple[int, int], accent: Color) -> None:
+    def _draw_center_mark(self, canvas: Image.Image, center: tuple[int, int], accent: Color) -> None:
         cx, cy = center
-        glow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-        glow_draw = ImageDraw.Draw(glow)
-        glow_draw.ellipse((cx - 142, cy - 142, cx + 142, cy + 142), fill=(*accent, 72))
-        glow = glow.filter(ImageFilter.GaussianBlur(24))
-        canvas.alpha_composite(glow)
-
         draw = ImageDraw.Draw(canvas)
-        draw.ellipse((cx - 92, cy - 92, cx + 92, cy + 92), outline=(3, 3, 5, 245), width=12)
-        draw.ellipse((cx - 82, cy - 82, cx + 82, cy + 82), outline=(*accent, 225), width=4)
-        draw.ellipse((cx - 57, cy - 57, cx + 57, cy + 57), outline=(245, 238, 226, 82), width=2)
-        draw.polygon(
-            ((cx, cy - 74), (cx + 58, cy), (cx, cy + 74), (cx - 58, cy)),
-            outline=(*accent, 190),
-        )
-        draw.line((cx, cy - 58, cx, cy + 58), fill=(245, 238, 226, 230), width=8)
-        draw.line((cx - 58, cy, cx + 58, cy), fill=(245, 238, 226, 230), width=8)
-        draw.line((cx - 38, cy - 38, cx + 38, cy + 38), fill=(*accent, 170), width=3)
-        draw.line((cx + 38, cy - 38, cx - 38, cy + 38), fill=(*accent, 170), width=3)
-        draw.ellipse((cx - 13, cy - 13, cx + 13, cy + 13), fill=(245, 238, 226, 245))
+        draw.ellipse((cx - 70, cy - 70, cx + 70, cy + 70), fill=(28, 26, 31, 255), outline=(8, 8, 10, 255), width=8)
+        draw.ellipse((cx - 52, cy - 52, cx + 52, cy + 52), outline=(*accent, 210), width=4)
+        draw.line((cx, cy - 32, cx, cy + 32), fill=(238, 233, 224, 235), width=7)
+        draw.line((cx - 32, cy, cx + 32, cy), fill=(238, 233, 224, 235), width=7)
+        draw.ellipse((cx - 8, cy - 8, cx + 8, cy + 8), fill=(*accent, 255))
 
     def _draw_participant(
         self,
@@ -244,58 +175,53 @@ class VinculoCardRenderer:
         accent: Color,
     ) -> None:
         draw = ImageDraw.Draw(canvas)
-        avatar_size = 292
+        avatar_size = 260
         avatar_x = area.x + (area.w - avatar_size) // 2
         avatar_y = area.y
         avatar_rect = Rect(avatar_x, avatar_y, avatar_size, avatar_size)
-        ring_rect = Rect(avatar_x - 17, avatar_y - 17, avatar_size + 34, avatar_size + 34)
+        ring_rect = Rect(avatar_x - 13, avatar_y - 13, avatar_size + 26, avatar_size + 26)
 
-        draw_soft_shadow(canvas, ring_rect, ring_rect.w // 2, offset=(0, 18), blur=22, color=(0, 0, 0, 190))
-        ring = Image.new("RGBA", ring_rect.size, (0, 0, 0, 0))
-        ring_draw = ImageDraw.Draw(ring)
-        ring_draw.ellipse((0, 0, ring_rect.w - 1, ring_rect.h - 1), fill=(8, 7, 10, 255))
-        ring_draw.ellipse((9, 9, ring_rect.w - 10, ring_rect.h - 10), outline=(*accent, 230), width=7)
-        ring_draw.ellipse((23, 23, ring_rect.w - 24, ring_rect.h - 24), outline=(245, 238, 226, 64), width=2)
-        canvas.alpha_composite(ring, (ring_rect.x, ring_rect.y))
+        draw_soft_shadow(canvas, ring_rect, ring_rect.w // 2, offset=(0, 8), blur=10, color=(0, 0, 0, 105))
+        draw.ellipse(ring_rect.box, fill=(21, 20, 23, 255), outline=(*accent, 215), width=5)
 
         avatar = self._avatar_image(participant, avatar_size, accent)
         canvas.alpha_composite(avatar, (avatar_rect.x, avatar_rect.y))
 
-        name_box = Rect(area.x, avatar_y + avatar_size + 54, area.w, 96)
-        name, font = self._fit_text(draw, participant.display_name, name_box.w, start_size=44, min_size=26, weight="bold")
+        name_box = Rect(area.x, avatar_y + avatar_size + 48, area.w, 84)
+        name, font = self._fit_text(draw, participant.display_name, name_box.w, start_size=40, min_size=25, weight="bold")
         bbox = self._text_bbox(draw, name, font)
         text_x = name_box.x + (name_box.w - self._box_width(bbox)) // 2
         text_y = name_box.y + (name_box.h - self._box_height(bbox)) // 2 - bbox[1]
         draw.text(
-            (text_x + 3, text_y + 4),
-            name,
-            font=font,
-            fill=(0, 0, 0, 185),
-            stroke_width=2,
-            stroke_fill=(0, 0, 0, 120),
-        )
-        draw.text(
             (text_x, text_y),
             name,
             font=font,
-            fill=(248, 244, 236, 255),
-            stroke_width=2,
-            stroke_fill=(0, 0, 0, 210),
+            fill=(238, 233, 224, 255),
         )
 
     def _avatar_image(self, participant: VinculoParticipantRenderData, size: int, accent: Color) -> Image.Image:
         source = load_rgba_from_bytes(participant.avatar_bytes)
         if source is None:
-            return create_avatar_placeholder(
-                size,
-                initials=participant.fallback_initials,
-                font=self._font(90, "display"),
-                fill_top=(38, 34, 47, 255),
-                fill_bottom=(14, 13, 18, 255),
-                accent=(*accent, 210),
-                text_fill=(248, 244, 236, 255),
-            )
+            return self._avatar_placeholder(size, participant.fallback_initials, accent)
         return circular_crop(source, size)
+
+    def _avatar_placeholder(self, size: int, initials: str, accent: Color) -> Image.Image:
+        canvas = Image.new("RGBA", (size, size), (31, 29, 35, 255))
+        mask = rounded_mask((size, size), size // 2)
+        canvas.putalpha(mask)
+
+        draw = ImageDraw.Draw(canvas)
+        draw.ellipse((size * 0.17, size * 0.17, size * 0.83, size * 0.83), outline=(*accent, 150), width=max(3, size // 35))
+        text = initials[:2].upper() or "?"
+        font = self._font(max(38, size // 3), "display")
+        bbox = self._text_bbox(draw, text, font)
+        draw.text(
+            ((size - self._box_width(bbox)) // 2, (size - self._box_height(bbox)) // 2 - bbox[1]),
+            text,
+            font=font,
+            fill=(238, 233, 224, 255),
+        )
+        return canvas
 
     def _fit_text(
         self,
