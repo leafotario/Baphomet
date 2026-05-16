@@ -16,13 +16,6 @@ from urllib.parse import unquote, urlparse
 import aiohttp
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from cogs.tierlist_wikipedia.safety import (
-    SAFETY_PUBLIC_NO_SAFE_RESULTS_MESSAGE,
-    SAFETY_VERDICT_ALLOW,
-    SafetyPipeline,
-)
-
-
 LOGGER = logging.getLogger("baphomet.tierlist.wikipedia")
 
 WIKIPEDIA_SOURCE_TYPE = "wikipedia_pageimage"
@@ -804,18 +797,6 @@ class ImageDownloadService:
                     if self._inflight.get(processed_key) is task:
                         self._inflight.pop(processed_key, None)
 
-    async def download_raw_for_safety(self, image_url: str) -> bytes:
-        return await self._download_raw(image_url, use_cache=False, store_cache=False)
-
-    async def validate_and_cache_raw(self, raw: bytes, *, cache_key: str) -> bytes:
-        processed_key = f"{cache_key}:processed:{self.validator.max_dimension}"
-        cached = await self.cache.processed_image.get(processed_key)
-        if cached is not None:
-            return cached
-        normalized = await asyncio.to_thread(self.validator.normalize, raw)
-        await self.cache.processed_image.set(processed_key, normalized)
-        return normalized
-
     async def _download_and_validate(self, image_url: str, *, processed_key: str) -> bytes:
         started_at = time.monotonic()
         raw = await self._download_raw(image_url)
@@ -979,7 +960,6 @@ class WikipediaImageService:
         fallback_language: str | None = None,
         user_agent: str | None = None,
         max_image_bytes: int | None = None,
-        safety_pipeline: SafetyPipeline | None = None,
     ) -> None:
         self.default_language = self._clean_language(default_language or os.getenv("WIKI_DEFAULT_LANG") or "pt")
         self.fallback_language = self._clean_language(fallback_language or os.getenv("WIKI_FALLBACK_LANG") or "en")
@@ -993,7 +973,6 @@ class WikipediaImageService:
             self.cache,
             self.attribution_extractor,
         )
-        self.safety_pipeline = safety_pipeline or SafetyPipeline(http_client=self.http_client)
         self.validator = PillowImageValidator()
         configured_max_bytes = max_image_bytes or self._env_int("WIKI_MAX_IMAGE_BYTES", 8 * 1024 * 1024)
         self.image_downloader = ImageDownloadService(
@@ -1015,22 +994,9 @@ class WikipediaImageService:
         started_at = time.monotonic()
         LOGGER.info("Wikipedia termo recebido: %r; normalizado: %r.", raw_term, term)
 
-        query_decision = await self.safety_pipeline.evaluate_query(term, guild_id=guild_id, user_id=user_id)
-        self._raise_if_safety_rejected(query_decision)
-
         search_results = await self._search_with_fallback(term)
-        candidates = await self._filter_safe_page_candidates(
-            list(search_results.image_candidates),
-            guild_id=guild_id,
-            user_id=user_id,
-            term=term,
-        )
+        candidates = list(search_results.image_candidates)
         if not candidates:
-            if search_results.image_candidates:
-                raise WikipediaUserError(
-                    SAFETY_PUBLIC_NO_SAFE_RESULTS_MESSAGE,
-                    code="wiki_safety_filtered_results",
-                )
             if search_results.all_candidates:
                 raise WikipediaUserError(
                     "Encontrei artigos, mas nenhum tinha imagem livre utilizável para a tierlist.",
@@ -1083,26 +1049,6 @@ class WikipediaImageService:
                 code="wiki_non_free_image",
             )
 
-        metadata_decision = await self.safety_pipeline.evaluate_file_metadata(
-            metadata,
-            guild_id=guild_id,
-            user_id=user_id,
-            term=term,
-            pageid=candidate.pageid,
-            page_title=candidate.title,
-        )
-        self._raise_if_safety_rejected(metadata_decision)
-
-        structured_decision = await self.safety_pipeline.evaluate_structured_data(
-            metadata,
-            guild_id=guild_id,
-            user_id=user_id,
-            term=term,
-            pageid=candidate.pageid,
-            page_title=candidate.title,
-        )
-        self._raise_if_safety_rejected(structured_decision)
-
         download_url = self._select_download_url(candidate, metadata)
         if not download_url:
             raise WikipediaUserError(
@@ -1112,21 +1058,7 @@ class WikipediaImageService:
 
         file_title = metadata.canonicaltitle or self.page_image_resolver.file_title(candidate.pageimage)
         cache_key = self._image_cache_key(candidate, file_title, download_url)
-        if self.safety_pipeline.has_visual_classifier:
-            raw_image_bytes = await self.image_downloader.download_raw_for_safety(download_url)
-            visual_decision = await self.safety_pipeline.evaluate_visual(
-                raw_image_bytes,
-                metadata=metadata,
-                guild_id=guild_id,
-                user_id=user_id,
-                term=term,
-                pageid=candidate.pageid,
-                page_title=candidate.title,
-            )
-            self._raise_if_safety_rejected(visual_decision)
-            image_bytes = await self.image_downloader.validate_and_cache_raw(raw_image_bytes, cache_key=cache_key)
-        else:
-            image_bytes = await self.image_downloader.download_validated(download_url, cache_key=cache_key)
+        image_bytes = await self.image_downloader.download_validated(download_url, cache_key=cache_key)
         caption = candidate.title.strip() or metadata.object_name or "Wikipedia"
 
         LOGGER.info(
@@ -1183,8 +1115,6 @@ class WikipediaImageService:
             "wiki_image_too_many_pixels",
             "wiki_image_empty",
             "wiki_image_http_error",
-            "wiki_safety_block",
-            "wiki_safety_review",
         }
 
         for candidate in candidates:
@@ -1215,57 +1145,6 @@ class WikipediaImageService:
             code="wiki_no_free_image",
         )
 
-    async def _filter_safe_page_candidates(
-        self,
-        candidates: list[WikipediaPageImageCandidate],
-        *,
-        guild_id: int | None,
-        user_id: int | None,
-        term: str,
-    ) -> list[WikipediaPageImageCandidate]:
-        safe_candidates: list[WikipediaPageImageCandidate] = []
-
-        for candidate in candidates:
-            try:
-                categories = await self.category_resolver.fetch_page_categories(candidate)
-                decision = await self.safety_pipeline.evaluate_page(
-                    pageid=candidate.pageid,
-                    title=candidate.title,
-                    description=candidate.description,
-                    categories=categories,
-                    guild_id=guild_id,
-                    user_id=user_id,
-                    term=term,
-                )
-            except WikipediaUserError as exc:
-                LOGGER.warning(
-                    "Categorias da página indisponíveis; candidato bloqueado fail-closed: %s:%s code=%s.",
-                    candidate.wiki_language,
-                    candidate.pageid,
-                    exc.code,
-                )
-                decision = await self.safety_pipeline.evaluate_unavailable_source(
-                    source="page_categories",
-                    guild_id=guild_id,
-                    user_id=user_id,
-                    term=term,
-                    pageid=candidate.pageid,
-                    page_title=candidate.title,
-                )
-
-            if decision.verdict == SAFETY_VERDICT_ALLOW:
-                safe_candidates.append(candidate)
-            else:
-                LOGGER.warning(
-                    "Candidato Wikipedia filtrado por safety: lang=%s pageid=%s title=%r verdict=%s.",
-                    candidate.wiki_language,
-                    candidate.pageid,
-                    candidate.title,
-                    decision.verdict,
-                )
-
-        return safe_candidates
-
     def normalize_search_term(self, raw_term: str) -> str:
         value = re.sub(r"\s+", " ", (raw_term or "").strip())
         value = self._title_from_wikipedia_url(value) or value
@@ -1277,13 +1156,6 @@ class WikipediaImageService:
         if not any(char.isalnum() for char in value):
             raise WikipediaUserError("Informe um termo com letras ou números para pesquisar na Wikipedia.", code="wiki_invalid")
         return value
-
-    def _raise_if_safety_rejected(self, decision: Any) -> None:
-        if getattr(decision, "verdict", SAFETY_VERDICT_ALLOW) == SAFETY_VERDICT_ALLOW:
-            return
-        public_message = getattr(decision, "public_message", "") or SAFETY_PUBLIC_NO_SAFE_RESULTS_MESSAGE
-        verdict = getattr(decision, "verdict", "blocked")
-        raise WikipediaUserError(public_message, code=f"wiki_safety_{verdict}")
 
     async def _search_with_fallback(self, term: str) -> WikipediaSearchResults:
         languages = [self.default_language]

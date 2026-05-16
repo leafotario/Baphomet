@@ -13,7 +13,6 @@ from .exceptions import (
     ConflictingImageSourcesError,
     EmptyTemplateItemError,
     TemplateItemResolveError,
-    UnsafeWikipediaImageError,
 )
 from .migrations import dumps_json
 from .messages import CONFLICTING_IMAGE_SOURCES_MESSAGE, EMPTY_ITEM_MESSAGE
@@ -263,8 +262,6 @@ class TierTemplateItemResolver:
         except Exception as exc:
             code = getattr(exc, "code", "wikipedia_error")
             user_message = getattr(exc, "user_message", "Não consegui resolver essa imagem pela Wikipedia.")
-            if "safety" in str(code):
-                raise UnsafeWikipediaImageError(user_message, detail=str(exc), code=str(code)) from exc
             raise TemplateItemResolveError(user_message, detail=str(exc), code=str(code)) from exc
         item = resolution.item
         if item is None:

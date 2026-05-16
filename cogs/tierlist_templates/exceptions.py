@@ -27,7 +27,3 @@ class EmptyTemplateItemError(TemplateItemResolveError):
 
 class UnsupportedImageTypeError(AssetValidationError):
     pass
-
-
-class UnsafeWikipediaImageError(TemplateItemResolveError):
-    pass

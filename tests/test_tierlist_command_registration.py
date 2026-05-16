@@ -30,14 +30,10 @@ class TierListCommandRegistrationTests(unittest.IsolatedAsyncioTestCase):
             [],
         )
 
-    async def test_tierlist_safety_group_keeps_admin_default_permissions(self) -> None:
+    async def test_tierlist_safety_group_is_not_registered(self) -> None:
         await self.bot.load_extension("cogs.tierlist")
 
-        safety_group = next(
-            command
-            for command in self.bot.tree.walk_commands()
-            if command.qualified_name == "tierlist-safety"
-        )
+        command_names = [command.qualified_name for command in self.bot.tree.walk_commands()]
 
-        self.assertIsNotNone(safety_group.default_permissions)
-        self.assertTrue(safety_group.default_permissions.administrator)
+        self.assertNotIn("tierlist-safety", command_names)
+        self.assertFalse(any(name.startswith("tierlist-safety ") for name in command_names))
