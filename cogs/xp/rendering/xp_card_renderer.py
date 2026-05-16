@@ -321,7 +321,7 @@ class XpCardRenderer:
             bond_multiplier,
         )
 
-    def _build_leaderboard_image(self, guild_name: str, icon_bytes: bytes | None, entries_data: list[tuple[LeaderboardEntry, bytes | None]]) -> io.BytesIO:
+    def _build_leaderboard_image(self, guild_name: str, icon_bytes: bytes | None, entries_data: list[tuple[LeaderboardEntry, bytes | None, bytes | None]]) -> io.BytesIO:
         """Constrói o leaderboard com alinhamento matemático e espaçamento premium."""
         width = 1200
         row_height = 150
@@ -346,7 +346,7 @@ class XpCardRenderer:
         if not entries_data:
             self._draw_text(draw, (60, 230), "Nenhuma lenda emergiu neste servidor ainda.", font=self._font(30, weight="regular"), fill=(180, 180, 180, 255))
         else:
-            for index, (entry, avatar_bytes) in enumerate(entries_data, start=1):
+            for index, (entry, avatar_bytes, badge_bytes) in enumerate(entries_data, start=1):
                 y = top_padding + ((index - 1) * row_height)
                 
                 # Container da Linha (Maior respiro, y + 130)
@@ -378,7 +378,19 @@ class XpCardRenderer:
                 # Nome e Info (Fixo no eixo X = 320)
                 display_name = self._truncate(entry.display_name, 18)
                 name_color = badge_color if index <= 3 else (255, 255, 255, 255)
-                self._draw_text(draw, (320, y + 30), display_name, font=self._font(34, weight="bold"), fill=name_color, stroke_width=1)
+                name_font = self._font(34, weight="bold")
+                self._draw_text(draw, (320, y + 30), display_name, font=name_font, fill=name_color, stroke_width=1)
+                
+                if badge_bytes:
+                    badge_img = self._create_badge_image(badge_bytes, 24)
+                    if badge_img:
+                        name_bbox = draw.textbbox((0, 0), display_name, font=name_font)
+                        name_w = name_bbox[2] - name_bbox[0]
+                        name_h = name_bbox[3] - name_bbox[1]
+                        icon_x = 320 + name_w + 12
+                        icon_y = y + 30 + (name_h - 24) // 2 + 5
+                        layer.paste(badge_img, (icon_x, icon_y), badge_img)
+                
                 self._draw_text(draw, (320, y + 78), f"LVL {entry.level}  •  {entry.total_xp:,} XP", font=self._font(24, weight="regular"), fill=(200, 200, 200, 255))
                 
                 # Progress Bar (Fixo no eixo X = 780 para não colidir com os nomes longos)
@@ -401,14 +413,14 @@ class XpCardRenderer:
         self,
         *,
         guild: discord.Guild,
-        entries: Iterable[tuple[LeaderboardEntry, discord.Member | discord.User | None]],
+        entries: Iterable[tuple[LeaderboardEntry, discord.Member | discord.User | None, bytes | None]],
     ) -> io.BytesIO:
         """Busca todas as imagens (Icone, Avatares) e delega para thread pool."""
         entries_list = list(entries)
         
         # Download paralelo do logo do server e avatares
         tasks = [self._read_asset(guild.icon)]
-        for _, member in entries_list:
+        for _, member, _badge in entries_list:
             if member:
                 tasks.append(self._read_asset(member.display_avatar))
             else:
@@ -420,6 +432,6 @@ class XpCardRenderer:
         avatars_bytes = results[1:]
         
         # Monta payload para o Worker
-        entries_data = [(entry, avatar) for (entry, _), avatar in zip(entries_list, avatars_bytes)]
+        entries_data = [(entry, avatar, badge) for (entry, _, badge), avatar in zip(entries_list, avatars_bytes)]
         
         return await asyncio.to_thread(self._build_leaderboard_image, guild.name, icon_bytes, entries_data)

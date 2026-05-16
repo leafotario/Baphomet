@@ -6,6 +6,7 @@ import discord
 
 from ..xp_service import XpService
 from ..utils import LeaderboardEntry
+from ..rank_badges import RankBadgeService
 from .xp_card_renderer import XpCardRenderer
 
 
@@ -63,10 +64,11 @@ class FullLeaderboardPaginator(discord.ui.View):
 
 
 class RankCardView(discord.ui.View):
-    def __init__(self, service: XpService, cards: XpCardRenderer, *, timeout: float = 180) -> None:
+    def __init__(self, service: XpService, cards: XpCardRenderer, badges: RankBadgeService, *, timeout: float = 180) -> None:
         super().__init__(timeout=timeout)
         self.service = service
         self.cards = cards
+        self.badges = badges
         self.message: discord.Message | None = None
 
     async def on_timeout(self) -> None:
@@ -86,7 +88,7 @@ class RankCardView(discord.ui.View):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             entries = await self.service.get_leaderboard_entries(interaction.guild, 5)
-            resolved: list[tuple[LeaderboardEntry, discord.Member | discord.User | None]] = []
+            resolved: list[tuple[LeaderboardEntry, discord.Member | discord.User | None, bytes | None]] = []
             for entry in entries:
                 member = interaction.guild.get_member(entry.user_id)
                 if member is None:
@@ -94,7 +96,12 @@ class RankCardView(discord.ui.View):
                         member = await interaction.guild.fetch_member(entry.user_id)
                     except discord.HTTPException:
                         member = None
-                resolved.append((entry, member))
+                
+                badge_image_bytes = None
+                if isinstance(member, discord.Member):
+                    _badge, badge_image_bytes = await self.badges.resolve_member_badge_image(member)
+                
+                resolved.append((entry, member, badge_image_bytes))
             image = await self.cards.render_leaderboard_card(guild=interaction.guild, entries=resolved)
             await interaction.followup.send(file=discord.File(image, filename="leaderboard.png"), ephemeral=True)
         except Exception:

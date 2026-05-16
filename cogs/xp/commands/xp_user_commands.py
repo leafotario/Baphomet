@@ -42,7 +42,7 @@ class XpUserCommands(commands.Cog):
         badge_image_bytes = None
         if isinstance(target, discord.Member):
             _badge, badge_image_bytes = await self.runtime.badges.resolve_member_badge_image(target)
-        view = RankCardView(self.runtime.service, self.runtime.cards)
+        view = RankCardView(self.runtime.service, self.runtime.cards, self.runtime.badges)
         try:
             image = await self.runtime.cards.render_rank_card(
                 guild=interaction.guild,
@@ -83,7 +83,12 @@ class XpUserCommands(commands.Cog):
                     member = await interaction.guild.fetch_member(entry.user_id)
                 except discord.HTTPException:
                     member = None
-            resolved.append((entry, member))
+            
+            badge_image_bytes = None
+            if isinstance(member, discord.Member):
+                _badge, badge_image_bytes = await self.runtime.badges.resolve_member_badge_image(member)
+            
+            resolved.append((entry, member, badge_image_bytes))
         try:
             image = await self.runtime.cards.render_leaderboard_card(guild=interaction.guild, entries=resolved)
             await interaction.edit_original_response(attachments=[discord.File(image, filename="leaderboard.png")], view=view)
