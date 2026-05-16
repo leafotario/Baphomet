@@ -11,12 +11,12 @@ from threading import Lock
 import discord
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
-from cogs.ficha.rendering.drawing import (
+from cogs.vinculos_rendering.drawing import (
     Rect,
     load_rgba_from_bytes,
     rounded_mask,
 )
-from cogs.ficha.rendering.fonts import FontManager
+from cogs.vinculos_rendering.fonts import FontManager
 
 
 LOGGER = logging.getLogger("baphomet.vinculos.renderer")

@@ -1,6 +1,6 @@
-# Profile card fonts
+# Bot rendering fonts
 
-The `/ficha` renderer loads fonts only from this directory.
+Renderers that need bundled fonts load them from this directory.
 
 Expected files:
 
@@ -8,5 +8,5 @@ Expected files:
 - `Poppins-Bold.ttf` for labels, pills and small UI emphasis.
 - `Montserrat-Black.ttf` as the display face for names, crests and plates.
 
-Keep these filenames stable unless `cogs/profile/services/profile_render_service.py`
-is updated to point at the new files.
+Keep these filenames stable unless the renderer font manager is updated to point
+at the new files.
