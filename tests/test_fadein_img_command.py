@@ -71,7 +71,7 @@ class FadeInImageCogTests(unittest.IsolatedAsyncioTestCase):
             (InvalidImageError("x"), "Nao consegui abrir essa imagem"),
             (AnimatedImageNotSupportedError("x"), "imagem estatica"),
             (ImageTooLargeError("x"), "grande demais"),
-            (OutputTooLargeError("x"), "GIF final ficou grande demais"),
+            (OutputTooLargeError("x"), "Mesmo comprimindo"),
         ]
 
         for error, expected in cases:

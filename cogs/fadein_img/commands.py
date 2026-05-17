@@ -203,7 +203,7 @@ class FadeInImageCog(commands.Cog):
         if isinstance(error, ImageTooLargeError):
             return "Essa imagem e grande demais para processar com seguranca. Tenta uma menor."
         if isinstance(error, OutputTooLargeError):
-            return "O GIF final ficou grande demais para enviar no Discord. Tenta uma imagem menor."
+            return "Mesmo comprimindo, o GIF final ficou grande demais para enviar no Discord. Tenta uma imagem menor."
         return "Algo deu errado enquanto eu gerava o fade-in. O erro foi registrado para analise."
 
 

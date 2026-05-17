@@ -50,6 +50,17 @@ def animated_gif_bytes() -> bytes:
     return buffer.getvalue()
 
 
+def noisy_image_bytes(*, size: tuple[int, int] = (96, 96)) -> bytes:
+    image = Image.new("RGB", size)
+    pixels = image.load()
+    for y in range(size[1]):
+        for x in range(size[0]):
+            pixels[x, y] = ((x * 17 + y * 31) % 256, (x * 47 + y * 13) % 256, (x * 7 + y * 59) % 256)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def assert_valid_fadein_gif(
     test_case: unittest.TestCase,
     buffer: io.BytesIO,
@@ -164,8 +175,52 @@ class FadeInImageProcessorTests(unittest.TestCase):
         self.assertEqual(frames[0].getpixel((0, 0)), (0, 0, 0))
         self.assertEqual(frames[-1].getpixel((0, 0)), (11, 22, 33))
 
+    def test_non_divisor_fps_still_totals_one_second(self) -> None:
+        buffer, _ = process_fadein_image_bytes(image_bytes("PNG", color=(180, 30, 90, 255)), FadeInImageConfig(fps=18))
+        output = Image.open(buffer)
+        frame_count = getattr(output, "n_frames", 1)
+        durations = []
+        for index in range(frame_count):
+            output.seek(index)
+            durations.append(output.info.get("duration"))
+
+        self.assertEqual(frame_count, 18)
+        self.assertEqual(sum(durations), 1000)
+
     def test_output_limit_is_enforced(self) -> None:
-        config = FadeInImageConfig(max_output_bytes=32)
+        config = FadeInImageConfig(
+            max_output_bytes=32,
+            compression_palette_colors=(64,),
+            compression_fps_values=(20, 10),
+            compression_scale_factors=(1.0, 0.5),
+        )
 
         with self.assertRaises(OutputTooLargeError):
             process_fadein_image_bytes(image_bytes("PNG", size=(64, 48)), config)
+
+    def test_output_is_compressed_when_initial_gif_exceeds_limit(self) -> None:
+        raw = noisy_image_bytes()
+        limit = 50_000
+        fast_compression_config = FadeInImageConfig(
+            max_output_bytes=limit,
+            compression_palette_colors=(128, 64),
+            compression_fps_values=(20, 10),
+            compression_scale_factors=(1.0, 0.7, 0.5),
+        )
+
+        with self.assertRaises(OutputTooLargeError):
+            process_fadein_image_bytes(raw, FadeInImageConfig(max_output_bytes=limit, enable_compression=False))
+
+        buffer, filename = process_fadein_image_bytes(raw, fast_compression_config)
+        self.assertEqual(buffer.tell(), 0)
+        output = Image.open(buffer)
+        frame_count = getattr(output, "n_frames", 1)
+        durations = []
+        for index in range(frame_count):
+            output.seek(index)
+            durations.append(output.info.get("duration"))
+
+        self.assertEqual(filename, "fadein.gif")
+        self.assertLessEqual(buffer.getbuffer().nbytes, limit)
+        self.assertLess(frame_count, 20)
+        self.assertEqual(sum(durations), 1000)
