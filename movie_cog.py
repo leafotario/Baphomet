@@ -36,6 +36,13 @@ class MovieGuildConfig:
 
 
 class MovieCog(commands.Cog):
+    motd = app_commands.Group(
+        name="motd",
+        description="Configuração e operação do Filme do Dia.",
+        default_permissions=discord.Permissions(administrator=True),
+        guild_only=True,
+    )
+
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.db_manager = DatabaseManager()
@@ -103,12 +110,10 @@ class MovieCog(commands.Cog):
             time_str,
         )
 
-    @app_commands.command(
+    @motd.command(
         name="set_time",
         description="Define o horário diário do Filme do Dia no formato HH:MM.",
     )
-    @app_commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(horario="Horário em formato HH:MM, usando America/Sao_Paulo.")
     async def set_time(self, interaction: discord.Interaction, horario: str) -> None:
@@ -130,12 +135,10 @@ class MovieCog(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(
+    @motd.command(
         name="set_channel",
         description="Define o canal onde o Filme do Dia será publicado.",
     )
-    @app_commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(canal="Canal textual de publicação.")
     async def set_channel(
@@ -154,12 +157,10 @@ class MovieCog(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(
+    @motd.command(
         name="set_role",
         description="Define o cargo mencionado nas publicações do Filme do Dia.",
     )
-    @app_commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(cargo="Cargo mencionado junto ao Filme do Dia.")
     async def set_role(
@@ -178,12 +179,10 @@ class MovieCog(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(
+    @motd.command(
         name="blacklist_remove",
         description="Remove um filme da blacklist pelo ID do TMDB.",
     )
-    @app_commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(id="ID numérico do filme no TMDB.")
     async def blacklist_remove(self, interaction: discord.Interaction, id: int) -> None:
@@ -199,12 +198,10 @@ class MovieCog(commands.Cog):
 
         await interaction.response.send_message(message, ephemeral=True)
 
-    @app_commands.command(
+    @motd.command(
         name="blacklist_view",
         description="Lista os filmes registrados na blacklist deste servidor.",
     )
-    @app_commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def blacklist_view(self, interaction: discord.Interaction) -> None:
         guild_id = self._interaction_guild_id(interaction)
@@ -229,12 +226,10 @@ class MovieCog(commands.Cog):
             embed = self._build_blacklist_embed(chunk, page_index, total_pages)
             await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @app_commands.command(
+    @motd.command(
         name="test_movie",
         description="Publica um Filme do Dia de teste sem gravar na blacklist.",
     )
-    @app_commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def test_movie(self, interaction: discord.Interaction) -> None:
         guild_id = self._interaction_guild_id(interaction)
