@@ -13,10 +13,15 @@ from urllib.parse import urlparse
 
 import aiohttp
 import discord
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageFile, UnidentifiedImageError
 
 
 LOGGER = logging.getLogger("baphomet.movie_logic")
+
+# Alguns posters vindos de CDN chegam com poucos bytes finais ausentes. O Pillow
+# ainda consegue carregar a imagem nesses casos, então toleramos esse cenário para
+# não perder a cor dinâmica por um JPEG levemente truncado.
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 FALLBACK_EMBED_COLOR: Final[discord.Color] = discord.Color.gold()
 DEFAULT_LIKE_EMOJI: Final[str] = "👍"
