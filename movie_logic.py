@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+import asyncio
+import io
 import logging
 import re
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Final, Protocol
 from urllib.parse import urlparse
 
+import aiohttp
 import discord
+from PIL import Image, UnidentifiedImageError
 
 
 LOGGER = logging.getLogger("baphomet.movie_logic")
 
+FALLBACK_EMBED_COLOR: Final[discord.Color] = discord.Color.gold()
 DEFAULT_LIKE_EMOJI: Final[str] = "👍"
 DEFAULT_DISLIKE_EMOJI: Final[str] = "👎"
 DEFAULT_NEVER_WATCHED_EMOJI: Final[str] = "🤔"
@@ -21,9 +27,33 @@ EMOJI_NAO_GOSTO: Final[str] = DEFAULT_DISLIKE_EMOJI
 EMOJI_NUNCA_ASSISTI: Final[str] = DEFAULT_NEVER_WATCHED_EMOJI
 MAX_REACTION_EMOJI_LENGTH: Final[int] = 100
 MAX_UNICODE_REACTION_EMOJI_LENGTH: Final[int] = 16
+POSTER_COLOR_DOWNLOAD_TIMEOUT_SECONDS: Final[float] = 5.0
+POSTER_COLOR_MAX_BYTES: Final[int] = 5 * 1024 * 1024
+POSTER_COLOR_ANALYSIS_SIZE: Final[tuple[int, int]] = (80, 80)
+POSTER_COLOR_PALETTE_SIZE: Final[int] = 12
+POSTER_COLOR_MIN_ALPHA: Final[int] = 128
+POSTER_COLOR_MIN_BRIGHTNESS: Final[float] = 24.0
+POSTER_COLOR_MAX_BRIGHTNESS: Final[float] = 235.0
+PT_BR_MONTHS: Final[tuple[str, ...]] = (
+    "",
+    "janeiro",
+    "fevereiro",
+    "março",
+    "abril",
+    "maio",
+    "junho",
+    "julho",
+    "agosto",
+    "setembro",
+    "outubro",
+    "novembro",
+    "dezembro",
+)
 CUSTOM_EMOJI_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"^<a?:[A-Za-z0-9_]{2,32}:\d{15,25}>$"
 )
+ISO_RELEASE_DATE_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+RELEASE_YEAR_PATTERN: Final[re.Pattern[str]] = re.compile(r"^\d{4}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,11 +149,13 @@ async def post_movie_of_the_day(
             movie,
             ("release_date", "release", "release_year", "launch_date"),
         )
+        release_date = _format_release_date_pt_br(release_date)
         poster_url = _read_text(movie, "poster_url")
+        embed_color = await extract_dominant_color_from_url(poster_url)
 
         embed = discord.Embed(
             title=title,
-            color=discord.Color.gold(),
+            color=embed_color,
         )
         if _is_valid_embed_image_url(poster_url):
             embed.set_image(url=poster_url)
@@ -260,6 +292,145 @@ def _has_required_permissions(channel: discord.TextChannel) -> bool:
         return False
 
     return True
+
+
+async def extract_dominant_color_from_url(url: str) -> discord.Color:
+    if not _is_valid_embed_image_url(url):
+        return FALLBACK_EMBED_COLOR
+
+    try:
+        image_bytes = await _download_image_bytes(url)
+        dominant_rgb = await asyncio.to_thread(
+            _extract_dominant_rgb_from_image_bytes,
+            image_bytes,
+        )
+    except (
+        aiohttp.ClientError,
+        asyncio.TimeoutError,
+        OSError,
+        TypeError,
+        UnidentifiedImageError,
+        ValueError,
+    ) as exc:
+        LOGGER.warning(
+            "Falha ao extrair cor dominante do poster; usando cor padrao url=%s erro=%s.",
+            url,
+            exc,
+            exc_info=LOGGER.isEnabledFor(logging.DEBUG),
+        )
+        return FALLBACK_EMBED_COLOR
+
+    if dominant_rgb is None:
+        return FALLBACK_EMBED_COLOR
+
+    return discord.Color.from_rgb(*dominant_rgb)
+
+
+async def _download_image_bytes(url: str) -> bytes:
+    timeout = aiohttp.ClientTimeout(total=POSTER_COLOR_DOWNLOAD_TIMEOUT_SECONDS)
+    headers = {"Accept": "image/*"}
+
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+        async with session.get(url) as response:
+            if response.status < 200 or response.status >= 300:
+                raise ValueError(f"download do poster retornou HTTP {response.status}")
+
+            content_type = response.headers.get("Content-Type", "")
+            if content_type and not content_type.lower().startswith("image/"):
+                raise ValueError(f"conteudo do poster nao parece imagem: {content_type}")
+
+            content_length = _coerce_optional_int(response.headers.get("Content-Length"))
+            if content_length is not None and content_length > POSTER_COLOR_MAX_BYTES:
+                raise ValueError("poster excede o tamanho maximo permitido")
+
+            image_bytes = await response.content.read(POSTER_COLOR_MAX_BYTES + 1)
+
+    if len(image_bytes) > POSTER_COLOR_MAX_BYTES:
+        raise ValueError("poster excede o tamanho maximo permitido")
+
+    if not image_bytes:
+        raise ValueError("download do poster retornou conteudo vazio")
+
+    return image_bytes
+
+
+def _extract_dominant_rgb_from_image_bytes(image_bytes: bytes) -> tuple[int, int, int] | None:
+    with Image.open(io.BytesIO(image_bytes)) as image:
+        image.thumbnail(POSTER_COLOR_ANALYSIS_SIZE, Image.Resampling.LANCZOS)
+        rgba_image = image.convert("RGBA")
+        candidate_pixels: list[tuple[int, int, int]] = []
+        fallback_pixels: list[tuple[int, int, int]] = []
+
+        for red, green, blue, alpha in rgba_image.getdata():
+            if alpha < POSTER_COLOR_MIN_ALPHA:
+                continue
+
+            rgb = (red, green, blue)
+            fallback_pixels.append(rgb)
+            if _is_representative_poster_color(red, green, blue):
+                candidate_pixels.append(rgb)
+
+    return _find_dominant_rgb(candidate_pixels or fallback_pixels)
+
+
+def _find_dominant_rgb(pixels: list[tuple[int, int, int]]) -> tuple[int, int, int] | None:
+    if not pixels:
+        return None
+
+    palette_size = max(1, min(POSTER_COLOR_PALETTE_SIZE, len(set(pixels))))
+    pixel_image = Image.new("RGB", (len(pixels), 1))
+    pixel_image.putdata(pixels)
+    quantized_image = pixel_image.quantize(colors=palette_size)
+    colors = quantized_image.getcolors(maxcolors=len(pixels))
+    palette = quantized_image.getpalette()
+
+    if not colors or not palette:
+        return pixels[0]
+
+    for _, palette_index in sorted(colors, reverse=True):
+        palette_offset = int(palette_index) * 3
+        rgb = tuple(palette[palette_offset : palette_offset + 3])
+        if len(rgb) != 3:
+            continue
+
+        red, green, blue = (int(rgb[0]), int(rgb[1]), int(rgb[2]))
+        if _is_representative_poster_color(red, green, blue):
+            return red, green, blue
+
+    _, palette_index = max(colors)
+    palette_offset = int(palette_index) * 3
+    rgb = palette[palette_offset : palette_offset + 3]
+    if len(rgb) != 3:
+        return pixels[0]
+    return int(rgb[0]), int(rgb[1]), int(rgb[2])
+
+
+def _is_representative_poster_color(red: int, green: int, blue: int) -> bool:
+    brightness = (red * 0.299) + (green * 0.587) + (blue * 0.114)
+    return POSTER_COLOR_MIN_BRIGHTNESS <= brightness <= POSTER_COLOR_MAX_BRIGHTNESS
+
+
+def _format_release_date_pt_br(raw_date: object) -> str:
+    if raw_date is None:
+        return "N/A"
+
+    text = str(raw_date).strip()
+    if not text or text.upper() == "N/A":
+        return "N/A"
+
+    if RELEASE_YEAR_PATTERN.fullmatch(text):
+        return text
+
+    if ISO_RELEASE_DATE_PATTERN.fullmatch(text) is None:
+        return text
+
+    try:
+        parsed_date = date.fromisoformat(text)
+    except ValueError:
+        return "N/A"
+
+    month_name = PT_BR_MONTHS[parsed_date.month]
+    return f"{parsed_date.day} de {month_name} de {parsed_date.year}"
 
 
 def validate_reaction_emoji(emoji_text: str) -> str | None:
