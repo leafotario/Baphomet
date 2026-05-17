@@ -12,7 +12,13 @@ from discord import app_commands
 from discord.ext import commands
 
 from database import DEFAULT_SCHEDULE_TIME, DatabaseManager
-from movie_logic import post_movie_of_the_day
+from movie_logic import (
+    DEFAULT_DISLIKE_EMOJI,
+    DEFAULT_LIKE_EMOJI,
+    DEFAULT_NEVER_WATCHED_EMOJI,
+    post_movie_of_the_day,
+    validate_reaction_emoji,
+)
 from tmdb_api import TMDBClient
 
 
@@ -33,6 +39,9 @@ class MovieGuildConfig:
     channel_id: int | None
     role_id: int | None
     schedule_time: str
+    like_emoji: str | None = None
+    dislike_emoji: str | None = None
+    never_watched_emoji: str | None = None
 
 
 class MovieCog(commands.Cog):
@@ -180,6 +189,80 @@ class MovieCog(commands.Cog):
         )
 
     @motd.command(
+        name="set_emojis",
+        description="Define os emojis das reações do Filme do Dia.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(
+        like="Emoji usado para 'Eu gosto desse filme'.",
+        dislike="Emoji usado para 'Não gosto desse filme'.",
+        never_watched="Emoji usado para 'Nunca assisti esse filme'.",
+    )
+    async def set_emojis(
+        self,
+        interaction: discord.Interaction,
+        like: str,
+        dislike: str,
+        never_watched: str,
+    ) -> None:
+        guild_id = self._interaction_guild_id(interaction)
+        if guild_id is None:
+            return
+
+        emojis = {
+            "like": self._normalize_optional_text(like),
+            "dislike": self._normalize_optional_text(dislike),
+            "never_watched": self._normalize_optional_text(never_watched),
+        }
+
+        for name, emoji in emojis.items():
+            error = validate_reaction_emoji(emoji or "")
+            if error is not None:
+                await interaction.response.send_message(
+                    f"O emoji informado em `{name}` é inválido: {error}",
+                    ephemeral=True,
+                )
+                return
+
+        config = await self._save_config(
+            guild_id,
+            like_emoji=emojis["like"],
+            dislike_emoji=emojis["dislike"],
+            never_watched_emoji=emojis["never_watched"],
+        )
+        await interaction.response.send_message(
+            "Emojis do Filme do Dia atualizados:\n"
+            f"{config.like_emoji} — Eu gosto desse filme\n"
+            f"{config.dislike_emoji} — Não gosto desse filme\n"
+            f"{config.never_watched_emoji} — Nunca assisti esse filme",
+            ephemeral=True,
+        )
+
+    @motd.command(
+        name="reset_emojis",
+        description="Restaura os emojis padrão das reações do Filme do Dia.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def reset_emojis(self, interaction: discord.Interaction) -> None:
+        guild_id = self._interaction_guild_id(interaction)
+        if guild_id is None:
+            return
+
+        await self._save_config(
+            guild_id,
+            like_emoji=None,
+            dislike_emoji=None,
+            never_watched_emoji=None,
+        )
+        await interaction.response.send_message(
+            "Emojis do Filme do Dia restaurados para os padrões:\n"
+            f"{DEFAULT_LIKE_EMOJI} — Eu gosto desse filme\n"
+            f"{DEFAULT_DISLIKE_EMOJI} — Não gosto desse filme\n"
+            f"{DEFAULT_NEVER_WATCHED_EMOJI} — Nunca assisti esse filme",
+            ephemeral=True,
+        )
+
+    @motd.command(
         name="blacklist_remove",
         description="Remove um filme da blacklist pelo ID do TMDB.",
     )
@@ -267,6 +350,8 @@ class MovieCog(commands.Cog):
     @set_time.error
     @set_channel.error
     @set_role.error
+    @set_emojis.error
+    @reset_emojis.error
     @blacklist_remove.error
     @blacklist_view.error
     @test_movie.error
@@ -299,6 +384,9 @@ class MovieCog(commands.Cog):
         channel_id: int | None | object = UNSET,
         role_id: int | None | object = UNSET,
         schedule_time: str | object = UNSET,
+        like_emoji: str | None | object = UNSET,
+        dislike_emoji: str | None | object = UNSET,
+        never_watched_emoji: str | None | object = UNSET,
     ) -> MovieGuildConfig:
         current = await self.db_manager.get_config(guild_id)
         config = self._normalize_config(guild_id, current)
@@ -312,12 +400,30 @@ class MovieCog(commands.Cog):
         next_schedule_time = (
             config.schedule_time if schedule_time is UNSET else str(schedule_time)
         )
+        next_like_emoji = (
+            config.like_emoji
+            if like_emoji is UNSET
+            else self._normalize_optional_text(like_emoji)
+        )
+        next_dislike_emoji = (
+            config.dislike_emoji
+            if dislike_emoji is UNSET
+            else self._normalize_optional_text(dislike_emoji)
+        )
+        next_never_watched_emoji = (
+            config.never_watched_emoji
+            if never_watched_emoji is UNSET
+            else self._normalize_optional_text(never_watched_emoji)
+        )
 
         await self.db_manager.set_config(
             guild_id,
             next_channel_id,
             next_role_id,
             next_schedule_time,
+            like_emoji=next_like_emoji,
+            dislike_emoji=next_dislike_emoji,
+            never_watched_emoji=next_never_watched_emoji,
         )
 
         return MovieGuildConfig(
@@ -325,6 +431,9 @@ class MovieCog(commands.Cog):
             channel_id=next_channel_id,
             role_id=next_role_id,
             schedule_time=next_schedule_time,
+            like_emoji=next_like_emoji,
+            dislike_emoji=next_dislike_emoji,
+            never_watched_emoji=next_never_watched_emoji,
         )
 
     @staticmethod
@@ -335,6 +444,9 @@ class MovieCog(commands.Cog):
                 channel_id=None,
                 role_id=None,
                 schedule_time=DEFAULT_SCHEDULE_TIME,
+                like_emoji=None,
+                dislike_emoji=None,
+                never_watched_emoji=None,
             )
 
         return MovieGuildConfig(
@@ -344,6 +456,15 @@ class MovieCog(commands.Cog):
             schedule_time=str(
                 getattr(config, "schedule_time", DEFAULT_SCHEDULE_TIME)
                 or DEFAULT_SCHEDULE_TIME
+            ),
+            like_emoji=MovieCog._normalize_optional_text(
+                getattr(config, "like_emoji", None)
+            ),
+            dislike_emoji=MovieCog._normalize_optional_text(
+                getattr(config, "dislike_emoji", None)
+            ),
+            never_watched_emoji=MovieCog._normalize_optional_text(
+                getattr(config, "never_watched_emoji", None)
             ),
         )
 
@@ -372,6 +493,14 @@ class MovieCog(commands.Cog):
             return None
 
         return parsed if parsed > 0 else None
+
+    @staticmethod
+    def _normalize_optional_text(value: object) -> str | None:
+        if value is None:
+            return None
+
+        text = str(value).strip()
+        return text or None
 
     @staticmethod
     def _build_blacklist_embed(

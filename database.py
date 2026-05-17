@@ -11,6 +11,15 @@ import aiosqlite
 
 
 DEFAULT_SCHEDULE_TIME: Final[str] = "18:00"
+LIKE_EMOJI_COLUMN: Final[str] = "like_emoji"
+DISLIKE_EMOJI_COLUMN: Final[str] = "dislike_emoji"
+NEVER_WATCHED_EMOJI_COLUMN: Final[str] = "never_watched_emoji"
+REACTION_EMOJI_COLUMNS: Final[tuple[str, str, str]] = (
+    LIKE_EMOJI_COLUMN,
+    DISLIKE_EMOJI_COLUMN,
+    NEVER_WATCHED_EMOJI_COLUMN,
+)
+_UNSET: Final[object] = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +28,9 @@ class GuildConfig:
     channel_id: int | None
     role_id: int | None
     schedule_time: str = DEFAULT_SCHEDULE_TIME
+    like_emoji: str | None = None
+    dislike_emoji: str | None = None
+    never_watched_emoji: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,11 +75,16 @@ class DatabaseManager:
                         guild_id INTEGER PRIMARY KEY,
                         channel_id INTEGER,
                         role_id INTEGER,
-                        schedule_time TEXT NOT NULL DEFAULT '18:00'
+                        schedule_time TEXT NOT NULL DEFAULT '18:00',
+                        like_emoji TEXT,
+                        dislike_emoji TEXT,
+                        never_watched_emoji TEXT
                     );
                     """
                 ):
                     pass
+
+                await self._ensure_guild_config_columns(db)
 
                 async with db.execute(
                     """
@@ -87,12 +104,31 @@ class DatabaseManager:
             logging.error("Falha ao inicializar o banco de dados.", exc_info=True)
             raise
 
+    @staticmethod
+    async def _ensure_guild_config_columns(db: aiosqlite.Connection) -> None:
+        async with db.execute("PRAGMA table_info(guild_configs);") as cursor:
+            rows = await cursor.fetchall()
+
+        existing_columns = {str(row["name"]) for row in rows}
+        for column_name in REACTION_EMOJI_COLUMNS:
+            if column_name in existing_columns:
+                continue
+
+            async with db.execute(
+                f"ALTER TABLE guild_configs ADD COLUMN {column_name} TEXT;"
+            ):
+                pass
+
     async def set_config(
         self,
         guild_id: int,
         channel_id: int | None,
         role_id: int | None,
         schedule_time: str = DEFAULT_SCHEDULE_TIME,
+        *,
+        like_emoji: str | None | object = _UNSET,
+        dislike_emoji: str | None | object = _UNSET,
+        never_watched_emoji: str | None | object = _UNSET,
     ) -> None:
         try:
             async with self._write_lock:
@@ -101,21 +137,59 @@ class DatabaseManager:
                         async with db.execute("BEGIN IMMEDIATE;"):
                             pass
 
+                        current_emojis: dict[str, str | None] = {}
+                        if (
+                            like_emoji is _UNSET
+                            or dislike_emoji is _UNSET
+                            or never_watched_emoji is _UNSET
+                        ):
+                            current_emojis = await self._fetch_current_emojis(
+                                db,
+                                guild_id,
+                            )
+
+                        next_like_emoji = self._resolve_emoji_value(
+                            like_emoji,
+                            current_emojis.get(LIKE_EMOJI_COLUMN),
+                        )
+                        next_dislike_emoji = self._resolve_emoji_value(
+                            dislike_emoji,
+                            current_emojis.get(DISLIKE_EMOJI_COLUMN),
+                        )
+                        next_never_watched_emoji = self._resolve_emoji_value(
+                            never_watched_emoji,
+                            current_emojis.get(NEVER_WATCHED_EMOJI_COLUMN),
+                        )
+
                         async with db.execute(
                             """
                             INSERT INTO guild_configs (
                                 guild_id,
                                 channel_id,
                                 role_id,
-                                schedule_time
+                                schedule_time,
+                                like_emoji,
+                                dislike_emoji,
+                                never_watched_emoji
                             )
-                            VALUES (?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(guild_id) DO UPDATE SET
                                 channel_id = excluded.channel_id,
                                 role_id = excluded.role_id,
-                                schedule_time = excluded.schedule_time;
+                                schedule_time = excluded.schedule_time,
+                                like_emoji = excluded.like_emoji,
+                                dislike_emoji = excluded.dislike_emoji,
+                                never_watched_emoji = excluded.never_watched_emoji;
                             """,
-                            (guild_id, channel_id, role_id, schedule_time),
+                            (
+                                guild_id,
+                                channel_id,
+                                role_id,
+                                schedule_time,
+                                next_like_emoji,
+                                next_dislike_emoji,
+                                next_never_watched_emoji,
+                            ),
                         ):
                             pass
 
@@ -131,6 +205,53 @@ class DatabaseManager:
             )
             raise
 
+    @staticmethod
+    async def _fetch_current_emojis(
+        db: aiosqlite.Connection,
+        guild_id: int,
+    ) -> dict[str, str | None]:
+        async with db.execute(
+            f"""
+            SELECT
+                {LIKE_EMOJI_COLUMN},
+                {DISLIKE_EMOJI_COLUMN},
+                {NEVER_WATCHED_EMOJI_COLUMN}
+            FROM guild_configs
+            WHERE guild_id = ?;
+            """,
+            (guild_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        if row is None:
+            return {}
+
+        return {
+            LIKE_EMOJI_COLUMN: DatabaseManager._normalize_optional_text(
+                row[LIKE_EMOJI_COLUMN]
+            ),
+            DISLIKE_EMOJI_COLUMN: DatabaseManager._normalize_optional_text(
+                row[DISLIKE_EMOJI_COLUMN]
+            ),
+            NEVER_WATCHED_EMOJI_COLUMN: DatabaseManager._normalize_optional_text(
+                row[NEVER_WATCHED_EMOJI_COLUMN]
+            ),
+        }
+
+    @staticmethod
+    def _resolve_emoji_value(value: object, current_value: str | None) -> str | None:
+        if value is _UNSET:
+            return current_value
+        return DatabaseManager._normalize_optional_text(value)
+
+    @staticmethod
+    def _normalize_optional_text(value: object) -> str | None:
+        if value is None:
+            return None
+
+        text = str(value).strip()
+        return text or None
+
     async def get_config(self, guild_id: int) -> GuildConfig | None:
         try:
             async with self._connect() as db:
@@ -140,7 +261,10 @@ class DatabaseManager:
                         guild_id,
                         channel_id,
                         role_id,
-                        COALESCE(schedule_time, ?) AS schedule_time
+                        COALESCE(schedule_time, ?) AS schedule_time,
+                        like_emoji,
+                        dislike_emoji,
+                        never_watched_emoji
                     FROM guild_configs
                     WHERE guild_id = ?;
                     """,
@@ -160,6 +284,11 @@ class DatabaseManager:
                 ),
                 role_id=int(row["role_id"]) if row["role_id"] is not None else None,
                 schedule_time=str(row["schedule_time"] or DEFAULT_SCHEDULE_TIME),
+                like_emoji=self._normalize_optional_text(row["like_emoji"]),
+                dislike_emoji=self._normalize_optional_text(row["dislike_emoji"]),
+                never_watched_emoji=self._normalize_optional_text(
+                    row["never_watched_emoji"]
+                ),
             )
         except Exception:
             logging.error(

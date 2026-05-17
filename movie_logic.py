@@ -1,23 +1,36 @@
 from __future__ import annotations
 
 import logging
+import re
+import unicodedata
 from collections.abc import Mapping
-from typing import Any, Protocol
+from dataclasses import dataclass
+from typing import Any, Final, Protocol
+from urllib.parse import urlparse
 
 import discord
 
 
-EMOJI_GOSTO = "👍"
-EMOJI_NAO_GOSTO = "👎"
-EMOJI_NUNCA_ASSISTI = "🤔"
+LOGGER = logging.getLogger("baphomet.movie_logic")
 
-DEFAULT_OVERVIEW = "A sinopse não foi providenciada em português pelo banco de dados."
-POST_PROMPT = (
-    f"E aí, já assistiu? O que achou?\n\n"
-    f"{EMOJI_GOSTO} — Eu gosto desse filme\n"
-    f"{EMOJI_NAO_GOSTO} — Não gosto desse filme\n"
-    f"{EMOJI_NUNCA_ASSISTI} — Nunca assisti esse filme"
+DEFAULT_LIKE_EMOJI: Final[str] = "👍"
+DEFAULT_DISLIKE_EMOJI: Final[str] = "👎"
+DEFAULT_NEVER_WATCHED_EMOJI: Final[str] = "🤔"
+EMOJI_GOSTO: Final[str] = DEFAULT_LIKE_EMOJI
+EMOJI_NAO_GOSTO: Final[str] = DEFAULT_DISLIKE_EMOJI
+EMOJI_NUNCA_ASSISTI: Final[str] = DEFAULT_NEVER_WATCHED_EMOJI
+MAX_REACTION_EMOJI_LENGTH: Final[int] = 100
+MAX_UNICODE_REACTION_EMOJI_LENGTH: Final[int] = 16
+CUSTOM_EMOJI_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"^<a?:[A-Za-z0-9_]{2,32}:\d{15,25}>$"
 )
+
+
+@dataclass(frozen=True, slots=True)
+class ReactionEmojiSet:
+    like: str
+    dislike: str
+    never_watched: str
 
 
 class SupportsBot(Protocol):
@@ -65,7 +78,7 @@ async def post_movie_of_the_day(
     try:
         config = await db_manager.get_config(guild_id)
         if config is None:
-            logging.error(
+            LOGGER.error(
                 "Postagem do Filme do Dia abortada: configuracao ausente guild_id=%s.",
                 guild_id,
             )
@@ -73,11 +86,12 @@ async def post_movie_of_the_day(
 
         channel_id = _coerce_optional_int(_read_value(config, "channel_id"))
         if channel_id is None:
-            logging.error(
+            LOGGER.error(
                 "Postagem do Filme do Dia abortada: channel_id ausente guild_id=%s.",
                 guild_id,
             )
             return False
+        reaction_emojis = _resolve_reaction_emojis(config)
 
         channel = await _resolve_text_channel(bot, guild_id, channel_id)
         if channel is None:
@@ -86,10 +100,18 @@ async def post_movie_of_the_day(
         if not _has_required_permissions(channel):
             return False
 
-        movie = await tmdb_client.get_random_valid_movie(guild_id, db_manager)
+        try:
+            movie = await tmdb_client.get_random_valid_movie(guild_id, db_manager)
+        except Exception:
+            LOGGER.error(
+                "Postagem do Filme do Dia abortada: nao foi possivel selecionar filme guild_id=%s.",
+                guild_id,
+                exc_info=True,
+            )
+            return False
+
         tmdb_id = _resolve_movie_id(movie)
         title = _read_text(movie, "title")
-        overview = _read_text(movie, "overview", fallback=DEFAULT_OVERVIEW)
         genres = _read_text(movie, "genres")
         runtime = _read_text(movie, "runtime")
         director = _read_text(movie, "director")
@@ -101,11 +123,10 @@ async def post_movie_of_the_day(
 
         embed = discord.Embed(
             title=title,
-            description=overview,
             color=discord.Color.gold(),
         )
-        if poster_url != "N/A":
-            embed.set_thumbnail(url=poster_url)
+        if _is_valid_embed_image_url(poster_url):
+            embed.set_image(url=poster_url)
 
         embed.add_field(name="Gênero", value=genres, inline=True)
         embed.add_field(name="Duração", value=runtime, inline=True)
@@ -113,7 +134,7 @@ async def post_movie_of_the_day(
         embed.add_field(name="Lançamento", value=release_date, inline=True)
 
         role_id = _coerce_optional_int(_read_value(config, "role_id"))
-        content = _build_content(role_id)
+        content = _build_content(role_id, reaction_emojis)
         message = await channel.send(
             content=content,
             embed=embed,
@@ -124,16 +145,27 @@ async def post_movie_of_the_day(
             ),
         )
 
-        for emoji in (EMOJI_GOSTO, EMOJI_NAO_GOSTO, EMOJI_NUNCA_ASSISTI):
-            try:
-                await message.add_reaction(emoji)
-            except (discord.HTTPException, discord.Forbidden, TypeError):
-                logging.error(
-                    "Falha ao adicionar reacao %s no Filme do Dia guild_id=%s.",
-                    emoji,
-                    guild_id,
-                    exc_info=True,
-                )
+        await _add_reaction_with_fallback(
+            message,
+            emoji_text=reaction_emojis.like,
+            default_emoji=DEFAULT_LIKE_EMOJI,
+            guild_id=guild_id,
+            label="like",
+        )
+        await _add_reaction_with_fallback(
+            message,
+            emoji_text=reaction_emojis.dislike,
+            default_emoji=DEFAULT_DISLIKE_EMOJI,
+            guild_id=guild_id,
+            label="dislike",
+        )
+        await _add_reaction_with_fallback(
+            message,
+            emoji_text=reaction_emojis.never_watched,
+            default_emoji=DEFAULT_NEVER_WATCHED_EMOJI,
+            guild_id=guild_id,
+            label="never_watched",
+        )
 
         try:
             await message.create_thread(
@@ -148,14 +180,14 @@ async def post_movie_of_the_day(
 
         return True
     except discord.Forbidden:
-        logging.error(
+        LOGGER.error(
             "Postagem do Filme do Dia bloqueada por permissao guild_id=%s.",
             guild_id,
             exc_info=True,
         )
         return False
     except Exception:
-        logging.error(
+        LOGGER.error(
             "Falha inesperada na postagem do Filme do Dia guild_id=%s.",
             guild_id,
             exc_info=True,
@@ -170,7 +202,7 @@ async def _resolve_text_channel(
 ) -> discord.TextChannel | None:
     guild = bot.get_guild(guild_id)
     if guild is None:
-        logging.error(
+        LOGGER.error(
             "Postagem do Filme do Dia abortada: guild nao encontrada guild_id=%s.",
             guild_id,
         )
@@ -181,7 +213,7 @@ async def _resolve_text_channel(
         try:
             channel = await bot.fetch_channel(channel_id)
         except (discord.Forbidden, discord.NotFound, discord.HTTPException):
-            logging.error(
+            LOGGER.error(
                 "Postagem do Filme do Dia abortada: canal indisponivel channel_id=%s guild_id=%s.",
                 channel_id,
                 guild_id,
@@ -190,7 +222,7 @@ async def _resolve_text_channel(
             return None
 
     if not isinstance(channel, discord.TextChannel) or channel.guild.id != guild_id:
-        logging.error(
+        LOGGER.error(
             "Postagem do Filme do Dia abortada: canal invalido channel_id=%s guild_id=%s.",
             channel_id,
             guild_id,
@@ -203,7 +235,7 @@ async def _resolve_text_channel(
 def _has_required_permissions(channel: discord.TextChannel) -> bool:
     me = channel.guild.me
     if me is None:
-        logging.error(
+        LOGGER.error(
             "Postagem do Filme do Dia abortada: membro do bot nao encontrado guild_id=%s.",
             channel.guild.id,
         )
@@ -219,7 +251,7 @@ def _has_required_permissions(channel: discord.TextChannel) -> bool:
         missing_permissions.append("create_public_threads")
 
     if missing_permissions:
-        logging.error(
+        LOGGER.error(
             "Postagem do Filme do Dia abortada: permissoes ausentes guild_id=%s channel_id=%s missing=%s.",
             channel.guild.id,
             channel.id,
@@ -230,10 +262,145 @@ def _has_required_permissions(channel: discord.TextChannel) -> bool:
     return True
 
 
-def _build_content(role_id: int | None) -> str:
+def validate_reaction_emoji(emoji_text: str) -> str | None:
+    emoji = emoji_text.strip()
+    if not emoji:
+        return "o valor não pode ficar vazio."
+
+    if len(emoji) > MAX_REACTION_EMOJI_LENGTH:
+        return "o valor é grande demais para ser uma reação."
+
+    if CUSTOM_EMOJI_PATTERN.fullmatch(emoji):
+        return None
+
+    if len(emoji) > MAX_UNICODE_REACTION_EMOJI_LENGTH:
+        return "use apenas um emoji Unicode curto ou um custom emoji do Discord."
+
+    if any(character.isspace() for character in emoji):
+        return "emojis de reação não devem conter espaços."
+
+    if _looks_like_unicode_emoji(emoji):
+        return None
+
+    return "use um emoji Unicode, como 👍, ou um custom emoji no formato `<:nome:id>`."
+
+
+def _looks_like_unicode_emoji(emoji: str) -> bool:
+    # Validação pragmática: Unicode não expõe uma API perfeita de emoji na stdlib.
+    # Bloqueamos texto puro e aceitamos símbolos emoji comuns, variações e ZWJ.
+    if any(character.isascii() and character.isalnum() for character in emoji):
+        return False
+
+    return any(_is_emoji_like_character(character) for character in emoji)
+
+
+def _is_emoji_like_character(character: str) -> bool:
+    codepoint = ord(character)
+    if 0x1F000 <= codepoint <= 0x1FAFF:
+        return True
+    if 0x2600 <= codepoint <= 0x27BF:
+        return True
+    if 0xFE00 <= codepoint <= 0xFE0F:
+        return True
+    if codepoint == 0x200D:
+        return True
+    return unicodedata.category(character) == "So"
+
+
+def _resolve_reaction_emojis(config: object) -> ReactionEmojiSet:
+    return ReactionEmojiSet(
+        like=_resolve_config_emoji(config, "like_emoji", DEFAULT_LIKE_EMOJI),
+        dislike=_resolve_config_emoji(config, "dislike_emoji", DEFAULT_DISLIKE_EMOJI),
+        never_watched=_resolve_config_emoji(
+            config,
+            "never_watched_emoji",
+            DEFAULT_NEVER_WATCHED_EMOJI,
+        ),
+    )
+
+
+def _resolve_config_emoji(config: object, key: str, default: str) -> str:
+    value = _read_value(config, key)
+    if value is None:
+        return default
+
+    emoji = str(value).strip()
+    error = validate_reaction_emoji(emoji)
+    if error is None:
+        return emoji
+
+    LOGGER.warning(
+        "Emoji configurado invalido no MOTD; usando padrao key=%s value=%r error=%s.",
+        key,
+        emoji,
+        error,
+    )
+    return default
+
+
+def _build_post_prompt(reaction_emojis: ReactionEmojiSet) -> str:
+    return (
+        "E aí, já assistiu? O que achou?\n\n"
+        f"{reaction_emojis.like} — Eu gosto desse filme\n"
+        f"{reaction_emojis.dislike} — Não gosto desse filme\n"
+        f"{reaction_emojis.never_watched} — Nunca assisti esse filme"
+    )
+
+
+def _build_content(role_id: int | None, reaction_emojis: ReactionEmojiSet) -> str:
+    post_prompt = _build_post_prompt(reaction_emojis)
     if role_id is None:
-        return POST_PROMPT
-    return f"<@&{role_id}>\n\n{POST_PROMPT}"
+        return post_prompt
+    return f"<@&{role_id}>\n\n{post_prompt}"
+
+
+async def _add_reaction_with_fallback(
+    message: discord.Message,
+    *,
+    emoji_text: str,
+    default_emoji: str,
+    guild_id: int,
+    label: str,
+) -> None:
+    try:
+        await message.add_reaction(_coerce_reaction_emoji(emoji_text))
+        return
+    except (discord.HTTPException, discord.Forbidden, TypeError, ValueError):
+        LOGGER.error(
+            "Falha ao adicionar reacao customizada no Filme do Dia guild_id=%s label=%s emoji=%r.",
+            guild_id,
+            label,
+            emoji_text,
+            exc_info=True,
+        )
+
+    if emoji_text == default_emoji:
+        return
+
+    try:
+        await message.add_reaction(default_emoji)
+    except (discord.HTTPException, discord.Forbidden, TypeError):
+        LOGGER.error(
+            "Falha ao adicionar reacao fallback no Filme do Dia guild_id=%s label=%s emoji=%r.",
+            guild_id,
+            label,
+            default_emoji,
+            exc_info=True,
+        )
+
+
+def _coerce_reaction_emoji(emoji_text: str) -> str | discord.PartialEmoji:
+    if CUSTOM_EMOJI_PATTERN.fullmatch(emoji_text):
+        return discord.PartialEmoji.from_str(emoji_text)
+    return emoji_text
+
+
+def _is_valid_embed_image_url(url: str) -> bool:
+    if not url or url == "N/A":
+        return False
+
+    parsed_url = urlparse(url)
+    return parsed_url.scheme in {"http", "https"} and bool(parsed_url.netloc)
 
 
 def _resolve_movie_id(movie: object) -> int:
@@ -281,8 +448,13 @@ def _coerce_optional_int(value: object) -> int | None:
 
 
 __all__ = [
+    "DEFAULT_LIKE_EMOJI",
+    "DEFAULT_DISLIKE_EMOJI",
+    "DEFAULT_NEVER_WATCHED_EMOJI",
     "EMOJI_GOSTO",
     "EMOJI_NAO_GOSTO",
     "EMOJI_NUNCA_ASSISTI",
+    "ReactionEmojiSet",
     "post_movie_of_the_day",
+    "validate_reaction_emoji",
 ]

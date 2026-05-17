@@ -16,9 +16,16 @@ TMDB_API_BASE_URL: Final[str] = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE_URL: Final[str] = "https://image.tmdb.org/t/p/original"
 TMDB_LANGUAGE: Final[str] = "pt-BR"
 TMDB_TIMEOUT_SECONDS: Final[int] = 10
-MINIMUM_VOTE_COUNT: Final[int] = 500
-MAX_TMDB_PAGE: Final[int] = 500
-MAX_BLACKLIST_COLLISIONS: Final[int] = 50
+DISCOVER_SORT_BY: Final[str] = "popularity.desc"
+STRICT_MINIMUM_VOTE_COUNT: Final[int] = 5000
+STRICT_MINIMUM_POPULARITY: Final[float] = 45.0
+STRICT_MINIMUM_VOTE_AVERAGE: Final[float] = 6.0
+POPULAR_MINIMUM_VOTE_COUNT: Final[int] = 3000
+POPULAR_MINIMUM_POPULARITY: Final[float] = 30.0
+POPULAR_MINIMUM_VOTE_AVERAGE: Final[float] = 5.8
+FALLBACK_MINIMUM_VOTE_COUNT: Final[int] = 2000
+FALLBACK_MINIMUM_POPULARITY: Final[float] = 20.0
+FALLBACK_MINIMUM_VOTE_AVERAGE: Final[float] = 5.5
 RATE_LIMIT_RETRY_ATTEMPTS: Final[int] = 3
 DEFAULT_OVERVIEW: Final[str] = (
     "A sinopse não foi providenciada em português pelo banco de dados."
@@ -33,6 +40,36 @@ class SupportsBlacklistCheck(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class DiscoverFilterProfile:
+    vote_count_gte: int
+    popularity_gte: float
+    vote_average_gte: float
+    max_pages: int
+
+
+DISCOVER_FILTER_PROFILES: Final[tuple[DiscoverFilterProfile, ...]] = (
+    DiscoverFilterProfile(
+        vote_count_gte=STRICT_MINIMUM_VOTE_COUNT,
+        popularity_gte=STRICT_MINIMUM_POPULARITY,
+        vote_average_gte=STRICT_MINIMUM_VOTE_AVERAGE,
+        max_pages=12,
+    ),
+    DiscoverFilterProfile(
+        vote_count_gte=POPULAR_MINIMUM_VOTE_COUNT,
+        popularity_gte=POPULAR_MINIMUM_POPULARITY,
+        vote_average_gte=POPULAR_MINIMUM_VOTE_AVERAGE,
+        max_pages=24,
+    ),
+    DiscoverFilterProfile(
+        vote_count_gte=FALLBACK_MINIMUM_VOTE_COUNT,
+        popularity_gte=FALLBACK_MINIMUM_POPULARITY,
+        vote_average_gte=FALLBACK_MINIMUM_VOTE_AVERAGE,
+        max_pages=36,
+    ),
+)
+
+
+@dataclass(frozen=True, slots=True)
 class TMDBMovie:
     tmdb_id: int
     title: str
@@ -41,6 +78,7 @@ class TMDBMovie:
     director: str
     runtime: str
     poster_url: str
+    release_date: str
 
 
 class TMDBClient:
@@ -151,57 +189,36 @@ class TMDBClient:
         db_manager: SupportsBlacklistCheck,
     ) -> TMDBMovie:
         try:
-            discover_metadata = await self._fetch_discover_page(1)
-            total_pages = self._coerce_positive_int(
-                discover_metadata.get("total_pages"),
-                fallback=1,
-            )
-            max_page = min(total_pages, MAX_TMDB_PAGE)
-            current_page = random.randint(1, max_page)
-
             selected_movie: Mapping[str, Any] | None = None
-            blacklist_collisions = 0
-            visited_pages = 0
+            selected_profile: DiscoverFilterProfile | None = None
 
-            while visited_pages < max_page:
-                page_payload = (
-                    discover_metadata
-                    if current_page == 1
-                    else await self._fetch_discover_page(current_page)
+            for profile in DISCOVER_FILTER_PROFILES:
+                selected_movie = await self._select_discover_movie(
+                    guild_id,
+                    db_manager,
+                    profile,
                 )
-                movies = page_payload.get("results") or []
-                if not isinstance(movies, list):
-                    movies = []
-
-                for movie in movies:
-                    if not isinstance(movie, Mapping):
-                        continue
-
-                    tmdb_id = self._coerce_positive_int(movie.get("id"), fallback=0)
-                    if tmdb_id <= 0:
-                        continue
-
-                    if await db_manager.is_blacklisted(guild_id, tmdb_id):
-                        blacklist_collisions += 1
-                        if blacklist_collisions >= MAX_BLACKLIST_COLLISIONS:
-                            raise Exception("AllMoviesBlacklistedError")
-                        continue
-
-                    selected_movie = movie
-                    break
-
                 if selected_movie is not None:
+                    selected_profile = profile
                     break
-
-                visited_pages += 1
-                current_page = 1 if current_page >= max_page else current_page + 1
 
             if selected_movie is None:
-                raise Exception("AllMoviesBlacklistedError")
+                raise RuntimeError(
+                    "Nenhum filme popular elegivel encontrado fora da blacklist."
+                )
 
             selected_id = self._coerce_positive_int(selected_movie.get("id"), fallback=0)
             if selected_id <= 0:
                 raise ValueError("Filme selecionado sem id valido do TMDB.")
+
+            if selected_profile is not None:
+                logging.info(
+                    "Filme do Dia selecionado no TMDB guild_id=%s tmdb_id=%s profile_vote_count_gte=%s profile_popularity_gte=%s.",
+                    guild_id,
+                    selected_id,
+                    selected_profile.vote_count_gte,
+                    selected_profile.popularity_gte,
+                )
 
             details = await self._fetch_movie_details(selected_id)
             return self._build_movie_payload(selected_id, selected_movie, details)
@@ -213,11 +230,75 @@ class TMDBClient:
             )
             raise
 
-    async def _fetch_discover_page(self, page: int) -> dict[str, Any]:
+    async def _select_discover_movie(
+        self,
+        guild_id: int,
+        db_manager: SupportsBlacklistCheck,
+        profile: DiscoverFilterProfile,
+    ) -> Mapping[str, Any] | None:
+        first_page_payload = await self._fetch_discover_page(1, profile)
+        total_pages = self._coerce_positive_int(
+            first_page_payload.get("total_pages"),
+            fallback=1,
+        )
+        max_page = min(total_pages, profile.max_pages)
+        if max_page <= 0:
+            return None
+
+        page_numbers = list(range(1, max_page + 1))
+        random.shuffle(page_numbers)
+        candidates: list[Mapping[str, Any]] = []
+
+        for page_number in page_numbers:
+            page_payload = (
+                first_page_payload
+                if page_number == 1
+                else await self._fetch_discover_page(page_number, profile)
+            )
+            movies = page_payload.get("results") or []
+            if not isinstance(movies, list):
+                continue
+
+            random.shuffle(movies)
+            for movie in movies:
+                if not isinstance(movie, Mapping):
+                    continue
+
+                tmdb_id = self._coerce_positive_int(movie.get("id"), fallback=0)
+                if tmdb_id <= 0:
+                    continue
+
+                if await db_manager.is_blacklisted(guild_id, tmdb_id):
+                    continue
+
+                candidates.append(movie)
+
+        if not candidates:
+            logging.info(
+                "Nenhum candidato TMDB fora da blacklist para perfil guild_id=%s vote_count_gte=%s popularity_gte=%s max_pages=%s.",
+                guild_id,
+                profile.vote_count_gte,
+                profile.popularity_gte,
+                profile.max_pages,
+            )
+            return None
+
+        return random.choice(candidates)
+
+    async def _fetch_discover_page(
+        self,
+        page: int,
+        profile: DiscoverFilterProfile,
+    ) -> dict[str, Any]:
         return await self._request_json(
             "/discover/movie",
             params={
-                "vote_count.gte": MINIMUM_VOTE_COUNT,
+                "sort_by": DISCOVER_SORT_BY,
+                "include_adult": "false",
+                "include_video": "false",
+                "vote_count.gte": profile.vote_count_gte,
+                "popularity.gte": profile.popularity_gte,
+                "vote_average.gte": profile.vote_average_gte,
                 "page": page,
             },
         )
@@ -238,6 +319,9 @@ class TMDBClient:
         genres = TMDBClient._format_genres(details.get("genres"))
         director = TMDBClient._extract_director(details.get("credits"))
         runtime = TMDBClient._format_runtime(details.get("runtime"))
+        release_date = str(
+            details.get("release_date") or discover_movie.get("release_date") or "N/A"
+        )
         poster_path = details.get("poster_path") or discover_movie.get("poster_path")
         poster_url = (
             f"{TMDB_IMAGE_BASE_URL}{poster_path}"
@@ -253,6 +337,7 @@ class TMDBClient:
             director=director,
             runtime=runtime,
             poster_url=poster_url,
+            release_date=release_date,
         )
 
     @staticmethod
@@ -305,6 +390,7 @@ class TMDBClient:
 
 
 __all__ = [
+    "DiscoverFilterProfile",
     "TMDBClient",
     "TMDBMovie",
 ]
