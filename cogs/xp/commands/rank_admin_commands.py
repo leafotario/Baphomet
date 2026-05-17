@@ -27,6 +27,13 @@ def _role_manage_error(guild: discord.Guild, role: discord.Role) -> str | None:
 
 @app_commands.default_permissions(administrator=True)
 class RankAdminCommands(commands.Cog):
+    rank_insignia = app_commands.Group(
+        name="rank-insignia",
+        description="Configura insignias visuais de rank.",
+        default_permissions=discord.Permissions(administrator=True),
+        guild_only=True,
+    )
+
     def __init__(self, bot: commands.Bot, runtime: XpRuntime) -> None:
         self.bot = bot
         self.runtime = runtime
@@ -63,9 +70,7 @@ class RankAdminCommands(commands.Cog):
         except Exception as exc:
             self.runtime.service.logger.warning("falha ao enviar audit log de rank guild_id=%s error=%s", guild.id, exc)
 
-    @app_commands.command(name="rank_insignia_set", description="Define uma insignia visual de rank para um cargo.")
-    @app_commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
+    @rank_insignia.command(name="set", description="Define uma insignia visual de rank para um cargo.")
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(
         cargo="Cargo que exibira esta insignia no /rank.",
@@ -127,9 +132,7 @@ class RankAdminCommands(commands.Cog):
             badge.image_path,
         )
 
-    @app_commands.command(name="rank_insignia_remove", description="Remove a insignia visual de rank de um cargo.")
-    @app_commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
+    @rank_insignia.command(name="remove", description="Remove a insignia visual de rank de um cargo.")
     @app_commands.checks.has_permissions(administrator=True)
     async def rank_insignia_remove(self, interaction: discord.Interaction, cargo: discord.Role) -> None:
         if interaction.guild is None:
@@ -142,9 +145,7 @@ class RankAdminCommands(commands.Cog):
         await interaction.response.send_message(f"Insignia removida de {cargo.mention}.", ephemeral=True)
         self.runtime.service.logger.info("rank_badge_removed guild_id=%s role_id=%s", interaction.guild.id, cargo.id)
 
-    @app_commands.command(name="rank_insignia_list", description="Lista as insignias de rank configuradas neste servidor.")
-    @app_commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
+    @rank_insignia.command(name="list", description="Lista as insignias de rank configuradas neste servidor.")
     @app_commands.checks.has_permissions(administrator=True)
     async def rank_insignia_list(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
@@ -165,9 +166,7 @@ class RankAdminCommands(commands.Cog):
             embed.description = "\n".join(lines[:25])
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="rank_insignia_preview", description="Mostra a insignia de rank configurada para um cargo.")
-    @app_commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
+    @rank_insignia.command(name="preview", description="Mostra a insignia de rank configurada para um cargo.")
     @app_commands.checks.has_permissions(administrator=True)
     async def rank_insignia_preview(self, interaction: discord.Interaction, cargo: discord.Role) -> None:
         if interaction.guild is None:

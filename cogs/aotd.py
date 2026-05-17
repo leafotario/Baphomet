@@ -78,7 +78,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 class AOTDQueueListView(discord.ui.View):
     """
-    View paginada do /aotd_lista.
+    View paginada do /aotd_config lista.
 
     Segurança:
     - A mensagem é ephemeral.
@@ -114,7 +114,7 @@ class AOTDQueueListView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message(
-                "🚫 Essa lista não é sua, mortal. Use `/aotd_lista` pra abrir a sua própria.",
+                "🚫 Essa lista não é sua, mortal. Use `/aotd_config lista` pra abrir a sua própria.",
                 ephemeral=True,
             )
             return False
@@ -237,6 +237,18 @@ class AOTDQueueListView(discord.ui.View):
 
 
 class AlbumDoDia(commands.Cog):
+    aotd = app_commands.Group(
+        name="aotd",
+        description="Comandos públicos do Álbum do Dia.",
+        guild_only=True,
+    )
+    aotd_config = app_commands.Group(
+        name="aotd_config",
+        description="Configuração administrativa do Álbum do Dia.",
+        default_permissions=discord.Permissions(administrator=True),
+        guild_only=True,
+    )
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._spotify: Optional[spotipy.Spotify] = None
@@ -1157,7 +1169,7 @@ class AlbumDoDia(commands.Cog):
         embed.set_footer(
             text=(
                 f"Página {page + 1}/{total_pages} • "
-                "Para remover: /aotd_remover índice"
+                "Para remover: /aotd_config remover índice"
             )
         )
 
@@ -1306,7 +1318,7 @@ class AlbumDoDia(commands.Cog):
         if not album_de_hoje:
             await self.send_destination(
                 destino,
-                content="⚠️ A fila está vazia. Adicionem mais álbuns/EPs com `/aotd_sugerir`.",
+                content="⚠️ A fila está vazia. Adicionem mais álbuns/EPs com `/aotd sugerir`.",
                 ephemeral=isinstance(destino, discord.Interaction),
             )
             return False
@@ -1402,8 +1414,8 @@ class AlbumDoDia(commands.Cog):
     #  Slash Commands — Usuários
     # ========================================================
 
-    @app_commands.command(
-        name="aotd_sugerir",
+    @aotd.command(
+        name="sugerir",
         description="Sugere um álbum ou EP para a fila do Álbum do Dia.",
     )
     @app_commands.describe(
@@ -1464,7 +1476,7 @@ class AlbumDoDia(commands.Cog):
                 f"**{album_info['nome']}** — {album_info['artista']}\n\n"
                 f"🏷️ Formato: **{tipo}**\n"
                 f"📌 Posição na fila: **#{posicao_fila}**\n"
-                f"Use `/aotd_fila` para ver o tamanho da fila."
+                f"Use `/aotd fila` para ver o tamanho da fila."
             ),
             color=discord.Color.green(),
             url=album_info.get("url") or None,
@@ -1481,8 +1493,8 @@ class AlbumDoDia(commands.Cog):
             posicao_fila=posicao_fila,
         )
 
-    @app_commands.command(
-        name="aotd_fila",
+    @aotd.command(
+        name="fila",
         description="Mostra quantos álbuns/EPs existem na fila.",
     )
     async def ver_fila(self, interaction: discord.Interaction) -> None:
@@ -1506,14 +1518,13 @@ class AlbumDoDia(commands.Cog):
     #  Slash Commands — Admin
     # ========================================================
 
-    @app_commands.command(
-        name="aotd_config_canal",
+    @aotd_config.command(
+        name="canal",
         description="Define o canal onde o Álbum do Dia será enviado automaticamente.",
     )
     @app_commands.describe(
         canal="Canal de texto do Álbum do Dia. Deixe vazio para remover o canal configurado.",
     )
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def configurar_canal(
         self,
@@ -1535,14 +1546,13 @@ class AlbumDoDia(commands.Cog):
                 ephemeral=True,
             )
 
-    @app_commands.command(
-        name="aotd_config_cargo",
+    @aotd_config.command(
+        name="cargo",
         description="Define o cargo marcado no post do Álbum do Dia.",
     )
     @app_commands.describe(
         cargo="Cargo que será marcado. Deixe vazio para desativar o ping de cargo.",
     )
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def configurar_cargo(
         self,
@@ -1564,14 +1574,13 @@ class AlbumDoDia(commands.Cog):
                 ephemeral=True,
             )
 
-    @app_commands.command(
-        name="aotd_config_horario",
+    @aotd_config.command(
+        name="horario",
         description="Define o horário diário do Álbum do Dia no tempo de Brasília.",
     )
     @app_commands.describe(
         horario="Horário em Brasília. Exemplos: 12:00, 20:30, 7:05, 22h ou 8.",
     )
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def configurar_horario(
         self,
@@ -1602,14 +1611,13 @@ class AlbumDoDia(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(
-        name="aotd_config_staff_canal",
+    @aotd_config.command(
+        name="staff-canal",
         description="Define o canal interno onde a staff será avisada sobre novas sugestões.",
     )
     @app_commands.describe(
         canal="Canal exclusivo de admins/staff. Deixe vazio para desativar as notificações internas.",
     )
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def configurar_staff_canal(
         self,
@@ -1631,14 +1639,13 @@ class AlbumDoDia(commands.Cog):
                 ephemeral=True,
             )
 
-    @app_commands.command(
-        name="aotd_config_staff_cargo",
+    @aotd_config.command(
+        name="staff-cargo",
         description="Define o cargo de staff marcado quando alguém sugere um álbum.",
     )
     @app_commands.describe(
         cargo="Cargo de staff que será marcado. Deixe vazio para não marcar cargo nas notificações internas.",
     )
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def configurar_staff_cargo(
         self,
@@ -1660,11 +1667,10 @@ class AlbumDoDia(commands.Cog):
                 ephemeral=True,
             )
 
-    @app_commands.command(
-        name="aotd_ativar",
+    @aotd_config.command(
+        name="ativar",
         description="Ativa o envio automático diário do Álbum do Dia.",
     )
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def ativar_auto(self, interaction: discord.Interaction) -> None:
         config = self.carregar_config()
@@ -1675,7 +1681,7 @@ class AlbumDoDia(commands.Cog):
 
         if not config.get("album_channel_id"):
             aviso = (
-                "\n⚠️ Configure um canal com `/aotd_config_canal`, "
+                "\n⚠️ Configure um canal com `/aotd_config canal`, "
                 "senão o envio automático não terá onde postar."
             )
 
@@ -1686,11 +1692,10 @@ class AlbumDoDia(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(
-        name="aotd_desativar",
+    @aotd_config.command(
+        name="desativar",
         description="Desativa o envio automático diário do Álbum do Dia.",
     )
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def desativar_auto(self, interaction: discord.Interaction) -> None:
         config = self.carregar_config()
@@ -1702,11 +1707,10 @@ class AlbumDoDia(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(
-        name="aotd_shuffle",
+    @aotd_config.command(
+        name="shuffle",
         description="Embaralha aleatoriamente a ordem dos álbuns/EPs na fila. Admin.",
     )
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def shuffle_fila(self, interaction: discord.Interaction) -> None:
         qtd = self.contar_fila()
@@ -1733,11 +1737,10 @@ class AlbumDoDia(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(
-        name="aotd_status",
+    @aotd_config.command(
+        name="status",
         description="Mostra a configuração atual do Álbum do Dia.",
     )
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def status(self, interaction: discord.Interaction) -> None:
         config = self.carregar_config()
@@ -1825,7 +1828,7 @@ class AlbumDoDia(commands.Cog):
         if proximo:
             embed.add_field(
                 name="Próximo lançamento",
-                value="Oculto no status público da fila. Use `/aotd_lista` se precisar auditar.",
+                value="Oculto no status público da fila. Use `/aotd_config lista` se precisar auditar.",
                 inline=False,
             )
         else:
@@ -1845,23 +1848,22 @@ class AlbumDoDia(commands.Cog):
         dicas = []
 
         if not config.get("album_channel_id"):
-            dicas.append("Use /aotd_config_canal para definir onde o post automático vai cair.")
+            dicas.append("Use /aotd_config canal para definir onde o post automático vai cair.")
 
         if not config.get("staff_notify_channel_id"):
-            dicas.append("Use /aotd_config_staff_canal para ativar avisos internos de sugestões.")
+            dicas.append("Use /aotd_config staff-canal para ativar avisos internos de sugestões.")
 
-        dicas.append("Use /aotd_config_horario para mudar o horário diário em Brasília.")
-        dicas.append("Use /aotd_shuffle para embaralhar a fila.")
+        dicas.append("Use /aotd_config horario para mudar o horário diário em Brasília.")
+        dicas.append("Use /aotd_config shuffle para embaralhar a fila.")
 
         embed.set_footer(text=" ".join(dicas))
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(
-        name="aotd_lista",
+    @aotd_config.command(
+        name="lista",
         description="Lista os álbuns/EPs agendados na fila. Admin.",
     )
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def listar_fila(self, interaction: discord.Interaction) -> None:
         fila = self.carregar_fila()
@@ -1902,14 +1904,13 @@ class AlbumDoDia(commands.Cog):
         except (discord.HTTPException, discord.NotFound):
             view.message = None
 
-    @app_commands.command(
-        name="aotd_remover",
+    @aotd_config.command(
+        name="remover",
         description="Remove um álbum/EP da fila pelo índice. Admin.",
     )
     @app_commands.describe(
-        indice="Número do lançamento na /aotd_lista.",
+        indice="Número do lançamento na /aotd_config lista.",
     )
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def remover(
         self,
@@ -1937,11 +1938,10 @@ class AlbumDoDia(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(
-        name="aotd_testar_album",
+    @aotd_config.command(
+        name="testar-album",
         description="Força o envio do próximo álbum/EP agora. Admin.",
     )
-    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def testar_album(self, interaction: discord.Interaction) -> None:
         await self.despachar_album(interaction)
