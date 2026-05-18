@@ -263,6 +263,21 @@ class MovieCog(commands.Cog):
         )
 
     @motd.command(
+        name="status",
+        description="Mostra todas as configurações atuais do Filme do Dia.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def status(self, interaction: discord.Interaction) -> None:
+        guild_id = self._interaction_guild_id(interaction)
+        if guild_id is None:
+            return
+
+        current = await self.db_manager.get_config(guild_id)
+        config = self._normalize_config(guild_id, current)
+        embed = self._build_status_embed(config, has_saved_config=current is not None)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @motd.command(
         name="blacklist_remove",
         description="Remove um filme da blacklist pelo ID do TMDB.",
     )
@@ -352,6 +367,7 @@ class MovieCog(commands.Cog):
     @set_role.error
     @set_emojis.error
     @reset_emojis.error
+    @status.error
     @blacklist_remove.error
     @blacklist_view.error
     @test_movie.error
@@ -501,6 +517,85 @@ class MovieCog(commands.Cog):
 
         text = str(value).strip()
         return text or None
+
+    @staticmethod
+    def _build_status_embed(
+        config: MovieGuildConfig,
+        *,
+        has_saved_config: bool,
+    ) -> discord.Embed:
+        embed = discord.Embed(
+            title="Status do Filme do Dia",
+            color=discord.Color.gold(),
+        )
+        embed.add_field(
+            name="Canal de publicação",
+            value=MovieCog._format_channel_status(config.channel_id),
+            inline=False,
+        )
+        embed.add_field(
+            name="Cargo mencionado",
+            value=MovieCog._format_role_status(config.role_id),
+            inline=False,
+        )
+        embed.add_field(
+            name="Horário diário",
+            value=f"`{config.schedule_time}` ({SCHEDULER_TIMEZONE})",
+            inline=False,
+        )
+        embed.add_field(
+            name="Emojis de reação",
+            value="\n".join(
+                (
+                    MovieCog._format_emoji_status(
+                        "Eu gosto desse filme",
+                        config.like_emoji,
+                        DEFAULT_LIKE_EMOJI,
+                    ),
+                    MovieCog._format_emoji_status(
+                        "Não gosto desse filme",
+                        config.dislike_emoji,
+                        DEFAULT_DISLIKE_EMOJI,
+                    ),
+                    MovieCog._format_emoji_status(
+                        "Nunca assisti esse filme",
+                        config.never_watched_emoji,
+                        DEFAULT_NEVER_WATCHED_EMOJI,
+                    ),
+                )
+            ),
+            inline=False,
+        )
+
+        if not has_saved_config:
+            embed.add_field(
+                name="Observação",
+                value=(
+                    "Ainda não há configuração salva para este servidor; "
+                    "os valores padrão foram exibidos onde se aplicam."
+                ),
+                inline=False,
+            )
+
+        return embed
+
+    @staticmethod
+    def _format_channel_status(channel_id: int | None) -> str:
+        if channel_id is None:
+            return "Não definido"
+        return f"<#{channel_id}> (`{channel_id}`)"
+
+    @staticmethod
+    def _format_role_status(role_id: int | None) -> str:
+        if role_id is None:
+            return "Não definido"
+        return f"<@&{role_id}> (`{role_id}`)"
+
+    @staticmethod
+    def _format_emoji_status(label: str, configured: str | None, default: str) -> str:
+        emoji = configured or default
+        source = "configurado" if configured is not None else "padrão"
+        return f"{emoji} — {label} ({source})"
 
     @staticmethod
     def _build_blacklist_embed(
