@@ -39,14 +39,15 @@ class MovieGuildConfig:
     channel_id: int | None
     role_id: int | None
     schedule_time: str
+    is_active: bool = True
     like_emoji: str | None = None
     dislike_emoji: str | None = None
     never_watched_emoji: str | None = None
 
 
 class MovieCog(commands.Cog):
-    motd = app_commands.Group(
-        name="motd",
+    motd_config = app_commands.Group(
+        name="motd_config",
         description="Configuração e operação do Filme do Dia.",
         default_permissions=discord.Permissions(administrator=True),
         guild_only=True,
@@ -97,7 +98,7 @@ class MovieCog(commands.Cog):
 
     def _reschedule_guild(self, guild_id: int, time_str: str) -> None:
         hour, minute = self._parse_schedule_time(time_str)
-        trigger = CronTrigger(hour=hour, minute=minute)
+        trigger = CronTrigger(hour=hour, minute=minute, timezone=SCHEDULER_TIMEZONE)
         self.scheduler.add_job(
             post_movie_of_the_day,
             trigger=trigger,
@@ -119,13 +120,35 @@ class MovieCog(commands.Cog):
             time_str,
         )
 
-    @motd.command(
-        name="set_time",
+    @motd_config.command(
+        name="toggle",
+        description="Ativa ou desativa o envio automático diário do Filme do Dia neste servidor.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def toggle(self, interaction: discord.Interaction) -> None:
+        guild_id = self._interaction_guild_id(interaction)
+        if guild_id is None:
+            return
+
+        current = await self.db_manager.get_config(guild_id)
+        config = self._normalize_config(guild_id, current)
+        next_state = not config.is_active
+
+        await self._save_config(guild_id, is_active=next_state)
+        
+        status_text = "Ligado" if next_state else "Desligado"
+        await interaction.response.send_message(
+            f"O Filme do Dia foi **{status_text}** neste servidor.",
+            ephemeral=True,
+        )
+
+    @motd_config.command(
+        name="horario",
         description="Define o horário diário do Filme do Dia no formato HH:MM.",
     )
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(horario="Horário em formato HH:MM, usando America/Sao_Paulo.")
-    async def set_time(self, interaction: discord.Interaction, horario: str) -> None:
+    async def horario(self, interaction: discord.Interaction, horario: str) -> None:
         guild_id = self._interaction_guild_id(interaction)
         if guild_id is None:
             return
@@ -144,13 +167,13 @@ class MovieCog(commands.Cog):
             ephemeral=True,
         )
 
-    @motd.command(
-        name="set_channel",
+    @motd_config.command(
+        name="canal",
         description="Define o canal onde o Filme do Dia será publicado.",
     )
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(canal="Canal textual de publicação.")
-    async def set_channel(
+    async def canal(
         self,
         interaction: discord.Interaction,
         canal: discord.TextChannel,
@@ -166,13 +189,13 @@ class MovieCog(commands.Cog):
             ephemeral=True,
         )
 
-    @motd.command(
-        name="set_role",
+    @motd_config.command(
+        name="cargo",
         description="Define o cargo mencionado nas publicações do Filme do Dia.",
     )
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(cargo="Cargo mencionado junto ao Filme do Dia.")
-    async def set_role(
+    async def cargo(
         self,
         interaction: discord.Interaction,
         cargo: discord.Role,
@@ -188,8 +211,8 @@ class MovieCog(commands.Cog):
             ephemeral=True,
         )
 
-    @motd.command(
-        name="set_emojis",
+    @motd_config.command(
+        name="emojis",
         description="Define os emojis das reações do Filme do Dia.",
     )
     @app_commands.checks.has_permissions(administrator=True)
@@ -198,7 +221,7 @@ class MovieCog(commands.Cog):
         dislike="Emoji usado para 'Não gosto desse filme'.",
         never_watched="Emoji usado para 'Nunca assisti esse filme'.",
     )
-    async def set_emojis(
+    async def emojis(
         self,
         interaction: discord.Interaction,
         like: str,
@@ -238,12 +261,12 @@ class MovieCog(commands.Cog):
             ephemeral=True,
         )
 
-    @motd.command(
-        name="reset_emojis",
+    @motd_config.command(
+        name="resetar_emojis",
         description="Restaura os emojis padrão das reações do Filme do Dia.",
     )
     @app_commands.checks.has_permissions(administrator=True)
-    async def reset_emojis(self, interaction: discord.Interaction) -> None:
+    async def resetar_emojis(self, interaction: discord.Interaction) -> None:
         guild_id = self._interaction_guild_id(interaction)
         if guild_id is None:
             return
@@ -262,7 +285,7 @@ class MovieCog(commands.Cog):
             ephemeral=True,
         )
 
-    @motd.command(
+    @motd_config.command(
         name="status",
         description="Mostra todas as configurações atuais do Filme do Dia.",
     )
@@ -277,13 +300,13 @@ class MovieCog(commands.Cog):
         embed = self._build_status_embed(config, has_saved_config=current is not None)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @motd.command(
-        name="blacklist_remove",
+    @motd_config.command(
+        name="remover_blacklist",
         description="Remove um filme da blacklist pelo ID do TMDB.",
     )
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(id="ID numérico do filme no TMDB.")
-    async def blacklist_remove(self, interaction: discord.Interaction, id: int) -> None:
+    async def remover_blacklist(self, interaction: discord.Interaction, id: int) -> None:
         guild_id = self._interaction_guild_id(interaction)
         if guild_id is None:
             return
@@ -296,12 +319,12 @@ class MovieCog(commands.Cog):
 
         await interaction.response.send_message(message, ephemeral=True)
 
-    @motd.command(
-        name="blacklist_view",
+    @motd_config.command(
+        name="blacklist",
         description="Lista os filmes registrados na blacklist deste servidor.",
     )
     @app_commands.checks.has_permissions(administrator=True)
-    async def blacklist_view(self, interaction: discord.Interaction) -> None:
+    async def blacklist(self, interaction: discord.Interaction) -> None:
         guild_id = self._interaction_guild_id(interaction)
         if guild_id is None:
             return
@@ -324,12 +347,12 @@ class MovieCog(commands.Cog):
             embed = self._build_blacklist_embed(chunk, page_index, total_pages)
             await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @motd.command(
-        name="test_movie",
+    @motd_config.command(
+        name="testar",
         description="Publica um Filme do Dia de teste sem gravar na blacklist.",
     )
     @app_commands.checks.has_permissions(administrator=True)
-    async def test_movie(self, interaction: discord.Interaction) -> None:
+    async def testar(self, interaction: discord.Interaction) -> None:
         guild_id = self._interaction_guild_id(interaction)
         if guild_id is None:
             return
@@ -362,15 +385,16 @@ class MovieCog(commands.Cog):
 
         await interaction.followup.send(message, ephemeral=True)
 
-    @set_time.error
-    @set_channel.error
-    @set_role.error
-    @set_emojis.error
-    @reset_emojis.error
+    @toggle.error
+    @horario.error
+    @canal.error
+    @cargo.error
+    @emojis.error
+    @resetar_emojis.error
     @status.error
-    @blacklist_remove.error
-    @blacklist_view.error
-    @test_movie.error
+    @remover_blacklist.error
+    @blacklist.error
+    @testar.error
     async def movie_command_error(
         self,
         interaction: discord.Interaction,
@@ -400,6 +424,7 @@ class MovieCog(commands.Cog):
         channel_id: int | None | object = UNSET,
         role_id: int | None | object = UNSET,
         schedule_time: str | object = UNSET,
+        is_active: bool | object = UNSET,
         like_emoji: str | None | object = UNSET,
         dislike_emoji: str | None | object = UNSET,
         never_watched_emoji: str | None | object = UNSET,
@@ -415,6 +440,9 @@ class MovieCog(commands.Cog):
         )
         next_schedule_time = (
             config.schedule_time if schedule_time is UNSET else str(schedule_time)
+        )
+        next_is_active = (
+            config.is_active if is_active is UNSET else bool(is_active)
         )
         next_like_emoji = (
             config.like_emoji
@@ -437,6 +465,7 @@ class MovieCog(commands.Cog):
             next_channel_id,
             next_role_id,
             next_schedule_time,
+            is_active=next_is_active,
             like_emoji=next_like_emoji,
             dislike_emoji=next_dislike_emoji,
             never_watched_emoji=next_never_watched_emoji,
@@ -447,6 +476,7 @@ class MovieCog(commands.Cog):
             channel_id=next_channel_id,
             role_id=next_role_id,
             schedule_time=next_schedule_time,
+            is_active=next_is_active,
             like_emoji=next_like_emoji,
             dislike_emoji=next_dislike_emoji,
             never_watched_emoji=next_never_watched_emoji,
@@ -460,6 +490,7 @@ class MovieCog(commands.Cog):
                 channel_id=None,
                 role_id=None,
                 schedule_time=DEFAULT_SCHEDULE_TIME,
+                is_active=True,
                 like_emoji=None,
                 dislike_emoji=None,
                 never_watched_emoji=None,
@@ -473,6 +504,7 @@ class MovieCog(commands.Cog):
                 getattr(config, "schedule_time", DEFAULT_SCHEDULE_TIME)
                 or DEFAULT_SCHEDULE_TIME
             ),
+            is_active=bool(getattr(config, "is_active", True)),
             like_emoji=MovieCog._normalize_optional_text(
                 getattr(config, "like_emoji", None)
             ),
@@ -528,6 +560,12 @@ class MovieCog(commands.Cog):
             title="Status do Filme do Dia",
             color=discord.Color.gold(),
         )
+        embed.add_field(
+            name="Status",
+            value="🟢 Ligado" if config.is_active else "🔴 Desligado",
+            inline=False,
+        )
+
         embed.add_field(
             name="Canal de publicação",
             value=MovieCog._format_channel_status(config.channel_id),

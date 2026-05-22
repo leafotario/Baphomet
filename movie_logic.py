@@ -119,6 +119,9 @@ async def post_movie_of_the_day(
             )
             return False
 
+        if not getattr(config, "is_active", True):
+            return False
+
         channel_id = _coerce_optional_int(_read_value(config, "channel_id"))
         if channel_id is None:
             LOGGER.error(

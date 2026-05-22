@@ -5,7 +5,7 @@ import logging
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator, Final
+from typing import Any, AsyncIterator, Final
 
 import aiosqlite
 
@@ -28,6 +28,7 @@ class GuildConfig:
     channel_id: int | None
     role_id: int | None
     schedule_time: str = DEFAULT_SCHEDULE_TIME
+    is_active: bool = True
     like_emoji: str | None = None
     dislike_emoji: str | None = None
     never_watched_emoji: str | None = None
@@ -110,14 +111,20 @@ class DatabaseManager:
             rows = await cursor.fetchall()
 
         existing_columns = {str(row["name"]) for row in rows}
-        for column_name in REACTION_EMOJI_COLUMNS:
+        for column_name in REACTION_EMOJI_COLUMNS + ("is_active",):
             if column_name in existing_columns:
                 continue
 
-            async with db.execute(
-                f"ALTER TABLE guild_configs ADD COLUMN {column_name} TEXT;"
-            ):
-                pass
+            if column_name == "is_active":
+                async with db.execute(
+                    "ALTER TABLE guild_configs ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1;"
+                ):
+                    pass
+            else:
+                async with db.execute(
+                    f"ALTER TABLE guild_configs ADD COLUMN {column_name} TEXT;"
+                ):
+                    pass
 
     async def set_config(
         self,
@@ -126,6 +133,7 @@ class DatabaseManager:
         role_id: int | None,
         schedule_time: str = DEFAULT_SCHEDULE_TIME,
         *,
+        is_active: bool | object = _UNSET,
         like_emoji: str | None | object = _UNSET,
         dislike_emoji: str | None | object = _UNSET,
         never_watched_emoji: str | None | object = _UNSET,
@@ -137,28 +145,34 @@ class DatabaseManager:
                         async with db.execute("BEGIN IMMEDIATE;"):
                             pass
 
-                        current_emojis: dict[str, str | None] = {}
+                        current_state: dict[str, Any] = {}
                         if (
-                            like_emoji is _UNSET
+                            is_active is _UNSET
+                            or like_emoji is _UNSET
                             or dislike_emoji is _UNSET
                             or never_watched_emoji is _UNSET
                         ):
-                            current_emojis = await self._fetch_current_emojis(
+                            current_state = await self._fetch_current_state(
                                 db,
                                 guild_id,
                             )
 
+                        next_is_active = (
+                            bool(current_state.get("is_active", True))
+                            if is_active is _UNSET
+                            else bool(is_active)
+                        )
                         next_like_emoji = self._resolve_emoji_value(
                             like_emoji,
-                            current_emojis.get(LIKE_EMOJI_COLUMN),
+                            current_state.get(LIKE_EMOJI_COLUMN),
                         )
                         next_dislike_emoji = self._resolve_emoji_value(
                             dislike_emoji,
-                            current_emojis.get(DISLIKE_EMOJI_COLUMN),
+                            current_state.get(DISLIKE_EMOJI_COLUMN),
                         )
                         next_never_watched_emoji = self._resolve_emoji_value(
                             never_watched_emoji,
-                            current_emojis.get(NEVER_WATCHED_EMOJI_COLUMN),
+                            current_state.get(NEVER_WATCHED_EMOJI_COLUMN),
                         )
 
                         async with db.execute(
@@ -168,15 +182,17 @@ class DatabaseManager:
                                 channel_id,
                                 role_id,
                                 schedule_time,
+                                is_active,
                                 like_emoji,
                                 dislike_emoji,
                                 never_watched_emoji
                             )
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(guild_id) DO UPDATE SET
                                 channel_id = excluded.channel_id,
                                 role_id = excluded.role_id,
                                 schedule_time = excluded.schedule_time,
+                                is_active = excluded.is_active,
                                 like_emoji = excluded.like_emoji,
                                 dislike_emoji = excluded.dislike_emoji,
                                 never_watched_emoji = excluded.never_watched_emoji;
@@ -186,6 +202,7 @@ class DatabaseManager:
                                 channel_id,
                                 role_id,
                                 schedule_time,
+                                int(next_is_active),
                                 next_like_emoji,
                                 next_dislike_emoji,
                                 next_never_watched_emoji,
@@ -206,13 +223,14 @@ class DatabaseManager:
             raise
 
     @staticmethod
-    async def _fetch_current_emojis(
+    async def _fetch_current_state(
         db: aiosqlite.Connection,
         guild_id: int,
-    ) -> dict[str, str | None]:
+    ) -> dict[str, Any]:
         async with db.execute(
             f"""
             SELECT
+                is_active,
                 {LIKE_EMOJI_COLUMN},
                 {DISLIKE_EMOJI_COLUMN},
                 {NEVER_WATCHED_EMOJI_COLUMN}
@@ -227,6 +245,7 @@ class DatabaseManager:
             return {}
 
         return {
+            "is_active": bool(row["is_active"]) if row["is_active"] is not None else True,
             LIKE_EMOJI_COLUMN: DatabaseManager._normalize_optional_text(
                 row[LIKE_EMOJI_COLUMN]
             ),
@@ -262,6 +281,7 @@ class DatabaseManager:
                         channel_id,
                         role_id,
                         COALESCE(schedule_time, ?) AS schedule_time,
+                        is_active,
                         like_emoji,
                         dislike_emoji,
                         never_watched_emoji
@@ -284,6 +304,7 @@ class DatabaseManager:
                 ),
                 role_id=int(row["role_id"]) if row["role_id"] is not None else None,
                 schedule_time=str(row["schedule_time"] or DEFAULT_SCHEDULE_TIME),
+                is_active=bool(row["is_active"]) if row["is_active"] is not None else True,
                 like_emoji=self._normalize_optional_text(row["like_emoji"]),
                 dislike_emoji=self._normalize_optional_text(row["dislike_emoji"]),
                 never_watched_emoji=self._normalize_optional_text(
