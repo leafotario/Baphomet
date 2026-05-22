@@ -43,6 +43,7 @@ DEFAULT_TRANSFER_TAX_RATE = 0.20
 DEFAULT_RESONANCE_WINDOW_MINUTES = 24 * 60
 DEFAULT_RESONANCE_BONUS = 0.05
 XP_RESONANCE_WINDOW_MINUTES = 24 * 60
+DEFAULT_DAILY_REQUEST_LIMIT = 2
 
 VINCULO_COLOR = discord.Color.from_rgb(93, 39, 126)
 VINCULO_SUCCESS_COLOR = discord.Color.from_rgb(132, 48, 79)
@@ -251,6 +252,7 @@ class VinculoGuildSettings:
     transfer_tax_rate: float = DEFAULT_TRANSFER_TAX_RATE
     resonance_window_minutes: int = DEFAULT_RESONANCE_WINDOW_MINUTES
     resonance_bonus: float = DEFAULT_RESONANCE_BONUS
+    daily_request_limit: int = DEFAULT_DAILY_REQUEST_LIMIT
 
 
 @dataclass(frozen=True, slots=True)
@@ -538,6 +540,18 @@ class VinculoRepository:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS vinculo_request_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                requester_id INTEGER NOT NULL,
+                target_id INTEGER NOT NULL,
+                bond_type TEXT NOT NULL DEFAULT 'pacto_sangue',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_vinculo_request_log_user_time
+                ON vinculo_request_log(guild_id, requester_id, created_at DESC);
             """
         )
         await self._ensure_column("vinculos", "bond_type TEXT NOT NULL DEFAULT 'pacto_sangue'", "bond_type")
@@ -554,6 +568,11 @@ class VinculoRepository:
         await self.connection.execute(
             "UPDATE vinculo_requests SET bond_type = ? WHERE bond_type IS NULL OR bond_type = ''",
             (DEFAULT_BOND_TYPE,),
+        )
+        await self._ensure_column(
+            "vinculo_guild_settings",
+            f"daily_request_limit INTEGER NOT NULL DEFAULT {DEFAULT_DAILY_REQUEST_LIMIT}",
+            "daily_request_limit",
         )
         await self._backfill_announced_affinity_levels()
         await self.connection.commit()
@@ -1106,6 +1125,56 @@ class VinculoRepository:
         )
         return int(rows[0]["total"])
 
+    # ── Rate-limit: log e contagem de solicitações ──────────────────────
+
+    async def log_vinculo_request(
+        self, guild_id: int, requester_id: int, target_id: int, bond_type: str,
+    ) -> None:
+        """Registra uma tentativa de solicitação de vínculo no log de rate-limit.
+
+        Este registro é absoluto: independente do resultado do pedido
+        (aceito, recusado, expirado), a tentativa é contabilizada.
+        Utiliza janela rolante de 24 horas para cálculo do limite diário.
+        """
+        await self.connection.execute(
+            """
+            INSERT INTO vinculo_request_log(guild_id, requester_id, target_id, bond_type, created_at)
+            VALUES(?, ?, ?, ?, ?)
+            """,
+            (guild_id, requester_id, target_id, bond_type, _utc_now_iso()),
+        )
+        await self.connection.commit()
+
+    async def count_recent_requests(self, guild_id: int, requester_id: int) -> int:
+        """Conta solicitações de vínculo nas últimas 24 horas (janela rolante).
+
+        Retorna quantas solicitações o usuário fez no guild dentro da
+        janela de 24h contada a partir do momento atual.
+        """
+        cutoff = (_utc_now() - timedelta(hours=24)).isoformat()
+        rows = await self.connection.execute_fetchall(
+            """
+            SELECT COUNT(*) AS total
+            FROM vinculo_request_log
+            WHERE guild_id = ?
+              AND requester_id = ?
+              AND created_at > ?
+            """,
+            (guild_id, requester_id, cutoff),
+        )
+        return int(rows[0]["total"])
+
+    async def update_daily_request_limit(
+        self, guild_id: int, limit: int,
+    ) -> VinculoGuildSettings:
+        """Atualiza o limite diário de solicitações de vínculo para o guild.
+
+        Args:
+            guild_id: ID do servidor.
+            limit: Novo limite (0 = sem limite / ilimitado).
+        """
+        return await self._update_settings(guild_id, daily_request_limit=max(0, int(limit)))
+
     async def get_guild_settings(self, guild_id: int) -> VinculoGuildSettings:
         async with self._tx_lock:
             settings = await self._ensure_guild_settings_in_tx(self.connection, guild_id)
@@ -1139,10 +1208,11 @@ class VinculoRepository:
                 transfer_tax_rate,
                 resonance_window_minutes,
                 resonance_bonus,
+                daily_request_limit,
                 created_at,
                 updated_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 guild_id,
@@ -1153,6 +1223,7 @@ class VinculoRepository:
                 DEFAULT_TRANSFER_TAX_RATE,
                 DEFAULT_RESONANCE_WINDOW_MINUTES,
                 DEFAULT_RESONANCE_BONUS,
+                DEFAULT_DAILY_REQUEST_LIMIT,
                 now,
                 now,
             ),
@@ -1202,6 +1273,7 @@ class VinculoRepository:
             "transfer_tax_rate",
             "resonance_window_minutes",
             "resonance_bonus",
+            "daily_request_limit",
         }
         invalid = set(fields) - valid_fields
         if invalid:
@@ -1656,6 +1728,7 @@ class VinculoRepository:
             transfer_tax_rate=_clamp_tax_rate(float(row["transfer_tax_rate"])),
             resonance_window_minutes=max(1, int(row["resonance_window_minutes"])),
             resonance_bonus=max(0.0, float(row["resonance_bonus"])),
+            daily_request_limit=max(0, int(row["daily_request_limit"])),
         )
 
     def _row_to_penalty(self, row: aiosqlite.Row) -> PenaltySnapshot:
@@ -2174,6 +2247,26 @@ class VinculosCog(commands.Cog):
             )
             return
 
+        # ── Rate-limit diário de solicitações (janela rolante de 24h) ──
+        settings = await self.repository.get_guild_settings(interaction.guild.id)
+        daily_limit = settings.daily_request_limit
+        if daily_limit > 0:  # 0 = sem limite
+            used_today = await self.repository.count_recent_requests(
+                interaction.guild.id, requester_id,
+            )
+            if used_today >= daily_limit:
+                reset_approx = _utc_now() + timedelta(hours=1)
+                reset_ts = int(reset_approx.timestamp())
+                await self._send_text(
+                    interaction,
+                    (
+                        f"🕯️ O altar se recusa a aceitar mais ofertas hoje. "
+                        f"Você já fez **{used_today}/{daily_limit}** solicitação(ões) nas últimas 24 horas.\n"
+                        f"Tente novamente mais tarde — o próximo slot será liberado aproximadamente <t:{reset_ts}:R>."
+                    ),
+                )
+                return
+
         configured_role_ids = await self.repository.list_interest_role_ids(interaction.guild.id)
         if not configured_role_ids:
             await self._send_text(
@@ -2242,6 +2335,13 @@ class VinculosCog(commands.Cog):
             )
             return
 
+        # Registra a tentativa no log de rate-limit (contabilização absoluta).
+        await self.repository.log_vinculo_request(
+            interaction.guild.id,
+            requester.id,
+            target.id,
+            bond_type.value,
+        )
         self._start_request_cooldown(interaction.guild.id, requester.id)
         view = VinculoRequestView(
             cog=self,
@@ -2653,6 +2753,36 @@ class VinculosCog(commands.Cog):
                 f"bônus de **{settings.resonance_bonus:.0%}**."
             ),
         )
+
+    @vinculo_config.command(
+        name="limite",
+        description="Define o limite diário de solicitações de vínculo por usuário.",
+    )
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.guild_only()
+    @app_commands.describe(quantidade="Máximo de solicitações por 24h (0 = sem limite)")
+    async def config_limite(
+        self,
+        interaction: discord.Interaction,
+        quantidade: app_commands.Range[int, 0, 100],
+    ) -> None:
+        if interaction.guild is None:
+            await self._send_text(interaction, "🕯️ Este ritual só existe dentro de um servidor.")
+            return
+        settings = await self.repository.update_daily_request_limit(
+            interaction.guild.id, quantidade,
+        )
+        if settings.daily_request_limit == 0:
+            await self._send_text(
+                interaction,
+                "♾️ Limite de solicitações desativado. Os cultistas poderão criar pedidos sem restrição diária.",
+            )
+        else:
+            await self._send_text(
+                interaction,
+                f"🩸 Limite diário de solicitações configurado para **{settings.daily_request_limit}** por usuário a cada 24 horas.",
+            )
 
     @vinculo.command(name="ajuda", description="Mostra o grimório público da mecânica de vínculos.")
     @app_commands.guild_only()
