@@ -206,7 +206,7 @@ async def post_movie_of_the_day(
 
         try:
             await message.create_thread(
-                name=f"Filme do Dia: {title}"[:100],
+                name=f"{title}"[:100],
                 auto_archive_duration=10080,
             )
         except discord.Forbidden:
