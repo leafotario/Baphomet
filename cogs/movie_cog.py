@@ -406,6 +406,120 @@ class MovieCog(commands.Cog):
 
         await interaction.followup.send(message, ephemeral=True)
 
+    @motd_config.command(
+        name="fila",
+        description="Lista cronologicamente a fila de sugestões do Filme do Dia.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def fila(self, interaction: discord.Interaction) -> None:
+        guild_id = self._interaction_guild_id(interaction)
+        if guild_id is None:
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        entries = await self.db_manager.get_motd_queue(guild_id)
+        if not entries:
+            await interaction.followup.send("A fila de sugestões está vazia.", ephemeral=True)
+            return
+
+        all_lines = []
+        for i, entry in enumerate(entries, start=1):
+            title = str(getattr(entry, "movie_title", "N/A"))
+            user_id = getattr(entry, "user_id_sugestao", None)
+            date_added = str(getattr(entry, "date_added", "N/A"))[:10]
+            line = f"**{i}.** {title} (por <@{user_id}>) - *{date_added}*"
+            all_lines.append(line)
+        
+        description = "\\n".join(all_lines)
+        if len(description) <= 4096:
+            embed = discord.Embed(
+                title="Fila de Sugestões MOTD",
+                description=description,
+                color=discord.Color.blue()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            PAGE_SIZE = 10
+            total_pages = (len(entries) + PAGE_SIZE - 1) // PAGE_SIZE
+            for page_index, start in enumerate(range(0, len(entries), PAGE_SIZE), start=1):
+                chunk = entries[start : start + PAGE_SIZE]
+                chunk_lines = [all_lines[j] for j in range(start, min(start + PAGE_SIZE, len(all_lines)))]
+                embed = discord.Embed(
+                    title=f"Fila de Sugestões MOTD ({page_index}/{total_pages})",
+                    description="\\n".join(chunk_lines),
+                    color=discord.Color.blue()
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="sugerir_motd",
+        description="Sugira um filme para a fila do Filme do Dia!",
+    )
+    @app_commands.describe(filme="Nome do filme que deseja sugerir.")
+    @app_commands.guild_only()
+    async def sugerir_motd(self, interaction: discord.Interaction, filme: str) -> None:
+        guild_id = self._interaction_guild_id(interaction)
+        if guild_id is None:
+            return
+
+        await interaction.response.defer(ephemeral=False)
+
+        config = await self.db_manager.get_config(guild_id)
+        if config is None or getattr(config, "is_active", False) is False:
+            await interaction.followup.send("O Filme do Dia está desativado neste servidor.", ephemeral=True)
+            return
+
+        movie = await self.tmdb_client.search_movie(filme)
+        if movie is None:
+            await interaction.followup.send(f"Não encontrei nenhum filme com o nome `{filme}` no TMDB.", ephemeral=True)
+            return
+
+        if await self.db_manager.is_blacklisted(guild_id, movie.tmdb_id):
+            await interaction.followup.send(f"O filme **{movie.title}** já foi exibido recentemente e está na blacklist.", ephemeral=True)
+            return
+
+        if await self.db_manager.is_in_motd_queue(guild_id, movie.tmdb_id):
+            await interaction.followup.send(f"O filme **{movie.title}** já está na fila de sugestões!", ephemeral=True)
+            return
+
+        success = await self.db_manager.add_to_motd_queue(
+            guild_id,
+            movie.tmdb_id,
+            movie.title,
+            interaction.user.id
+        )
+
+        if not success:
+            await interaction.followup.send("Falha ao adicionar o filme na fila. Tente novamente mais tarde.", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="🎬 Filme adicionado à fila!",
+            description=f"**{movie.title}** foi sugerido com sucesso e adicionado ao final da fila.",
+            color=discord.Color.green()
+        )
+        if movie.poster_url and movie.poster_url != "N/A":
+            embed.set_thumbnail(url=movie.poster_url)
+        
+        embed.add_field(name="Gêneros", value=movie.genres, inline=True)
+        embed.add_field(name="Lançamento", value=movie.release_date, inline=True)
+        
+        avatar_url = interaction.user.display_avatar.url if interaction.user.display_avatar else None
+        embed.set_footer(text=f"TMDB ID: {movie.tmdb_id} • Sugerido por {interaction.user.display_name}", icon_url=avatar_url)
+
+        await interaction.followup.send(embed=embed)
+
+    @sugerir_motd.error
+    async def sugerir_motd_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        if isinstance(error, app_commands.NoPrivateMessage):
+            await interaction.response.send_message("Esse comando só pode ser usado dentro de um servidor.", ephemeral=True)
+        else:
+            LOGGER.error("Erro no comando sugerir_motd.", exc_info=True)
+            if interaction.response.is_done():
+                await interaction.followup.send("Ocorreu um erro ao sugerir o filme.", ephemeral=True)
+            else:
+                await interaction.response.send_message("Ocorreu um erro ao sugerir o filme.", ephemeral=True)
+
     @toggle.error
     @horario.error
     @canal.error
@@ -415,6 +529,7 @@ class MovieCog(commands.Cog):
     @status.error
     @remover_blacklist.error
     @blacklist.error
+    @fila.error
     @testar.error
     async def movie_command_error(
         self,

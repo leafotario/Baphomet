@@ -388,6 +388,50 @@ class TMDBClient:
             return fallback
         return numeric_value if numeric_value > 0 else fallback
 
+    async def search_movie(self, query: str) -> TMDBMovie | None:
+        try:
+            payload = await self._request_json(
+                "/search/movie",
+                params={
+                    "query": query,
+                    "include_adult": "false",
+                    "page": 1,
+                },
+            )
+            results = payload.get("results")
+            if not isinstance(results, list) or not results:
+                return None
+
+            first_result = results[0]
+            if not isinstance(first_result, Mapping):
+                return None
+
+            tmdb_id = self._coerce_positive_int(first_result.get("id"), fallback=0)
+            if tmdb_id <= 0:
+                return None
+
+            details = await self._fetch_movie_details(tmdb_id)
+            return self._build_movie_payload(tmdb_id, first_result, details)
+        except Exception:
+            logging.error(
+                "Falha ao pesquisar filme no TMDB query=%r.",
+                query,
+                exc_info=True,
+            )
+            return None
+
+    async def get_movie_by_id(self, tmdb_id: int) -> TMDBMovie | None:
+        try:
+            details = await self._fetch_movie_details(tmdb_id)
+            return self._build_movie_payload(tmdb_id, details, details)
+        except Exception:
+            logging.error(
+                "Falha ao resgatar filme por ID no TMDB tmdb_id=%s.",
+                tmdb_id,
+                exc_info=True,
+            )
+            return None
+
 
 __all__ = [
     "DiscoverFilterProfile",

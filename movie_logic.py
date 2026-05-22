@@ -101,6 +101,9 @@ class SupportsDatabaseManager(Protocol):
     ) -> None:
         ...
 
+    async def pop_from_motd_queue(self, guild_id: int) -> Any | None:
+        ...
+
 
 class SupportsTMDBClient(Protocol):
     async def get_random_valid_movie(
@@ -108,6 +111,9 @@ class SupportsTMDBClient(Protocol):
         guild_id: int,
         db_manager: SupportsDatabaseManager,
     ) -> Any:
+        ...
+
+    async def get_movie_by_id(self, tmdb_id: int) -> Any | None:
         ...
 
 
@@ -146,14 +152,27 @@ async def post_movie_of_the_day(
         if not _has_required_permissions(channel):
             return False
 
+        movie = None
+        user_id_sugestao: int | None = None
         try:
-            movie = await tmdb_client.get_random_valid_movie(guild_id, db_manager)
+            queue_entry = await db_manager.pop_from_motd_queue(guild_id)
+            if queue_entry:
+                user_id_sugestao = getattr(queue_entry, "user_id_sugestao", None)
+                tmdb_id = getattr(queue_entry, "tmdb_id", None)
+                if tmdb_id:
+                    movie = await tmdb_client.get_movie_by_id(tmdb_id)
+            
+            if not movie:
+                movie = await tmdb_client.get_random_valid_movie(guild_id, db_manager)
         except Exception:
             LOGGER.error(
                 "Postagem do Filme do Dia abortada: nao foi possivel selecionar filme guild_id=%s.",
                 guild_id,
                 exc_info=True,
             )
+            return False
+
+        if not movie:
             return False
 
         tmdb_id = _resolve_movie_id(movie)
@@ -216,10 +235,12 @@ async def post_movie_of_the_day(
         )
 
         try:
-            await message.create_thread(
+            thread = await message.create_thread(
                 name=f"{title}"[:100],
                 auto_archive_duration=10080,
             )
+            if user_id_sugestao:
+                await thread.send(f"Sugerido por <@{user_id_sugestao}>")
         except discord.Forbidden:
             pass
 

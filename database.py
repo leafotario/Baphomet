@@ -46,6 +46,16 @@ class MotdHistoryEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class MotdQueueEntry:
+    id: int
+    guild_id: int
+    tmdb_id: int
+    movie_title: str
+    user_id_sugestao: int
+    date_added: str
+
+
+@dataclass(frozen=True, slots=True)
 class BlacklistEntry:
     guild_id: int
     tmdb_id: int
@@ -119,6 +129,21 @@ class DatabaseManager:
                         movie_title TEXT NOT NULL,
                         poster_url TEXT,
                         date_added TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    );
+                    """
+                ):
+                    pass
+
+                async with db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS motd_queue (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        guild_id INTEGER NOT NULL,
+                        tmdb_id INTEGER NOT NULL,
+                        movie_title TEXT NOT NULL,
+                        user_id_sugestao INTEGER NOT NULL,
+                        date_added TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(guild_id, tmdb_id)
                     );
                     """
                 ):
@@ -597,9 +622,175 @@ class DatabaseManager:
             )
             raise
 
+    async def add_to_motd_queue(
+        self,
+        guild_id: int,
+        tmdb_id: int,
+        movie_title: str,
+        user_id_sugestao: int,
+    ) -> bool:
+        try:
+            async with self._write_lock:
+                async with self._connect() as db:
+                    try:
+                        async with db.execute("BEGIN IMMEDIATE;"):
+                            pass
+
+                        async with db.execute(
+                            """
+                            INSERT INTO motd_queue (
+                                guild_id,
+                                tmdb_id,
+                                movie_title,
+                                user_id_sugestao
+                            )
+                            VALUES (?, ?, ?, ?)
+                            ON CONFLICT(guild_id, tmdb_id) DO NOTHING;
+                            """,
+                            (guild_id, tmdb_id, movie_title, user_id_sugestao)
+                        ) as cursor:
+                            changed_rows = cursor.rowcount
+
+                        await db.commit()
+                        return changed_rows > 0
+                    except Exception:
+                        await db.rollback()
+                        raise
+        except Exception:
+            logging.error(
+                "Falha ao adicionar na fila MOTD tmdb_id=%s guild_id=%s.",
+                tmdb_id,
+                guild_id,
+                exc_info=True,
+            )
+            raise
+
+    async def get_motd_queue(self, guild_id: int) -> list[MotdQueueEntry]:
+        try:
+            async with self._connect() as db:
+                async with db.execute(
+                    """
+                    SELECT
+                        id,
+                        guild_id,
+                        tmdb_id,
+                        movie_title,
+                        user_id_sugestao,
+                        date_added
+                    FROM motd_queue
+                    WHERE guild_id = ?
+                    ORDER BY id ASC;
+                    """,
+                    (guild_id,),
+                ) as cursor:
+                    rows = await cursor.fetchall()
+
+            return [
+                MotdQueueEntry(
+                    id=row["id"],
+                    guild_id=row["guild_id"],
+                    tmdb_id=row["tmdb_id"],
+                    movie_title=row["movie_title"],
+                    user_id_sugestao=row["user_id_sugestao"],
+                    date_added=row["date_added"],
+                )
+                for row in rows
+            ]
+        except Exception:
+            logging.error(
+                "Falha ao listar fila MOTD guild_id=%s.",
+                guild_id,
+                exc_info=True,
+            )
+            raise
+
+    async def pop_from_motd_queue(self, guild_id: int) -> MotdQueueEntry | None:
+        try:
+            async with self._write_lock:
+                async with self._connect() as db:
+                    try:
+                        async with db.execute("BEGIN IMMEDIATE;"):
+                            pass
+
+                        async with db.execute(
+                            """
+                            SELECT
+                                id,
+                                guild_id,
+                                tmdb_id,
+                                movie_title,
+                                user_id_sugestao,
+                                date_added
+                            FROM motd_queue
+                            WHERE guild_id = ?
+                            ORDER BY id ASC
+                            LIMIT 1;
+                            """,
+                            (guild_id,),
+                        ) as cursor:
+                            row = await cursor.fetchone()
+
+                        if not row:
+                            await db.rollback()
+                            return None
+
+                        entry = MotdQueueEntry(
+                            id=row["id"],
+                            guild_id=row["guild_id"],
+                            tmdb_id=row["tmdb_id"],
+                            movie_title=row["movie_title"],
+                            user_id_sugestao=row["user_id_sugestao"],
+                            date_added=row["date_added"],
+                        )
+
+                        async with db.execute(
+                            "DELETE FROM motd_queue WHERE id = ?;",
+                            (entry.id,),
+                        ):
+                            pass
+
+                        await db.commit()
+                        return entry
+                    except Exception:
+                        await db.rollback()
+                        raise
+        except Exception:
+            logging.error(
+                "Falha ao remover item da fila MOTD guild_id=%s.",
+                guild_id,
+                exc_info=True,
+            )
+            raise
+
+    async def is_in_motd_queue(self, guild_id: int, tmdb_id: int) -> bool:
+        try:
+            async with self._connect() as db:
+                async with db.execute(
+                    """
+                    SELECT 1
+                    FROM motd_queue
+                    WHERE guild_id = ?
+                      AND tmdb_id = ?
+                    LIMIT 1;
+                    """,
+                    (guild_id, tmdb_id),
+                ) as cursor:
+                    row = await cursor.fetchone()
+
+            return row is not None
+        except Exception:
+            logging.error(
+                "Falha ao validar fila MOTD tmdb_id=%s guild_id=%s.",
+                tmdb_id,
+                guild_id,
+                exc_info=True,
+            )
+            raise
+
 __all__ = [
     "BlacklistEntry",
     "MotdHistoryEntry",
+    "MotdQueueEntry",
     "DatabaseManager",
     "GuildConfig",
 ]
