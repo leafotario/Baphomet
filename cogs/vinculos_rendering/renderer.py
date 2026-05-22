@@ -77,6 +77,33 @@ class VinculoCardRenderer:
         self._warm_fonts()
         return await asyncio.to_thread(self._render_sync, data_a, data_b, accent)
 
+    async def render_anniversary(
+        self,
+        *,
+        participant_a: discord.Member | discord.User | None,
+        participant_b: discord.Member | discord.User | None,
+        accent: Color,
+        time_text: str,
+        fallback_name_a: str = "Usuario 1",
+        fallback_name_b: str = "Usuario 2",
+    ) -> io.BytesIO:
+        avatar_a, avatar_b = await asyncio.gather(
+            self._read_avatar_bytes(participant_a),
+            self._read_avatar_bytes(participant_b),
+        )
+        data_a = VinculoParticipantRenderData(
+            display_name=self._display_name(participant_a, fallback_name_a),
+            avatar_bytes=avatar_a,
+            fallback_initials=self._initials(self._display_name(participant_a, fallback_name_a)),
+        )
+        data_b = VinculoParticipantRenderData(
+            display_name=self._display_name(participant_b, fallback_name_b),
+            avatar_bytes=avatar_b,
+            fallback_initials=self._initials(self._display_name(participant_b, fallback_name_b)),
+        )
+        self._warm_fonts()
+        return await asyncio.to_thread(self._render_anniversary_sync, data_a, data_b, accent, time_text)
+
     async def _read_avatar_bytes(self, participant: discord.Member | discord.User | None) -> bytes | None:
         if participant is None:
             return None
@@ -105,6 +132,52 @@ class VinculoCardRenderer:
         self._draw_participant(canvas, participant_b, self._avatar_rect("right"), self.RIGHT_NAME_BOX, accent)
         self._draw_center_mark(canvas, self.PLUS_CENTER)
         self._draw_panel_separators(draw, width)
+
+        output = io.BytesIO()
+        canvas.convert("RGBA").save(output, format="PNG")
+        output.seek(0)
+        return output
+
+    def _render_anniversary_sync(
+        self,
+        participant_a: VinculoParticipantRenderData,
+        participant_b: VinculoParticipantRenderData,
+        accent: Color,
+        time_text: str,
+    ) -> io.BytesIO:
+        width, height = self.CANVAS_SIZE
+        accent = self._normalize_accent(accent)
+        canvas = self._draw_background(width, height)
+        self._draw_panel(canvas, self.PANEL, accent)
+
+        draw = ImageDraw.Draw(canvas)
+        self._draw_participant(canvas, participant_a, self._avatar_rect("left"), self.LEFT_NAME_BOX, accent)
+        self._draw_participant(canvas, participant_b, self._avatar_rect("right"), self.RIGHT_NAME_BOX, accent)
+        self._draw_center_mark(canvas, self.PLUS_CENTER)
+        self._draw_panel_separators(draw, width)
+
+        # Draw Anniversary Banner/Text at the top-center (y = 40)
+        banner_y = 55
+        font = self._font(64, "bold")
+        text_bbox = self._text_bbox(draw, time_text, font)
+        text_w = self._box_width(text_bbox)
+        text_h = self._box_height(text_bbox)
+
+        text_x = (width - text_w) // 2
+
+        # Draw a subtle background for the text
+        padding_x = 40
+        padding_y = 20
+        banner_rect = (text_x - padding_x, banner_y - padding_y, text_x + text_w + padding_x, banner_y + text_h + padding_y)
+        draw.rounded_rectangle(banner_rect, radius=20, fill=(20, 20, 20, 240), outline=(255, 215, 0, 180), width=3)
+
+        self._safe_draw_text(
+            draw,
+            (text_x, banner_y - text_bbox[1]),
+            time_text,
+            font=font,
+            fill=(255, 215, 0, 255) # Gold text
+        )
 
         output = io.BytesIO()
         canvas.convert("RGBA").save(output, format="PNG")

@@ -19,7 +19,7 @@ from typing import Iterable, Literal
 import aiosqlite
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from cogs.vinculos_rendering.renderer import VINCULO_CARD_FILENAME, VinculoCardRenderer
 
@@ -1027,6 +1027,18 @@ class VinculoRepository:
         )
         return [self._row_to_vinculo(row) for row in rows]
 
+    async def get_all_active_vinculos(self) -> list[ActiveVinculo]:
+        """Retorna todos os vínculos ativos de todas as guildas para rotinas globais (como aniversários)."""
+        async with self._tx_lock:
+            async with self.connection().execute(
+                """
+                SELECT id, guild_id, user_low_id, user_high_id, bond_type, created_at, ended_at, active, last_announced_affinity_level
+                FROM vinculos
+                WHERE active = 1
+                """
+            ) as cursor:
+                return [self._row_to_vinculo(row) for row in await cursor.fetchall()]
+
     async def get_active_vinculo_between(self, guild_id: int, user_a_id: int, user_b_id: int) -> ActiveVinculo | None:
         user_low_id, user_high_id = _normalize_pair(user_a_id, user_b_id)
         rows = await self.connection.execute_fetchall(
@@ -1899,11 +1911,97 @@ class VinculosCog(commands.Cog):
     async def cog_load(self) -> None:
         await self.repository.connect()
         self.bot.vinculos_runtime = VinculosRuntime(repository=self.repository)
+        self.check_vinculo_anniversaries.start()
 
     def cog_unload(self) -> None:
+        self.check_vinculo_anniversaries.cancel()
         if getattr(self.bot, "vinculos_runtime", None) is not None:
             self.bot.vinculos_runtime = None
         self.bot.loop.create_task(self.repository.close())
+
+    @tasks.loop(time=datetime.time(hour=15, minute=0, tzinfo=timezone.utc))
+    async def check_vinculo_anniversaries(self) -> None:
+        """Executa todos os dias às 12:00 BRT para anunciar aniversários de meses/anos de vínculo."""
+        try:
+            active_vinculos = await self.repository.get_all_active_vinculos()
+        except Exception as e:
+            LOGGER.error("Erro ao buscar vínculos ativos para aniversário: %s", e)
+            return
+
+        now = datetime.now(timezone.utc)
+        
+        for vinculo in active_vinculos:
+            try:
+                created_at = datetime.fromisoformat(vinculo.created_at)
+                
+                # Math for months
+                months_diff = (now.year - created_at.year) * 12 + now.month - created_at.month
+                if months_diff <= 0:
+                    continue
+                
+                # Tratar dias limites de meses curtos
+                # Se hoje for o último dia do mês atual e o dia de criação for maior que hoje, comemorar hoje.
+                import calendar
+                _, last_day_of_month = calendar.monthrange(now.year, now.month)
+                
+                is_anniversary_day = False
+                if now.day == created_at.day:
+                    is_anniversary_day = True
+                elif now.day == last_day_of_month and created_at.day > last_day_of_month:
+                    is_anniversary_day = True
+                
+                if not is_anniversary_day:
+                    continue
+                
+                guild = self.bot.get_guild(vinculo.guild_id)
+                if guild is None:
+                    continue
+                
+                settings = await self.repository.get_guild_settings(guild.id)
+                gossip_channel_id = settings.gossip_channel_id
+                if not gossip_channel_id:
+                    continue
+                
+                channel = guild.get_channel(gossip_channel_id)
+                if channel is None or not isinstance(channel, discord.TextChannel):
+                    continue
+                
+                # Obter membros
+                try:
+                    user_a = await guild.fetch_member(vinculo.user_low_id)
+                    user_b = await guild.fetch_member(vinculo.user_high_id)
+                except discord.NotFound:
+                    continue # Alguém saiu da guilda
+                
+                time_text = f"{months_diff} Meses!" if months_diff % 12 != 0 else f"{months_diff // 12} Ano{'s' if months_diff // 12 > 1 else ''}!"
+                
+                # Gerar a imagem
+                fp = await self.vinculo_card_renderer.render_anniversary(
+                    participant_a=user_a,
+                    participant_b=user_b,
+                    accent=(255, 215, 0),
+                    time_text=time_text,
+                    fallback_name_a=user_a.display_name,
+                    fallback_name_b=user_b.display_name,
+                )
+                
+                file = discord.File(fp=fp, filename="vinculo_aniversario.png")
+                
+                embed = discord.Embed(
+                    title="🎉 Aniversário de Vínculo! 🎉",
+                    description=f"{user_a.mention} e {user_b.mention} estão comemorando **{time_text}** de pacto firmado!",
+                    color=discord.Color.gold(),
+                )
+                embed.set_image(url="attachment://vinculo_aniversario.png")
+                
+                await channel.send(content=f"{user_a.mention} {user_b.mention}", embed=embed, file=file)
+                
+            except Exception as e:
+                LOGGER.error("Erro ao processar aniversário para vínculo %s: %s", vinculo.id, e)
+
+    @check_vinculo_anniversaries.before_loop
+    async def before_check_vinculo_anniversaries(self) -> None:
+        await self.bot.wait_until_ready()
 
     async def send_interaction_error(self, interaction: discord.Interaction) -> None:
         message = "🩸 Algo rangeu no mecanismo do altar. Tente novamente quando o sangue assentar."
