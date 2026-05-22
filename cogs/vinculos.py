@@ -12,7 +12,7 @@ import logging
 import math
 import pathlib
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from enum import Enum
 from typing import Iterable, Literal
 
@@ -1919,7 +1919,7 @@ class VinculosCog(commands.Cog):
             self.bot.vinculos_runtime = None
         self.bot.loop.create_task(self.repository.close())
 
-    @tasks.loop(time=datetime.time(hour=15, minute=0, tzinfo=timezone.utc))
+    @tasks.loop(time=time(hour=15, minute=0, tzinfo=timezone.utc))
     async def check_vinculo_anniversaries(self) -> None:
         """Executa todos os dias às 12:00 BRT para anunciar aniversários de meses/anos de vínculo."""
         try:
