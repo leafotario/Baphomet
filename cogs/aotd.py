@@ -73,6 +73,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # Notificações internas para staff/admins quando alguém sugere álbum
     "staff_notify_channel_id": None,
     "staff_notify_role_id": None,
+    
+    # Recap Semanal
+    "recap_enabled": False,
+    "recap_hour": 18,
+    "recap_minute": 0,
 }
 
 
@@ -259,9 +264,11 @@ class AlbumDoDia(commands.Cog):
         print(f"[AOTD] SQLite ativo em: {DB_FILE.resolve()}")
 
         self.enviar_album_automatico.start()
+        self.enviar_recap_automatico.start()
 
     def cog_unload(self) -> None:
         self.enviar_album_automatico.cancel()
+        self.enviar_recap_automatico.cancel()
 
     # ========================================================
     #  Banco de Dados
@@ -289,6 +296,18 @@ class AlbumDoDia(commands.Cog):
                     total_faixas INTEGER,
                     duracao_ms INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS aotd_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nome TEXT NOT NULL,
+                    artista TEXT NOT NULL,
+                    imagem TEXT,
+                    date_added TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
@@ -688,6 +707,45 @@ class AlbumDoDia(commands.Cog):
             conn.commit()
 
         return len(ids)
+
+    def inserir_aotd_history(self, album: dict[str, Any]) -> None:
+        nome = album.get("nome", "Álbum desconhecido")
+        artista = album.get("artista", "Artista desconhecido")
+        imagem = album.get("imagem")
+        
+        with self.conectar() as conn:
+            conn.execute(
+                """
+                INSERT INTO aotd_history (nome, artista, imagem)
+                VALUES (?, ?, ?)
+                """,
+                (nome, artista, imagem),
+            )
+            
+            conn.execute(
+                """
+                DELETE FROM aotd_history
+                WHERE id NOT IN (
+                    SELECT id FROM aotd_history
+                    ORDER BY date_added DESC, id DESC
+                    LIMIT 7
+                )
+                """
+            )
+            conn.commit()
+
+    def get_aotd_history(self) -> list[dict[str, Any]]:
+        with self.conectar() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, nome, artista, imagem, date_added
+                FROM aotd_history
+                ORDER BY date_added DESC, id DESC
+                LIMIT 7
+                """
+            ).fetchall()
+            
+        return [dict(row) for row in rows]
 
     # ========================================================
     #  Spotify
@@ -1364,6 +1422,8 @@ class AlbumDoDia(commands.Cog):
         except (discord.HTTPException, discord.Forbidden):
             pass
 
+        self.inserir_aotd_history(album_de_hoje)
+
         return True
 
     # ========================================================
@@ -1408,6 +1468,79 @@ class AlbumDoDia(commands.Cog):
 
     @enviar_album_automatico.before_loop
     async def before_enviar_album_automatico(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def send_aotd_recap(self, is_test: bool = False) -> bool:
+        config = self.carregar_config()
+        if not config.get("recap_enabled", False) and not is_test:
+            return False
+
+        channel = await self.resolve_album_channel(config.get("album_channel_id"))
+        if channel is None:
+            return False
+
+        history = self.get_aotd_history()
+        if not history:
+            if is_test:
+                await channel.send("Não há álbuns registrados nesta semana para o recap.")
+            return False
+
+        from recap_logic import generate_recap_collage, build_recap_embed
+        import discord
+        
+        urls = [item.get("imagem") for item in history if item.get("imagem")]
+        buffer = await generate_recap_collage(urls)
+        
+        embed, emojis = build_recap_embed(history, system_type="AOTD")
+
+        kwargs = {"embed": embed}
+        if buffer:
+            file = discord.File(fp=buffer, filename="recap.jpg")
+            embed.set_image(url="attachment://recap.jpg")
+            kwargs["file"] = file
+            
+        try:
+            msg = await channel.send(**kwargs)
+            for emoji in emojis:
+                try:
+                    await msg.add_reaction(emoji)
+                except discord.HTTPException:
+                    pass
+            return True
+        except discord.Forbidden:
+            return False
+
+    @tasks.loop(minutes=1)
+    async def enviar_recap_automatico(self) -> None:
+        await self.bot.wait_until_ready()
+        now = self.now_br()
+
+        # Recap só roda na sexta-feira (weekday() == 4)
+        if now.weekday() != 4:
+            return
+
+        config = self.carregar_config()
+        if not config.get("recap_enabled", False):
+            return
+
+        r_hour = int(config.get("recap_hour", 18))
+        r_minute = int(config.get("recap_minute", 0))
+
+        if now.hour != r_hour or now.minute != r_minute:
+            return
+
+        today_key = f"recap_{now.date().isoformat()}"
+        if config.get("last_recap_sent_date") == today_key:
+            return
+
+        enviado = await self.send_aotd_recap()
+        if enviado:
+            config = self.carregar_config()
+            config["last_recap_sent_date"] = today_key
+            self.salvar_config(config)
+
+    @enviar_recap_automatico.before_loop
+    async def before_enviar_recap_automatico(self) -> None:
         await self.bot.wait_until_ready()
 
     # ========================================================
@@ -1945,6 +2078,64 @@ class AlbumDoDia(commands.Cog):
     @app_commands.checks.has_permissions(administrator=True)
     async def testar_album(self, interaction: discord.Interaction) -> None:
         await self.despachar_album(interaction)
+
+    @aotd_config.command(
+        name="test_recap",
+        description="Força o envio do Recap Semanal do Álbum do Dia agora. Admin.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def test_recap(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=False)
+        enviado = await self.send_aotd_recap(is_test=True)
+        if not enviado:
+            await interaction.followup.send(
+                "Não foi possível enviar o Recap (Verifique o canal, permissões ou se o recap está vazio).", 
+                ephemeral=True
+            )
+
+    @aotd_config.command(
+        name="toggle_recap",
+        description="Ativa ou desativa o envio automático do Recap Semanal de álbuns (Sexta-feira).",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def toggle_recap(self, interaction: discord.Interaction) -> None:
+        config = self.carregar_config()
+        estado = not config.get("recap_enabled", False)
+        config["recap_enabled"] = estado
+        self.salvar_config(config)
+
+        status_text = "Ligado" if estado else "Desligado"
+        await interaction.response.send_message(
+            f"O Recap Semanal do Álbum do Dia foi **{status_text}**.",
+            ephemeral=True,
+        )
+
+    @aotd_config.command(
+        name="recap_time",
+        description="Define o horário do Recap Semanal do Álbum do Dia (Sextas) no formato HH:MM.",
+    )
+    @app_commands.describe(horario="Horário em formato HH:MM, usando America/Sao_Paulo.")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def recap_time(self, interaction: discord.Interaction, horario: str) -> None:
+        import re
+        TIME_PATTERN = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+        if TIME_PATTERN.fullmatch(horario) is None:
+            await interaction.response.send_message(
+                "Formato inválido. Use `HH:MM`, por exemplo `18:00`.",
+                ephemeral=True,
+            )
+            return
+
+        hour_str, min_str = horario.split(":")
+        config = self.carregar_config()
+        config["recap_hour"] = int(hour_str)
+        config["recap_minute"] = int(min_str)
+        self.salvar_config(config)
+
+        await interaction.response.send_message(
+            f"Horário do Recap Semanal configurado para `{horario}`.",
+            ephemeral=True,
+        )
 
     async def cog_app_command_error(
         self,

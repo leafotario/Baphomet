@@ -92,6 +92,14 @@ class SupportsDatabaseManager(Protocol):
         movie_title: str,
     ) -> bool:
         ...
+        
+    async def add_motd_history(
+        self,
+        guild_id: int,
+        movie_title: str,
+        poster_url: str | None,
+    ) -> None:
+        ...
 
 
 class SupportsTMDBClient(Protocol):
@@ -217,6 +225,7 @@ async def post_movie_of_the_day(
 
         if not is_test:
             await db_manager.add_to_blacklist(guild_id, tmdb_id, title)
+            await db_manager.add_motd_history(guild_id, title, poster_url)
 
         return True
     except discord.Forbidden:
@@ -626,6 +635,75 @@ def _coerce_optional_int(value: object) -> int | None:
     return parsed if parsed > 0 else None
 
 
+async def send_motd_recap(
+    bot: SupportsBot,
+    guild_id: int,
+    db_manager: Any,
+    is_test: bool = False,
+) -> bool:
+    try:
+        config = await db_manager.get_config(guild_id)
+        if config is None:
+            return False
+
+        if not getattr(config, "recap_active", False) and not is_test:
+            return False
+
+        channel_id = _coerce_optional_int(_read_value(config, "channel_id"))
+        if channel_id is None:
+            return False
+
+        channel = await _resolve_text_channel(bot, guild_id, channel_id)
+        if channel is None:
+            return False
+
+        if not _has_required_permissions(channel):
+            return False
+
+        history = await db_manager.get_motd_history(guild_id)
+        if not history:
+            if is_test:
+                await channel.send("Não há filmes registrados nesta semana para o recap.")
+            return False
+
+        from recap_logic import generate_recap_collage, build_recap_embed
+        
+        urls = [getattr(item, "poster_url", None) for item in history if getattr(item, "poster_url", None)]
+        buffer = await generate_recap_collage(urls)
+        
+        items_dicts = [{"title": getattr(item, "movie_title", "Desconhecido")} for item in history]
+        embed, emojis = build_recap_embed(items_dicts, system_type="MOTD")
+
+        kwargs = {"embed": embed}
+        if buffer:
+            file = discord.File(fp=buffer, filename="recap.jpg")
+            embed.set_image(url="attachment://recap.jpg")
+            kwargs["file"] = file
+            
+        msg = await channel.send(**kwargs)
+        
+        for emoji in emojis:
+            try:
+                await msg.add_reaction(emoji)
+            except discord.HTTPException:
+                pass
+                
+        return True
+    except discord.Forbidden:
+        LOGGER.error(
+            "Recap do MOTD bloqueado por permissao guild_id=%s.",
+            guild_id,
+            exc_info=True,
+        )
+        return False
+    except Exception:
+        LOGGER.error(
+            "Falha inesperada no Recap do MOTD guild_id=%s.",
+            guild_id,
+            exc_info=True,
+        )
+        raise
+
 __all__ = [
     "DEFAULT_LIKE_EMOJI",
     "DEFAULT_DISLIKE_EMOJI",
@@ -635,5 +713,6 @@ __all__ = [
     "EMOJI_NUNCA_ASSISTI",
     "ReactionEmojiSet",
     "post_movie_of_the_day",
+    "send_motd_recap",
     "validate_reaction_emoji",
 ]

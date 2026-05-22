@@ -32,6 +32,17 @@ class GuildConfig:
     like_emoji: str | None = None
     dislike_emoji: str | None = None
     never_watched_emoji: str | None = None
+    recap_active: bool = False
+    recap_time: str = "18:00"
+
+
+@dataclass(frozen=True, slots=True)
+class MotdHistoryEntry:
+    id: int
+    guild_id: int
+    movie_title: str
+    poster_url: str | None
+    date_added: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +111,19 @@ class DatabaseManager:
                 ):
                     pass
 
+                async with db.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS motd_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        guild_id INTEGER NOT NULL,
+                        movie_title TEXT NOT NULL,
+                        poster_url TEXT,
+                        date_added TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    );
+                    """
+                ):
+                    pass
+
                 await db.commit()
         except Exception:
             logging.error("Falha ao inicializar o banco de dados.", exc_info=True)
@@ -111,13 +135,23 @@ class DatabaseManager:
             rows = await cursor.fetchall()
 
         existing_columns = {str(row["name"]) for row in rows}
-        for column_name in REACTION_EMOJI_COLUMNS + ("is_active",):
+        for column_name in REACTION_EMOJI_COLUMNS + ("is_active", "recap_active", "recap_time"):
             if column_name in existing_columns:
                 continue
 
             if column_name == "is_active":
                 async with db.execute(
                     "ALTER TABLE guild_configs ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1;"
+                ):
+                    pass
+            elif column_name == "recap_active":
+                async with db.execute(
+                    "ALTER TABLE guild_configs ADD COLUMN recap_active INTEGER NOT NULL DEFAULT 0;"
+                ):
+                    pass
+            elif column_name == "recap_time":
+                async with db.execute(
+                    "ALTER TABLE guild_configs ADD COLUMN recap_time TEXT NOT NULL DEFAULT '18:00';"
                 ):
                     pass
             else:
@@ -137,6 +171,8 @@ class DatabaseManager:
         like_emoji: str | None | object = _UNSET,
         dislike_emoji: str | None | object = _UNSET,
         never_watched_emoji: str | None | object = _UNSET,
+        recap_active: bool | object = _UNSET,
+        recap_time: str | object = _UNSET,
     ) -> None:
         try:
             async with self._write_lock:
@@ -151,6 +187,8 @@ class DatabaseManager:
                             or like_emoji is _UNSET
                             or dislike_emoji is _UNSET
                             or never_watched_emoji is _UNSET
+                            or recap_active is _UNSET
+                            or recap_time is _UNSET
                         ):
                             current_state = await self._fetch_current_state(
                                 db,
@@ -174,6 +212,16 @@ class DatabaseManager:
                             never_watched_emoji,
                             current_state.get(NEVER_WATCHED_EMOJI_COLUMN),
                         )
+                        next_recap_active = (
+                            bool(current_state.get("recap_active", False))
+                            if recap_active is _UNSET
+                            else bool(recap_active)
+                        )
+                        next_recap_time = (
+                            str(current_state.get("recap_time", "18:00"))
+                            if recap_time is _UNSET
+                            else str(recap_time)
+                        )
 
                         async with db.execute(
                             """
@@ -185,9 +233,11 @@ class DatabaseManager:
                                 is_active,
                                 like_emoji,
                                 dislike_emoji,
-                                never_watched_emoji
+                                never_watched_emoji,
+                                recap_active,
+                                recap_time
                             )
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(guild_id) DO UPDATE SET
                                 channel_id = excluded.channel_id,
                                 role_id = excluded.role_id,
@@ -195,7 +245,9 @@ class DatabaseManager:
                                 is_active = excluded.is_active,
                                 like_emoji = excluded.like_emoji,
                                 dislike_emoji = excluded.dislike_emoji,
-                                never_watched_emoji = excluded.never_watched_emoji;
+                                never_watched_emoji = excluded.never_watched_emoji,
+                                recap_active = excluded.recap_active,
+                                recap_time = excluded.recap_time;
                             """,
                             (
                                 guild_id,
@@ -206,6 +258,8 @@ class DatabaseManager:
                                 next_like_emoji,
                                 next_dislike_emoji,
                                 next_never_watched_emoji,
+                                int(next_recap_active),
+                                next_recap_time,
                             ),
                         ):
                             pass
@@ -233,7 +287,9 @@ class DatabaseManager:
                 is_active,
                 {LIKE_EMOJI_COLUMN},
                 {DISLIKE_EMOJI_COLUMN},
-                {NEVER_WATCHED_EMOJI_COLUMN}
+                {NEVER_WATCHED_EMOJI_COLUMN},
+                recap_active,
+                recap_time
             FROM guild_configs
             WHERE guild_id = ?;
             """,
@@ -255,6 +311,8 @@ class DatabaseManager:
             NEVER_WATCHED_EMOJI_COLUMN: DatabaseManager._normalize_optional_text(
                 row[NEVER_WATCHED_EMOJI_COLUMN]
             ),
+            "recap_active": bool(row["recap_active"]) if row["recap_active"] is not None else False,
+            "recap_time": str(row["recap_time"]) if row["recap_time"] is not None else "18:00",
         }
 
     @staticmethod
@@ -284,7 +342,9 @@ class DatabaseManager:
                         is_active,
                         like_emoji,
                         dislike_emoji,
-                        never_watched_emoji
+                        never_watched_emoji,
+                        recap_active,
+                        recap_time
                     FROM guild_configs
                     WHERE guild_id = ?;
                     """,
@@ -310,6 +370,8 @@ class DatabaseManager:
                 never_watched_emoji=self._normalize_optional_text(
                     row["never_watched_emoji"]
                 ),
+                recap_active=bool(row["recap_active"]) if row["recap_active"] is not None else False,
+                recap_time=str(row["recap_time"]) if row["recap_time"] is not None else "18:00",
             )
         except Exception:
             logging.error(
@@ -458,8 +520,86 @@ class DatabaseManager:
             raise
 
 
+    async def add_motd_history(self, guild_id: int, movie_title: str, poster_url: str | None) -> None:
+        try:
+            async with self._write_lock:
+                async with self._connect() as db:
+                    try:
+                        async with db.execute("BEGIN IMMEDIATE;"):
+                            pass
+
+                        async with db.execute(
+                            """
+                            INSERT INTO motd_history (guild_id, movie_title, poster_url)
+                            VALUES (?, ?, ?);
+                            """,
+                            (guild_id, movie_title, poster_url)
+                        ):
+                            pass
+                            
+                        # Limitar histórico para apenas os 7 mais recentes
+                        async with db.execute(
+                            """
+                            DELETE FROM motd_history 
+                            WHERE id NOT IN (
+                                SELECT id FROM motd_history 
+                                WHERE guild_id = ? 
+                                ORDER BY date_added DESC, id DESC 
+                                LIMIT 7
+                            )
+                            AND guild_id = ?;
+                            """,
+                            (guild_id, guild_id)
+                        ):
+                            pass
+
+                        await db.commit()
+                    except Exception:
+                        await db.rollback()
+                        raise
+        except Exception:
+            logging.error(
+                "Falha ao adicionar historico MOTD para guild_id=%s.",
+                guild_id,
+                exc_info=True,
+            )
+            raise
+
+    async def get_motd_history(self, guild_id: int) -> list[MotdHistoryEntry]:
+        try:
+            async with self._connect() as db:
+                async with db.execute(
+                    """
+                    SELECT id, guild_id, movie_title, poster_url, date_added
+                    FROM motd_history
+                    WHERE guild_id = ?
+                    ORDER BY date_added DESC, id DESC
+                    LIMIT 7;
+                    """,
+                    (guild_id,)
+                ) as cursor:
+                    rows = await cursor.fetchall()
+            
+            return [
+                MotdHistoryEntry(
+                    id=row["id"],
+                    guild_id=row["guild_id"],
+                    movie_title=row["movie_title"],
+                    poster_url=row["poster_url"],
+                    date_added=row["date_added"]
+                ) for row in rows
+            ]
+        except Exception:
+            logging.error(
+                "Falha ao buscar historico MOTD para guild_id=%s.",
+                guild_id,
+                exc_info=True,
+            )
+            raise
+
 __all__ = [
     "BlacklistEntry",
+    "MotdHistoryEntry",
     "DatabaseManager",
     "GuildConfig",
 ]

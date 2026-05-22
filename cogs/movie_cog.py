@@ -17,6 +17,7 @@ from movie_logic import (
     DEFAULT_LIKE_EMOJI,
     DEFAULT_NEVER_WATCHED_EMOJI,
     post_movie_of_the_day,
+    send_motd_recap,
     validate_reaction_emoji,
 )
 from tmdb_api import TMDBClient
@@ -43,6 +44,8 @@ class MovieGuildConfig:
     like_emoji: str | None = None
     dislike_emoji: str | None = None
     never_watched_emoji: str | None = None
+    recap_active: bool = False
+    recap_time: str = "18:00"
 
 
 class MovieCog(commands.Cog):
@@ -82,21 +85,18 @@ class MovieCog(commands.Cog):
             if config is None:
                 continue
 
-            schedule_time = str(
-                getattr(config, "schedule_time", DEFAULT_SCHEDULE_TIME)
-                or DEFAULT_SCHEDULE_TIME
-            )
             try:
-                self._reschedule_guild(guild.id, schedule_time)
+                self._reschedule_guild(guild.id, config)
             except ValueError:
                 LOGGER.error(
                     "Horario invalido ao reagendar guild_id=%s schedule_time=%s.",
                     guild.id,
-                    schedule_time,
+                    getattr(config, "schedule_time", DEFAULT_SCHEDULE_TIME),
                     exc_info=True,
                 )
 
-    def _reschedule_guild(self, guild_id: int, time_str: str) -> None:
+    def _reschedule_guild(self, guild_id: int, config) -> None:
+        time_str = getattr(config, "schedule_time", DEFAULT_SCHEDULE_TIME) or DEFAULT_SCHEDULE_TIME
         hour, minute = self._parse_schedule_time(time_str)
         trigger = CronTrigger(hour=hour, minute=minute, timezone=SCHEDULER_TIMEZONE)
         self.scheduler.add_job(
@@ -114,6 +114,27 @@ class MovieCog(commands.Cog):
                 "is_test": False,
             },
         )
+        
+        if getattr(config, "recap_active", False):
+            recap_time = getattr(config, "recap_time", "18:00")
+            try:
+                r_hour, r_minute = self._parse_schedule_time(recap_time)
+                r_trigger = CronTrigger(day_of_week="fri", hour=r_hour, minute=r_minute, timezone=SCHEDULER_TIMEZONE)
+                self.scheduler.add_job(
+                    send_motd_recap,
+                    trigger=r_trigger,
+                    id=f"recap_{JOB_ID_PREFIX}{guild_id}",
+                    replace_existing=True,
+                    kwargs={"bot": self.bot, "guild_id": guild_id, "db_manager": self.db_manager, "is_test": False}
+                )
+            except Exception:
+                pass
+        else:
+            try:
+                self.scheduler.remove_job(f"recap_{JOB_ID_PREFIX}{guild_id}")
+            except Exception:
+                pass
+
         LOGGER.info(
             "Agendamento do Filme do Dia atualizado guild_id=%s horario=%s.",
             guild_id,
@@ -161,7 +182,7 @@ class MovieCog(commands.Cog):
             return
 
         config = await self._save_config(guild_id, schedule_time=horario)
-        self._reschedule_guild(guild_id, config.schedule_time)
+        self._reschedule_guild(guild_id, config)
         await interaction.response.send_message(
             f"Horário do Filme do Dia configurado para `{config.schedule_time}`.",
             ephemeral=True,
@@ -183,7 +204,7 @@ class MovieCog(commands.Cog):
             return
 
         config = await self._save_config(guild_id, channel_id=canal.id)
-        self._reschedule_guild(guild_id, config.schedule_time)
+        self._reschedule_guild(guild_id, config)
         await interaction.response.send_message(
             f"Canal do Filme do Dia configurado para {canal.mention}.",
             ephemeral=True,
@@ -205,7 +226,7 @@ class MovieCog(commands.Cog):
             return
 
         config = await self._save_config(guild_id, role_id=cargo.id)
-        self._reschedule_guild(guild_id, config.schedule_time)
+        self._reschedule_guild(guild_id, config)
         await interaction.response.send_message(
             f"Cargo do Filme do Dia configurado para {cargo.mention}.",
             ephemeral=True,
@@ -417,6 +438,75 @@ class MovieCog(commands.Cog):
         else:
             await interaction.response.send_message(message, ephemeral=True)
 
+    @motd_config.command(
+        name="toggle_recap",
+        description="Ativa ou desativa o envio automático do Recap Semanal de filmes (Sexta-feira).",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def toggle_recap(self, interaction: discord.Interaction) -> None:
+        guild_id = self._interaction_guild_id(interaction)
+        if guild_id is None:
+            return
+
+        current = await self.db_manager.get_config(guild_id)
+        config = self._normalize_config(guild_id, current)
+        next_state = not config.recap_active
+
+        config = await self._save_config(guild_id, recap_active=next_state)
+        self._reschedule_guild(guild_id, config)
+        
+        status_text = "Ligado" if next_state else "Desligado"
+        await interaction.response.send_message(
+            f"O Recap Semanal do Filme do Dia foi **{status_text}**.",
+            ephemeral=True,
+        )
+
+    @motd_config.command(
+        name="recap_time",
+        description="Define o horário do Recap Semanal do Filme do Dia (Sextas) no formato HH:MM.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(horario="Horário em formato HH:MM, usando America/Sao_Paulo.")
+    async def recap_time(self, interaction: discord.Interaction, horario: str) -> None:
+        guild_id = self._interaction_guild_id(interaction)
+        if guild_id is None:
+            return
+
+        if TIME_PATTERN.fullmatch(horario) is None:
+            await interaction.response.send_message(
+                "Formato inválido. Use `HH:MM`, por exemplo `18:00`.",
+                ephemeral=True,
+            )
+            return
+
+        config = await self._save_config(guild_id, recap_time=horario)
+        self._reschedule_guild(guild_id, config)
+        await interaction.response.send_message(
+            f"Horário do Recap Semanal configurado para `{config.recap_time}`.",
+            ephemeral=True,
+        )
+
+    @motd_config.command(
+        name="test_recap",
+        description="Testa o envio do Recap Semanal do Filme do Dia agora.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def test_recap(self, interaction: discord.Interaction) -> None:
+        guild_id = self._interaction_guild_id(interaction)
+        if guild_id is None:
+            return
+
+        await interaction.response.defer(ephemeral=False)
+        success = await send_motd_recap(
+            bot=self.bot,
+            guild_id=guild_id,
+            db_manager=self.db_manager,
+            is_test=True,
+        )
+        
+        if not success:
+            await interaction.followup.send("Não foi possível enviar o Recap (Verifique o canal, permissões ou se o recap está vazio).", ephemeral=True)
+
     async def _save_config(
         self,
         guild_id: int,
@@ -428,6 +518,8 @@ class MovieCog(commands.Cog):
         like_emoji: str | None | object = UNSET,
         dislike_emoji: str | None | object = UNSET,
         never_watched_emoji: str | None | object = UNSET,
+        recap_active: bool | object = UNSET,
+        recap_time: str | object = UNSET,
     ) -> MovieGuildConfig:
         current = await self.db_manager.get_config(guild_id)
         config = self._normalize_config(guild_id, current)
@@ -459,6 +551,12 @@ class MovieCog(commands.Cog):
             if never_watched_emoji is UNSET
             else self._normalize_optional_text(never_watched_emoji)
         )
+        next_recap_active = (
+            config.recap_active if recap_active is UNSET else bool(recap_active)
+        )
+        next_recap_time = (
+            config.recap_time if recap_time is UNSET else str(recap_time)
+        )
 
         await self.db_manager.set_config(
             guild_id,
@@ -469,6 +567,8 @@ class MovieCog(commands.Cog):
             like_emoji=next_like_emoji,
             dislike_emoji=next_dislike_emoji,
             never_watched_emoji=next_never_watched_emoji,
+            recap_active=next_recap_active,
+            recap_time=next_recap_time,
         )
 
         return MovieGuildConfig(
@@ -480,6 +580,8 @@ class MovieCog(commands.Cog):
             like_emoji=next_like_emoji,
             dislike_emoji=next_dislike_emoji,
             never_watched_emoji=next_never_watched_emoji,
+            recap_active=next_recap_active,
+            recap_time=next_recap_time,
         )
 
     @staticmethod
@@ -494,6 +596,8 @@ class MovieCog(commands.Cog):
                 like_emoji=None,
                 dislike_emoji=None,
                 never_watched_emoji=None,
+                recap_active=False,
+                recap_time="18:00",
             )
 
         return MovieGuildConfig(
@@ -514,6 +618,8 @@ class MovieCog(commands.Cog):
             never_watched_emoji=MovieCog._normalize_optional_text(
                 getattr(config, "never_watched_emoji", None)
             ),
+            recap_active=bool(getattr(config, "recap_active", False)),
+            recap_time=str(getattr(config, "recap_time", "18:00")),
         )
 
     @staticmethod
