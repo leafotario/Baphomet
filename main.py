@@ -122,6 +122,9 @@ class MyBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         """Chamado pelo discord.py antes de logar o bot."""
+        # Inicializa o pool de conexões do tx_manager ANTES das cogs
+        await self.tx_manager.initialize()
+
         loaded, failed = await self.load_all_extensions()
 
         print_separator()
@@ -135,8 +138,6 @@ class MyBot(commands.Bot):
         except Exception as exc:
             log_error(f"Falha ao sincronizar comandos: {exc}")
 
-        # Inicializa o pool de conexões do tx_manager
-        await self.tx_manager.initialize()
 
     async def close(self) -> None:
         """Desligamento gracioso do Bot."""
