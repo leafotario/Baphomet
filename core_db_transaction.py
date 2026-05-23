@@ -11,7 +11,9 @@ logger = logging.getLogger("BaphometTransactionManager")
 
 class SacrificeValidationError(Exception):
     """Exceção estruturada para falhas de validação de sacrifício."""
-    pass
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(self.message)
 
 class BaphometTransactionManager:
     """
