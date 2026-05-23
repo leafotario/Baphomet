@@ -432,7 +432,7 @@ class MovieCog(commands.Cog):
             line = f"**{i}.** {title} (por <@{user_id}>) - *{date_added}*"
             all_lines.append(line)
         
-        description = "\\n".join(all_lines)
+        description = "\n".join(all_lines)
         if len(description) <= 4096:
             embed = discord.Embed(
                 title="Fila de Sugestões MOTD",
@@ -444,11 +444,10 @@ class MovieCog(commands.Cog):
             PAGE_SIZE = 10
             total_pages = (len(entries) + PAGE_SIZE - 1) // PAGE_SIZE
             for page_index, start in enumerate(range(0, len(entries), PAGE_SIZE), start=1):
-                chunk = entries[start : start + PAGE_SIZE]
-                chunk_lines = [all_lines[j] for j in range(start, min(start + PAGE_SIZE, len(all_lines)))]
+                chunk_lines = all_lines[start : start + PAGE_SIZE]
                 embed = discord.Embed(
                     title=f"Fila de Sugestões MOTD ({page_index}/{total_pages})",
-                    description="\\n".join(chunk_lines),
+                    description="\n".join(chunk_lines),
                     color=discord.Color.blue()
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
