@@ -8,13 +8,14 @@ import hashlib
 import logging
 import random
 from collections import defaultdict, deque
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import discord
 
 from .xp_config import build_progress_snapshot, normalize_message_content, utc_now
 from .xp_models import GuildXpConfig, LeaderboardEntry, PageResult, RankSnapshot, XpChangeResult
 from .xp_repository import XpRepository
+from cogs.vinculos import ContractType
 
 
 class XpService:
@@ -25,6 +26,7 @@ class XpService:
         self._config_cache: dict[int, GuildXpConfig] = {}
         self._user_locks: dict[tuple[int, int], asyncio.Lock] = defaultdict(asyncio.Lock)
         self._recent_fingerprints: dict[tuple[int, int], deque[tuple[str, float]]] = defaultdict(lambda: deque(maxlen=5))
+        self._fusion_resonance_cache: dict[int, tuple[int, float, float]] = {}  # vinculo_id -> (last_sender_id, timestamp_utc, multiplier_stack)
 
     async def get_guild_config(self, guild_id: int) -> GuildXpConfig:
         cached = self._config_cache.get(guild_id)
@@ -121,6 +123,169 @@ class XpService:
     def _remember_fingerprint(self, guild_id: int, user_id: int, normalized: str, now_ts: float) -> None:
         self._recent_fingerprints[(guild_id, user_id)].append((normalized, now_ts))
 
+    async def _resolve_vinculo_context(self, user_id: int, message: discord.Message) -> float:
+        """Processa o contexto de vínculos do usuário para a mensagem atual, calculando bônus de Fusão de Almas."""
+        if message.guild is None:
+            return 0.0
+
+        vinculos_runtime = getattr(message.guild._state._get_client(), "vinculos_runtime", None)
+        if vinculos_runtime is None:
+            return 0.0
+
+        vinculos = await vinculos_runtime.repository.list_active_vinculos_for_user(message.guild.id, user_id)
+        if not vinculos:
+            return 0.0
+
+        multiplier = 0.0
+        now_ts = datetime.now(timezone.utc).timestamp()
+
+        expired_keys = [k for k, v in self._fusion_resonance_cache.items() if now_ts - v[1] > 60]
+        for k in expired_keys:
+            del self._fusion_resonance_cache[k]
+
+        is_eclipse_active = False
+        try:
+            settings = await vinculos_runtime.repository.get_guild_settings(message.guild.id)
+            if settings.eclipse_ends_at:
+                eclipse_end = datetime.fromisoformat(settings.eclipse_ends_at)
+                if datetime.now(timezone.utc) < eclipse_end:
+                    is_eclipse_active = True
+        except Exception:
+            pass
+
+        for vinculo in vinculos:
+            partner_id = vinculo.partner_id_for(user_id)
+            if not partner_id:
+                continue
+
+            snapshot = await vinculos_runtime.repository.get_status_snapshot(message.guild.id, user_id, partner_id)
+            if snapshot is None:
+                continue
+            
+            base_bonus = snapshot.affinity.bonus
+            if is_eclipse_active:
+                base_bonus *= 2.0
+
+            if vinculo.is_fused and snapshot.resonance.active:
+                cached = self._fusion_resonance_cache.get(vinculo.id)
+                if cached:
+                    c_partner_id, c_timestamp, c_stack = cached
+                    if c_partner_id == partner_id and (now_ts - c_timestamp) <= 60:
+                        new_stack = c_stack + 0.05
+                        multiplier += base_bonus + new_stack
+                        self._fusion_resonance_cache[vinculo.id] = (user_id, now_ts, new_stack)
+                        continue
+                
+                self._fusion_resonance_cache[vinculo.id] = (user_id, now_ts, 0.0)
+                multiplier += base_bonus
+            else:
+                multiplier += base_bonus
+                
+        return multiplier
+
+    async def _dispatch_contract_evaluation(
+        self,
+        vinculos_runtime,
+        vinculo_id: int,
+        guild_id: int,
+        user_id: int,
+        channel_id: int,
+        xp_result: XpChangeResult,
+        contract_type: ContractType,
+        amount: int = 1,
+    ) -> None:
+        """Avaliador de Contratos em Segundo Plano."""
+        try:
+            db = vinculos_runtime.repository.connection
+            
+            # A) Recupera contratos ativos
+            rows = await db.execute_fetchall(
+                "SELECT id, target_value, current_value, expires_at FROM vinculo_contracts WHERE vinculo_id = ? AND status = 'active' AND contract_type = ?",
+                (vinculo_id, contract_type.value)
+            )
+            if not rows:
+                return
+
+            for row in rows:
+                contract_id = int(row["id"])
+                target_value = int(row["target_value"])
+                current_value = int(row["current_value"])
+                expires_at_str = str(row["expires_at"])
+
+                # B) Procedimento de Tempo
+                expires_at = datetime.fromisoformat(expires_at_str)
+                if datetime.now(timezone.utc) > expires_at:
+                    await db.execute("UPDATE vinculo_contracts SET status = 'expired' WHERE id = ?", (contract_id,))
+                    await db.commit()
+                    continue
+
+                # C) Atualização de Métrica
+                updated_current_value = current_value + amount
+                await db.execute("UPDATE vinculo_contracts SET current_value = ? WHERE id = ?", (updated_current_value, contract_id))
+                await db.commit()
+
+                # D) Porta Lógica de Cumprimento
+                if updated_current_value >= target_value:
+                    # E) Fase de Recompensa Atómica
+                    async with vinculos_runtime.repository._tx_lock:
+                        # Re-verifica estado para segurança transacional
+                        check_row = await db.execute_fetchall("SELECT status FROM vinculo_contracts WHERE id = ?", (contract_id,))
+                        if not check_row or check_row[0]["status"] != "active":
+                            continue
+
+                        await db.execute("UPDATE vinculo_contracts SET status = 'completed' WHERE id = ?", (contract_id,))
+                        
+                        # Extrai dados adicionais para o histórico e recompensa (XP de bónus massivo)
+                        bonus_xp_reward = target_value * 50
+                        now_str = datetime.now(timezone.utc).isoformat()
+                        
+                        row_vinc = await db.execute_fetchall("SELECT user_low_id, user_high_id FROM vinculos WHERE id = ?", (vinculo_id,))
+                        partner_id = None
+                        if row_vinc:
+                            u1 = int(row_vinc[0]["user_low_id"])
+                            u2 = int(row_vinc[0]["user_high_id"])
+                            partner_id = u2 if user_id == u1 else (u1 if user_id == u2 else None)
+
+                        await db.execute(
+                            """
+                            INSERT INTO vinculo_xp_bonus_history (
+                                guild_id, vinculo_id, user_id, partner_id, bond_type,
+                                base_xp, bonus_xp, multiplier, affinity_level, resonance_active, penalty_delta, created_at
+                            ) VALUES (?, ?, ?, ?, 'pacto_sangue', 0, ?, 1.0, 1, 1, 0.0, ?)
+                            """,
+                            (guild_id, vinculo_id, user_id, partner_id, bonus_xp_reward, now_str)
+                        )
+                        # Adiciona fisicamente o XP recompensado ao total
+                        await self.repository.try_add_message_xp(
+                            guild_id=guild_id,
+                            user_id=user_id,
+                            delta_xp=bonus_xp_reward,
+                            last_known_name="Recompensa de Contrato",
+                            awarded_at_iso=now_str,
+                            cooldown_cutoff_iso=now_str,
+                            message_hash=f"contract_reward_{contract_id}",
+                            repeat_cutoff_iso=now_str,
+                        )
+                        await db.commit()
+                        
+                        # Localiza canal e notifica vitória retumbante
+                        client = getattr(self.repository, "_bot", None) or getattr(vinculos_runtime, "bot", None)
+                        if client:
+                            channel = client.get_channel(channel_id)
+                            if isinstance(channel, discord.TextChannel):
+                                embed = discord.Embed(
+                                    title="📜 O Contrato Foi Selado",
+                                    description=(
+                                        f"As entidades sombrias testemunharam a conclusão imaculada do contrato **{contract_type.value}**.\n\n"
+                                        f"<@{user_id}> {f'e <@{partner_id}>' if partner_id else ''} provaram a resiliência do vosso vínculo e superaram o desafio de **{target_value}** interações.\n"
+                                        f"O Submundo recompensa a vossa dedicação com **+{bonus_xp_reward} XP** concedido ao avatar que cravou o limite final!"
+                                    ),
+                                    color=discord.Color.from_str("#4A0404")
+                                )
+                                await channel.send(embed=embed)
+        except Exception as e:
+            self.logger.error("Falha colossal na Avaliação de Contratos em Background: %s", e, exc_info=True)
+
     async def process_message(self, message: discord.Message) -> XpChangeResult | None:
         if message.guild is None or not isinstance(message.author, discord.Member):
             return None
@@ -147,10 +312,14 @@ class XpService:
             )
             if not passes_repeat:
                 return None
+            
+            vinculo_multiplier = await self._resolve_vinculo_context(message.author.id, message)
+            final_delta_xp = int(delta_xp * (1.0 + vinculo_multiplier))
+
             awarded, _, old_total, new_total = await self.repository.try_add_message_xp(
                 guild_id=message.guild.id,
                 user_id=message.author.id,
-                delta_xp=delta_xp,
+                delta_xp=final_delta_xp,
                 last_known_name=message.author.display_name,
                 awarded_at_iso=now_iso,
                 cooldown_cutoff_iso=cooldown_cutoff_iso,
@@ -163,7 +332,7 @@ class XpService:
 
         old_progress = build_progress_snapshot(old_total, config.difficulty)
         new_progress = build_progress_snapshot(new_total, config.difficulty)
-        return XpChangeResult(
+        result = XpChangeResult(
             awarded=True,
             reason=None,
             old_total_xp=old_total,
@@ -171,8 +340,26 @@ class XpService:
             old_level=old_progress.level,
             new_level=new_progress.level,
             levels_gained=max(0, new_progress.level - old_progress.level),
-            delta_xp=delta_xp,
+            delta_xp=final_delta_xp,
         )
+
+        vinculos_runtime = getattr(message.guild._state._get_client(), "vinculos_runtime", None)
+        if vinculos_runtime:
+            vinculos = await vinculos_runtime.repository.list_active_vinculos_for_user(message.guild.id, message.author.id)
+            for vinculo in vinculos:
+                asyncio.create_task(
+                    self._dispatch_contract_evaluation(
+                        vinculos_runtime,
+                        vinculo.id,
+                        message.guild.id,
+                        message.author.id,
+                        message.channel.id,
+                        result,
+                        ContractType.MESSAGES_SHARED
+                    )
+                )
+
+        return result
 
     async def grant_level_rewards(self, member: discord.Member, new_level: int) -> list[discord.Role]:
         config = await self.get_guild_config(member.guild.id)

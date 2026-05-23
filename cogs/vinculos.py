@@ -11,6 +11,7 @@ import contextlib
 import logging
 import math
 import pathlib
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from enum import Enum
@@ -65,6 +66,10 @@ class VinculoType(str, Enum):
     PACTO_SANGUE = "pacto_sangue"
     FIO_RIVALIDADE = "fio_rivalidade"
     PACTO_SERVIDAO = "pacto_servidao"
+
+class ContractType(str, Enum):
+    MESSAGES_SHARED = "MESSAGES_SHARED"
+    XP_DONATION = "XP_DONATION"
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,6 +258,8 @@ class VinculoGuildSettings:
     resonance_window_minutes: int = DEFAULT_RESONANCE_WINDOW_MINUTES
     resonance_bonus: float = DEFAULT_RESONANCE_BONUS
     daily_request_limit: int = DEFAULT_DAILY_REQUEST_LIMIT
+    global_essence: int = 0
+    eclipse_ends_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,6 +283,7 @@ class ActiveVinculo:
     ended_at: str | None
     active: bool
     last_announced_affinity_level: int
+    is_fused: bool = False
 
     def partner_id_for(self, user_id: int) -> int | None:
         if user_id == self.user_low_id:
@@ -367,6 +375,22 @@ class StatusSnapshot:
     penalties: tuple[PenaltySnapshot, ...]
     transfers: TransferSummary
     bonus_history: BonusHistorySummary
+
+
+async def migrate_selo_supremo(db_connection: aiosqlite.Connection) -> None:
+    """Executa de forma cirúrgica a migração do Selo Supremo.
+    
+    Adiciona a coluna is_fused silenciando erros de coluna já existente para prosseguir ininterruptamente.
+    """
+    try:
+        await db_connection.execute("ALTER TABLE vinculos ADD COLUMN is_fused INTEGER NOT NULL DEFAULT 0;")
+        await db_connection.commit()
+    except sqlite3.OperationalError as e:
+        error_msg = str(e).lower()
+        if "duplicate column name" in error_msg or "already exists" in error_msg:
+            LOGGER.info("[Migração] A coluna is_fused já se encontra consolidada na tabela vinculos.")
+        else:
+            raise
 
 
 class VinculoRepository:
@@ -552,6 +576,20 @@ class VinculoRepository:
 
             CREATE INDEX IF NOT EXISTS idx_vinculo_request_log_user_time
                 ON vinculo_request_log(guild_id, requester_id, created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS vinculo_contracts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vinculo_id INTEGER NOT NULL,
+                contract_type TEXT NOT NULL,
+                target_value INTEGER NOT NULL,
+                current_value INTEGER NOT NULL DEFAULT 0,
+                expires_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                FOREIGN KEY(vinculo_id) REFERENCES vinculos(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_active_contracts
+                ON vinculo_contracts (vinculo_id, status);
             """
         )
         await self._ensure_column("vinculos", "bond_type TEXT NOT NULL DEFAULT 'pacto_sangue'", "bond_type")
@@ -574,7 +612,10 @@ class VinculoRepository:
             f"daily_request_limit INTEGER NOT NULL DEFAULT {DEFAULT_DAILY_REQUEST_LIMIT}",
             "daily_request_limit",
         )
+        await self._ensure_column("vinculo_guild_settings", "global_essence INTEGER NOT NULL DEFAULT 0", "global_essence")
+        await self._ensure_column("vinculo_guild_settings", "eclipse_ends_at TEXT NULL", "eclipse_ends_at")
         await self._backfill_announced_affinity_levels()
+        await migrate_selo_supremo(self.connection)
         await self.connection.commit()
 
     async def _column_exists(self, table: str, column: str) -> bool:
@@ -1030,12 +1071,51 @@ class VinculoRepository:
     async def get_all_active_vinculos(self) -> list[ActiveVinculo]:
         """Retorna todos os vínculos ativos de todas as guildas para rotinas globais (como aniversários)."""
         async with self._tx_lock:
-            async with self.connection().execute(
+            async with self.connection.execute(
                 """
-                SELECT id, guild_id, user_low_id, user_high_id, bond_type, created_at, ended_at, active, last_announced_affinity_level
+                SELECT id, guild_id, user_low_id, user_high_id, bond_type, created_at, ended_at, active, last_announced_affinity_level, is_fused
                 FROM vinculos
                 WHERE active = 1
                 """
+            ) as cursor:
+                return [self._row_to_vinculo(row) for row in await cursor.fetchall()]
+
+    async def get_anniversary_candidates(
+        self,
+        current_day: int,
+        is_last_day_of_month: bool,
+        current_year: int,
+        current_month: int,
+    ) -> list[ActiveVinculo]:
+        """Retorna os vínculos ativos que potencialmente celebram aniversário de meses hoje,
+        filtrando diretamente no banco de dados para otimização de memória."""
+        is_last_day_val = 1 if is_last_day_of_month else 0
+        async with self._tx_lock:
+            async with self.connection.execute(
+                """
+                SELECT id, guild_id, user_low_id, user_high_id, bond_type, created_at, ended_at, active, last_announced_affinity_level, is_fused
+                FROM vinculos
+                WHERE active = 1
+                  AND (
+                      CAST(strftime('%d', created_at) AS INTEGER) = ?
+                      OR
+                      (
+                          ? = 1
+                          AND CAST(strftime('%d', created_at) AS INTEGER) > ?
+                      )
+                  )
+                  AND (
+                      (? - CAST(strftime('%Y', created_at) AS INTEGER)) * 12 +
+                      (? - CAST(strftime('%m', created_at) AS INTEGER)) > 0
+                  )
+                """,
+                (
+                    current_day,
+                    is_last_day_val,
+                    current_day,
+                    current_year,
+                    current_month,
+                ),
             ) as cursor:
                 return [self._row_to_vinculo(row) for row in await cursor.fetchall()]
 
@@ -1105,6 +1185,15 @@ class VinculoRepository:
         vinculos = await self.list_active_vinculos_for_user(guild_id, user_id)
         multiplier = 1.0
 
+        is_eclipse_active = False
+        if settings.eclipse_ends_at:
+            try:
+                eclipse_end = datetime.fromisoformat(settings.eclipse_ends_at)
+                if datetime.now(timezone.utc) < eclipse_end:
+                    is_eclipse_active = True
+            except ValueError:
+                pass
+
         for vinculo in vinculos:
             affinity = self._affinity_for_created_at(vinculo.created_at, settings)
             partner_id = vinculo.partner_id_for(user_id)
@@ -1116,7 +1205,10 @@ class VinculoRepository:
                     window_minutes=XP_RESONANCE_WINDOW_MINUTES,
                 )
                 if resonance.active:
-                    multiplier += affinity.bonus
+                    base_bonus = affinity.bonus
+                    if is_eclipse_active:
+                        base_bonus *= 2.0
+                    multiplier += base_bonus
 
         penalty_delta = await self.get_active_penalty_delta(guild_id, user_id)
         multiplier += penalty_delta
@@ -1438,6 +1530,26 @@ class VinculoRepository:
             event_count=int(rows[0]["event_count"]),
         )
 
+    async def _announce_eclipse(self, bot, guild_id: int, channel_id: int) -> None:
+        """Função auxiliar soberba que propaga sensorialmente o evento de Eclipse."""
+        try:
+            channel = bot.get_channel(channel_id)
+            if isinstance(channel, discord.TextChannel):
+                embed = discord.Embed(
+                    title="🌑 O Eclipse de Baphomet Começou",
+                    description=(
+                        "A **Essência Global** do altar ultrapassou o limiar catastrófico de **50.000** almas retidas. "
+                        "Os céus escurecem e o poder sombrio transborda.\n\n"
+                        "> Durante o crepúsculo das próximas **3 HORAS**, toda a ressonância exibe os seus atributos multiplicados por um fator absoluto de **DOIS**.\n"
+                        "> A afinidade base de cada pacto e fio será brutalmente duplicada durante as vossas interações.\n\n"
+                        "Aproveitem as sombras, mortais. O tempo consome-se a si próprio."
+                    ),
+                    color=discord.Color.from_str("#1a0000")
+                )
+                await channel.send(embed=embed)
+        except Exception as e:
+            LOGGER.error("Falha ao propagar o Eclipse: %s", e)
+
     async def transfer_xp(self, guild_id: int, donor_id: int, receiver_id: int, amount: int) -> TransferResult:
         if donor_id == receiver_id:
             return TransferResult(status="self_transfer")
@@ -1485,6 +1597,30 @@ class VinculoRepository:
                 net_amount = max(0, amount - tax_amount)
                 now = _utc_now_iso()
                 vinculo = self._row_to_vinculo(rows[0])
+
+                if tax_amount > 0:
+                    await conn.execute(
+                        "UPDATE vinculo_guild_settings SET global_essence = global_essence + ? WHERE guild_id = ?",
+                        (tax_amount, guild_id)
+                    )
+
+                    cur_essence_rows = await conn.execute_fetchall(
+                        "SELECT global_essence, gossip_channel_id FROM vinculo_guild_settings WHERE guild_id = ?",
+                        (guild_id,)
+                    )
+                    if cur_essence_rows:
+                        current_essence = int(cur_essence_rows[0]["global_essence"])
+                        gossip_channel_id = cur_essence_rows[0]["gossip_channel_id"]
+
+                        if current_essence >= 50000:
+                            eclipse_end = (datetime.now(timezone.utc) + timedelta(hours=3)).isoformat()
+                            await conn.execute(
+                                "UPDATE vinculo_guild_settings SET global_essence = global_essence - 50000, eclipse_ends_at = ? WHERE guild_id = ?",
+                                (eclipse_end, guild_id)
+                            )
+                            bot = getattr(self, "bot", None)
+                            if bot and gossip_channel_id:
+                                asyncio.create_task(self._announce_eclipse(bot, guild_id, gossip_channel_id))
 
                 await self._ensure_xp_profile_in_tx(conn, guild_id, donor_id, now)
                 await self._ensure_xp_profile_in_tx(conn, guild_id, receiver_id, now)
@@ -1725,6 +1861,7 @@ class VinculoRepository:
             ended_at=str(row["ended_at"]) if row["ended_at"] is not None else None,
             active=bool(row["active"]),
             last_announced_affinity_level=int(row["last_announced_affinity_level"]),
+            is_fused=bool(row["is_fused"]) if "is_fused" in row.keys() else False,
         )
 
     def _row_to_settings(self, row: aiosqlite.Row) -> VinculoGuildSettings:
@@ -1741,6 +1878,8 @@ class VinculoRepository:
             resonance_window_minutes=max(1, int(row["resonance_window_minutes"])),
             resonance_bonus=max(0.0, float(row["resonance_bonus"])),
             daily_request_limit=max(0, int(row["daily_request_limit"])),
+            global_essence=int(row["global_essence"]) if "global_essence" in row.keys() else 0,
+            eclipse_ends_at=str(row["eclipse_ends_at"]) if "eclipse_ends_at" in row.keys() and row["eclipse_ends_at"] is not None else None,
         )
 
     def _row_to_penalty(self, row: aiosqlite.Row) -> PenaltySnapshot:
@@ -1909,95 +2048,165 @@ class VinculosCog(commands.Cog):
         self._request_cooldowns: dict[tuple[int, int], datetime] = {}
 
     async def cog_load(self) -> None:
+        self.repository.bot = self.bot
         await self.repository.connect()
         self.bot.vinculos_runtime = VinculosRuntime(repository=self.repository)
         self.check_vinculo_anniversaries.start()
+        self.contract_reaper_task.start()
 
     def cog_unload(self) -> None:
         self.check_vinculo_anniversaries.cancel()
+        self.contract_reaper_task.cancel()
         if getattr(self.bot, "vinculos_runtime", None) is not None:
             self.bot.vinculos_runtime = None
         self.bot.loop.create_task(self.repository.close())
 
+    @tasks.loop(minutes=30)
+    async def contract_reaper_task(self) -> None:
+        """Saneamento Cíclico (Garbage Collection) de Contratos."""
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            async with self.repository._tx_lock:
+                cursor = await self.repository.connection.execute(
+                    "UPDATE vinculo_contracts SET status = 'failed' WHERE status = 'active' AND expires_at < ?",
+                    (now_iso,)
+                )
+                await self.repository.connection.commit()
+                if cursor.rowcount > 0:
+                    LOGGER.debug("[Contract Reaper] %d contratos foram obliterados pela inércia dos mortais.", cursor.rowcount)
+        except Exception as e:
+            LOGGER.error("Falha intransponível no contract_reaper_task: %s", e, exc_info=True)
+
     @tasks.loop(time=time(hour=15, minute=0, tzinfo=timezone.utc))
     async def check_vinculo_anniversaries(self) -> None:
         """Executa todos os dias às 12:00 BRT para anunciar aniversários de meses/anos de vínculo."""
+        now = datetime.now(timezone.utc)
+        import calendar
+        _, last_day_of_month = calendar.monthrange(now.year, now.month)
+        is_last_day = (now.day == last_day_of_month)
+
         try:
-            active_vinculos = await self.repository.get_all_active_vinculos()
+            candidates = await self.repository.get_anniversary_candidates(
+                current_day=now.day,
+                is_last_day_of_month=is_last_day,
+                current_year=now.year,
+                current_month=now.month,
+            )
         except Exception as e:
-            LOGGER.error("Erro ao buscar vínculos ativos para aniversário: %s", e)
+            LOGGER.error("Erro ao buscar candidatos de aniversário de vínculos: %s", e)
             return
 
-        now = datetime.now(timezone.utc)
-        
-        for vinculo in active_vinculos:
+        for vinculo in candidates:
             try:
                 created_at = datetime.fromisoformat(vinculo.created_at)
-                
-                # Math for months
                 months_diff = (now.year - created_at.year) * 12 + now.month - created_at.month
                 if months_diff <= 0:
                     continue
-                
-                # Tratar dias limites de meses curtos
-                # Se hoje for o último dia do mês atual e o dia de criação for maior que hoje, comemorar hoje.
-                import calendar
-                _, last_day_of_month = calendar.monthrange(now.year, now.month)
-                
+
+                # Garantia adicional de que o dia é correspondente ao aniversário
                 is_anniversary_day = False
                 if now.day == created_at.day:
                     is_anniversary_day = True
                 elif now.day == last_day_of_month and created_at.day > last_day_of_month:
                     is_anniversary_day = True
-                
+
                 if not is_anniversary_day:
                     continue
-                
+
                 guild = self.bot.get_guild(vinculo.guild_id)
                 if guild is None:
                     continue
-                
+
                 settings = await self.repository.get_guild_settings(guild.id)
                 gossip_channel_id = settings.gossip_channel_id
                 if not gossip_channel_id:
+                    LOGGER.info("Guilda %s não possui canal de fofocas configurado para aniversários.", guild.id)
                     continue
-                
+
                 channel = guild.get_channel(gossip_channel_id)
-                if channel is None or not isinstance(channel, discord.TextChannel):
+                if channel is None:
+                    try:
+                        channel = await guild.fetch_channel(gossip_channel_id)
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+                        LOGGER.warning(
+                            "Não foi possível carregar o canal de fofocas %s da guilda %s para aniversário: %s",
+                            gossip_channel_id,
+                            guild.id,
+                            e,
+                        )
+                        continue
+
+                if not isinstance(channel, discord.TextChannel):
+                    LOGGER.warning(
+                        "Canal de fofocas %s da guilda %s não é um canal de texto válido.",
+                        gossip_channel_id,
+                        guild.id,
+                    )
                     continue
-                
-                # Obter membros
+
+                # Verificar permissões do bot no canal
+                permissions = channel.permissions_for(guild.me)
+                if not (permissions.send_messages and permissions.embed_links and permissions.attach_files):
+                    LOGGER.warning(
+                        "Bot sem permissões suficientes (enviar mensagens, links ou arquivos) no canal de fofocas %s da guilda %s",
+                        gossip_channel_id,
+                        guild.id,
+                    )
+                    continue
+
+                # Obter membros do vínculo
                 try:
                     user_a = await guild.fetch_member(vinculo.user_low_id)
                     user_b = await guild.fetch_member(vinculo.user_high_id)
                 except discord.NotFound:
-                    continue # Alguém saiu da guilda
-                
-                time_text = f"{months_diff} Meses!" if months_diff % 12 != 0 else f"{months_diff // 12} Ano{'s' if months_diff // 12 > 1 else ''}!"
-                
-                # Gerar a imagem
-                fp = await self.vinculo_card_renderer.render_anniversary(
+                    LOGGER.info(
+                        "Vínculo %s ignorado no aniversário: um dos membros (low: %s, high: %s) saiu do servidor.",
+                        vinculo.id,
+                        vinculo.user_low_id,
+                        vinculo.user_high_id,
+                    )
+                    continue
+                except discord.HTTPException as e:
+                    LOGGER.error("Erro ao buscar membros para aniversário do vínculo %s: %s", vinculo.id, e)
+                    continue
+
+                # Calcular a duração formatada de forma esteticamente agradável
+                years = months_diff // 12
+                months = months_diff % 12
+                if years > 0 and months > 0:
+                    time_text = f"{years} Ano{'s' if years > 1 else ''} e {months} Mê{'s' if months == 1 else 'ses'}!"
+                elif years > 0:
+                    time_text = f"{years} Ano{'s' if years > 1 else ''}!"
+                else:
+                    time_text = f"{months_diff} Mê{'s' if months_diff == 1 else 'ses'}!"
+
+                metadata = _vinculo_metadata(vinculo.bond_type)
+
+                # Gerar a imagem usando a nova renderização premium de aniversário
+                fp = await self.vinculo_card_renderer.render_vinculo_anniversary_card(
                     participant_a=user_a,
                     participant_b=user_b,
-                    accent=(255, 215, 0),
+                    accent=metadata.render_accent,
                     time_text=time_text,
                     fallback_name_a=user_a.display_name,
                     fallback_name_b=user_b.display_name,
+                    is_fused=vinculo.is_fused,
                 )
-                
+
                 file = discord.File(fp=fp, filename="vinculo_aniversario.png")
-                
+
                 embed = discord.Embed(
                     title="🎉 Aniversário de Vínculo! 🎉",
                     description=f"{user_a.mention} e {user_b.mention} estão comemorando **{time_text}** de pacto firmado!",
-                    color=discord.Color.gold(),
+                    color=discord.Color(metadata.color),
                 )
+                embed.add_field(name="Tipo do Altar", value=f"{metadata.emoji} **{metadata.label}**", inline=True)
                 embed.set_image(url="attachment://vinculo_aniversario.png")
-                
+
                 await channel.send(content=f"{user_a.mention} {user_b.mention}", embed=embed, file=file)
-                
+
             except Exception as e:
-                LOGGER.error("Erro ao processar aniversário para vínculo %s: %s", vinculo.id, e)
+                LOGGER.error("Erro inesperado ao processar aniversário para vínculo %s: %s", vinculo.id, e)
 
     @check_vinculo_anniversaries.before_loop
     async def before_check_vinculo_anniversaries(self) -> None:

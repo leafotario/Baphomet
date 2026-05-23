@@ -16,6 +16,8 @@ class FontManager:
         "regular": "Poppins-Regular.ttf",
         "bold": "Poppins-Bold.ttf",
         "display": "Poppins-Bold.ttf",
+        "futura": "FuturaCEB.otf",
+        "montserrat": "Montserrat-Black.ttf",
     }
 
     def __init__(self, *, strict: bool = False, font_dirs: tuple[Path, ...] | None = None) -> None:

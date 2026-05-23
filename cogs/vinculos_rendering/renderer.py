@@ -59,6 +59,7 @@ class VinculoCardRenderer:
         accent: Color,
         fallback_name_a: str = "Usuario 1",
         fallback_name_b: str = "Usuario 2",
+        is_fused: bool = False,
     ) -> io.BytesIO:
         avatar_a, avatar_b = await asyncio.gather(
             self._read_avatar_bytes(participant_a),
@@ -75,7 +76,10 @@ class VinculoCardRenderer:
             fallback_initials=self._initials(self._display_name(participant_b, fallback_name_b)),
         )
         self._warm_fonts()
-        return await asyncio.to_thread(self._render_sync, data_a, data_b, accent)
+        output = await asyncio.to_thread(self._render_sync, data_a, data_b, accent)
+        if is_fused:
+            output = await asyncio.to_thread(self._render_fused_overlay_sync, output)
+        return output
 
     async def render_anniversary(
         self,
@@ -86,6 +90,7 @@ class VinculoCardRenderer:
         time_text: str,
         fallback_name_a: str = "Usuario 1",
         fallback_name_b: str = "Usuario 2",
+        is_fused: bool = False,
     ) -> io.BytesIO:
         avatar_a, avatar_b = await asyncio.gather(
             self._read_avatar_bytes(participant_a),
@@ -102,7 +107,41 @@ class VinculoCardRenderer:
             fallback_initials=self._initials(self._display_name(participant_b, fallback_name_b)),
         )
         self._warm_fonts()
-        return await asyncio.to_thread(self._render_anniversary_sync, data_a, data_b, accent, time_text)
+        output = await asyncio.to_thread(self._render_anniversary_sync, data_a, data_b, accent, time_text)
+        if is_fused:
+            output = await asyncio.to_thread(self._render_fused_overlay_sync, output)
+        return output
+
+    async def render_vinculo_anniversary_card(
+        self,
+        *,
+        participant_a: discord.Member | discord.User | None,
+        participant_b: discord.Member | discord.User | None,
+        accent: Color,
+        time_text: str,
+        fallback_name_a: str = "Usuario 1",
+        fallback_name_b: str = "Usuario 2",
+        is_fused: bool = False,
+    ) -> io.BytesIO:
+        avatar_a, avatar_b = await asyncio.gather(
+            self._read_avatar_bytes(participant_a),
+            self._read_avatar_bytes(participant_b),
+        )
+        data_a = VinculoParticipantRenderData(
+            display_name=self._display_name(participant_a, fallback_name_a),
+            avatar_bytes=avatar_a,
+            fallback_initials=self._initials(self._display_name(participant_a, fallback_name_a)),
+        )
+        data_b = VinculoParticipantRenderData(
+            display_name=self._display_name(participant_b, fallback_name_b),
+            avatar_bytes=avatar_b,
+            fallback_initials=self._initials(self._display_name(participant_b, fallback_name_b)),
+        )
+        self._warm_fonts()
+        output = await asyncio.to_thread(self._render_vinculo_anniversary_card_sync, data_a, data_b, accent, time_text)
+        if is_fused:
+            output = await asyncio.to_thread(self._render_fused_overlay_sync, output)
+        return output
 
     async def _read_avatar_bytes(self, participant: discord.Member | discord.User | None) -> bytes | None:
         if participant is None:
@@ -137,6 +176,37 @@ class VinculoCardRenderer:
         canvas.convert("RGBA").save(output, format="PNG")
         output.seek(0)
         return output
+
+    def _render_fused_overlay_sync(self, base_output: io.BytesIO) -> io.BytesIO:
+        """Applies the dark red soul fusion overlay asynchronously via thread dispatch."""
+        base_output.seek(0)
+        base_image = Image.open(base_output).convert("RGBA")
+        width, height = base_image.size
+        
+        overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        rng = random.Random()
+        
+        # Draw irregular dark flame polygons along the edges
+        for _ in range(120):
+            x1 = rng.randint(-100, width + 100)
+            y1 = rng.choice([rng.randint(-50, 150), rng.randint(height - 150, height + 50)])
+            size = rng.randint(20, 100)
+            x2 = x1 + rng.randint(-size, size)
+            y2 = y1 + rng.randint(-size, size)
+            x3 = x1 + rng.randint(-size, size)
+            y3 = y1 + rng.randint(-size, size)
+            shade = rng.randint(100, 180)
+            alpha = rng.randint(20, 70)
+            draw.polygon([(x1, y1), (x2, y2), (x3, y3)], fill=(shade, 0, 0, alpha))
+            
+        overlay = overlay.filter(ImageFilter.GaussianBlur(10))
+        final_image = Image.alpha_composite(base_image, overlay)
+        
+        result = io.BytesIO()
+        final_image.save(result, format="PNG")
+        result.seek(0)
+        return result
 
     def _render_anniversary_sync(
         self,
@@ -177,6 +247,90 @@ class VinculoCardRenderer:
             time_text,
             font=font,
             fill=(255, 215, 0, 255) # Gold text
+        )
+
+        output = io.BytesIO()
+        canvas.convert("RGBA").save(output, format="PNG")
+        output.seek(0)
+        return output
+
+    def _render_vinculo_anniversary_card_sync(
+        self,
+        participant_a: VinculoParticipantRenderData,
+        participant_b: VinculoParticipantRenderData,
+        accent: Color,
+        time_text: str,
+    ) -> io.BytesIO:
+        width, height = self.CANVAS_SIZE
+        accent = self._normalize_accent(accent)
+        canvas = self._draw_background(width, height)
+        self._draw_panel(canvas, self.PANEL, accent)
+
+        draw = ImageDraw.Draw(canvas)
+        self._draw_participant(canvas, participant_a, self._avatar_rect("left"), self.LEFT_NAME_BOX, accent)
+        self._draw_participant(canvas, participant_b, self._avatar_rect("right"), self.RIGHT_NAME_BOX, accent)
+        self._draw_center_mark(canvas, self.PLUS_CENTER)
+        self._draw_panel_separators(draw, width)
+
+        # Usar Montserrat-Black para um estilo marcante e premium de aniversário
+        font = self._font(70, "montserrat")
+        text_bbox = self._text_bbox(draw, time_text, font)
+        text_w = self._box_width(text_bbox)
+        text_h = self._box_height(text_bbox)
+
+        text_x = (width - text_w) // 2
+        banner_y = 52
+
+        # Desenhar um background com borda dourada elegante (glassmorphism/glow effect)
+        padding_x = 50
+        padding_y = 22
+        banner_rect = (
+            text_x - padding_x,
+            banner_y - padding_y,
+            text_x + text_w + padding_x,
+            banner_y + text_h + padding_y,
+        )
+        
+        # Sombra sob o banner
+        shadow_offset = 4
+        shadow_rect = (
+            banner_rect[0] + shadow_offset,
+            banner_rect[1] + shadow_offset,
+            banner_rect[2] + shadow_offset,
+            banner_rect[3] + shadow_offset,
+        )
+        draw.rounded_rectangle(shadow_rect, radius=24, fill=(0, 0, 0, 150))
+        
+        # Banner de fundo semi-transparente
+        draw.rounded_rectangle(
+            banner_rect,
+            radius=24,
+            fill=(15, 15, 15, 230),
+            outline=(255, 215, 0, 200),
+            width=4,
+        )
+
+        # Detalhe fino de borda interna
+        inner_border_rect = (
+            banner_rect[0] + 6,
+            banner_rect[1] + 6,
+            banner_rect[2] - 6,
+            banner_rect[3] - 6,
+        )
+        draw.rounded_rectangle(
+            inner_border_rect,
+            radius=18,
+            outline=(218, 165, 32, 80),
+            width=2,
+        )
+
+        # Texto do aniversário
+        self._safe_draw_text(
+            draw,
+            (text_x, banner_y - text_bbox[1]),
+            time_text,
+            font=font,
+            fill=(255, 215, 0, 255),
         )
 
         output = io.BytesIO()

@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from cogs.vinculos import MIN_COMMON_INTEREST_ROLES, VinculoRequestCreation, VinculosCog
+from cogs.vinculos import MIN_COMMON_INTEREST_ROLES, VinculoRequestCreation, VinculosCog, VinculoGuildSettings
 
 
 class VinculoInterestRoleTests(unittest.IsolatedAsyncioTestCase):
@@ -159,6 +159,17 @@ class _FakeVinculoRepository:
     async def create_request(self, **kwargs: object) -> VinculoRequestCreation:
         self.created_requests.append(kwargs)
         return VinculoRequestCreation(status="created", request_id=777)
+
+    async def get_guild_settings(self, guild_id: int) -> VinculoGuildSettings:
+        return VinculoGuildSettings(guild_id=guild_id)
+
+    async def count_recent_requests(self, guild_id: int, requester_id: int) -> int:
+        return 0
+
+    async def log_vinculo_request(
+        self, guild_id: int, requester_id: int, target_id: int, bond_type: str
+    ) -> None:
+        pass
 
 
 class _FakeInteractionResponse:

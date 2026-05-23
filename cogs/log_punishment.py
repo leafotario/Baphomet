@@ -313,42 +313,58 @@ class PunishmentLogs(commands.GroupCog, group_name="logs", group_description="co
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member) -> None:
-        if not self._is_logging_enabled(after.guild.id):
-            return
+        try:
+            if not self._is_logging_enabled(after.guild.id):
+                return
 
-        before_timeout = before.communication_disabled_until
-        after_timeout = after.communication_disabled_until
+            # Uso defensivo de getattr para suportar tanto discord.py (timed_out_until)
+            # quanto antigas versões/forks (communication_disabled_until) de forma resiliente.
+            before_timeout = getattr(before, "timed_out_until", getattr(before, "communication_disabled_until", None))
+            after_timeout = getattr(after, "timed_out_until", getattr(after, "communication_disabled_until", None))
 
-        if before_timeout == after_timeout:
-            return
+            if before_timeout == after_timeout:
+                return
 
-        now = discord.utils.utcnow()
+            now = discord.utils.utcnow()
 
-        # loga apenas quando o membro termina a atualização com timeout ativo.
-        # isso evita logar remoção de timeout.
-        if after_timeout is None or after_timeout <= now:
-            return
+            # Determina o tipo de evento relacionado a timeout
+            is_new_timeout = before_timeout is None and after_timeout is not None and after_timeout > now
+            is_removed_timeout = before_timeout is not None and (after_timeout is None or after_timeout <= now)
+            is_modified_timeout = before_timeout is not None and after_timeout is not None and after_timeout > now and before_timeout != after_timeout
 
-        audit_result = await self._fetch_matching_audit_entry(
-            guild=after.guild,
-            action=discord.AuditLogAction.member_update,
-            target_id=after.id,
-            delay=1.0,
-        )
+            # Se não for nenhum dos três (ex: timeout expirou naturalmente sem update direto), ignorar
+            if not (is_new_timeout or is_removed_timeout or is_modified_timeout):
+                return
+            
+            # Loga apenas adições ou modificações de timeout.
+            # O escopo original do bot foca na *punição*. Mas se desejar logar a remoção, basta adaptar o `if` abaixo.
+            if is_removed_timeout:
+                # Caso deseje logar remoções de timeout no futuro, adicione a lógica aqui.
+                return
 
-        if audit_result.entry and self._was_audit_entry_processed(audit_result.entry.id):
-            return
+            audit_result = await self._fetch_matching_audit_entry(
+                guild=after.guild,
+                action=discord.AuditLogAction.member_update,
+                target_id=after.id,
+                delay=1.0,
+            )
 
-        if audit_result.entry:
-            self._remember_audit_entry(audit_result.entry.id)
+            if audit_result.entry and self._was_audit_entry_processed(audit_result.entry.id):
+                return
 
-        await self._send_punishment_log(
-            guild=after.guild,
-            punishment_type="timeout",
-            punished_user=after,
-            audit_result=audit_result,
-            timeout_until=after_timeout,
-        )
+            if audit_result.entry:
+                self._remember_audit_entry(audit_result.entry.id)
+
+            await self._send_punishment_log(
+                guild=after.guild,
+                punishment_type="timeout",
+                punished_user=after,
+                audit_result=audit_result,
+                timeout_until=after_timeout,
+            )
+
+        except Exception as e:
+            logger.exception("Erro inesperado em on_member_update ao processar timeout do membro %s: %s", after.id, e)
 
     # =========================
     # audit logs
