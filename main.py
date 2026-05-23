@@ -154,6 +154,15 @@ class MyBot(commands.Bot):
             except Exception as exc:
                 log_error(f"Erro ao fechar repositório de vínculos: {exc}")
 
+        motd_db = getattr(self, "motd_db_manager", None)
+        if motd_db is not None:
+            try:
+                log_info("Executando checkpoint do banco de dados MOTD...")
+                await motd_db.close()
+                log_success("Banco MOTD encerrado com sucesso.")
+            except Exception as exc:
+                log_error(f"Erro ao fechar banco MOTD: {exc}")
+
         log_discord("Bot desconectado da API.")
         await super().close()
 

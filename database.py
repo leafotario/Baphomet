@@ -10,6 +10,12 @@ from typing import Any, AsyncIterator, Final
 import aiosqlite
 
 
+LOGGER = logging.getLogger("baphomet.motd_db")
+
+_PROJECT_DIR = Path(__file__).resolve().parent
+_DEFAULT_DB_PATH = _PROJECT_DIR / "data" / "filme_do_dia.sqlite3"
+
+
 DEFAULT_SCHEDULE_TIME: Final[str] = "18:00"
 LIKE_EMOJI_COLUMN: Final[str] = "like_emoji"
 DISLIKE_EMOJI_COLUMN: Final[str] = "dislike_emoji"
@@ -64,8 +70,8 @@ class BlacklistEntry:
 
 
 class DatabaseManager:
-    def __init__(self, db_path: str | Path = "data/filme_do_dia.sqlite3") -> None:
-        self.db_path = Path(db_path)
+    def __init__(self, db_path: str | Path | None = None) -> None:
+        self.db_path = Path(db_path) if db_path is not None else _DEFAULT_DB_PATH
         self._write_lock = asyncio.Lock()
 
     @asynccontextmanager
@@ -90,7 +96,19 @@ class DatabaseManager:
 
     async def init_db(self) -> None:
         try:
+            LOGGER.info(
+                "[MOTD-DB] Inicializando banco de dados em: %s",
+                self.db_path.resolve(),
+            )
+
             async with self._connect() as db:
+                # Registrar estado pré-init para diagnóstico
+                tables_before = await self._list_tables(db)
+                LOGGER.info(
+                    "[MOTD-DB] Tabelas existentes antes do init: %s",
+                    tables_before or "(nenhuma)",
+                )
+
                 async with db.execute(
                     """
                     CREATE TABLE IF NOT EXISTS guild_configs (
@@ -150,9 +168,87 @@ class DatabaseManager:
                     pass
 
                 await db.commit()
+
+                # Validação pós-init
+                tables_after = await self._list_tables(db)
+                LOGGER.info(
+                    "[MOTD-DB] Tabelas após init: %s",
+                    tables_after,
+                )
+                await self._validate_schema(db)
+
+            LOGGER.info("[MOTD-DB] Banco de dados inicializado com sucesso.")
         except Exception:
-            logging.error("Falha ao inicializar o banco de dados.", exc_info=True)
+            LOGGER.error(
+                "[MOTD-DB] Falha CRITICA ao inicializar o banco de dados.",
+                exc_info=True,
+            )
             raise
+
+    async def close(self) -> None:
+        """Executa WAL checkpoint para garantir que todos os dados estão
+        persistidos no arquivo principal do banco antes do shutdown."""
+        try:
+            async with self._connect() as db:
+                async with db.execute("PRAGMA wal_checkpoint(TRUNCATE);") as cursor:
+                    result = await cursor.fetchone()
+                    LOGGER.info(
+                        "[MOTD-DB] WAL checkpoint concluido: %s",
+                        tuple(result) if result else "OK",
+                    )
+            LOGGER.info("[MOTD-DB] Banco de dados encerrado com seguranca.")
+        except Exception:
+            LOGGER.error(
+                "[MOTD-DB] Erro ao executar checkpoint de shutdown.",
+                exc_info=True,
+            )
+
+    @staticmethod
+    async def _list_tables(db: aiosqlite.Connection) -> list[str]:
+        async with db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [str(row[0]) for row in rows]
+
+    @staticmethod
+    async def _validate_schema(db: aiosqlite.Connection) -> None:
+        expected_tables = {
+            "guild_configs",
+            "movie_blacklist",
+            "motd_history",
+            "motd_queue",
+        }
+        actual_tables = set(await DatabaseManager._list_tables(db))
+        missing_tables = expected_tables - actual_tables
+        if missing_tables:
+            LOGGER.error(
+                "[MOTD-DB] ALERTA: Tabelas esperadas nao encontradas: %s",
+                missing_tables,
+            )
+        else:
+            LOGGER.info("[MOTD-DB] Validacao de schema OK — todas as tabelas presentes.")
+
+        # Validar colunas de guild_configs
+        async with db.execute("PRAGMA table_info(guild_configs);") as cursor:
+            rows = await cursor.fetchall()
+        columns = {str(row["name"]) for row in rows}
+        expected_columns = {
+            "guild_id", "channel_id", "role_id", "schedule_time",
+            "is_active", "like_emoji", "dislike_emoji",
+            "never_watched_emoji", "recap_active", "recap_time",
+        }
+        missing_columns = expected_columns - columns
+        if missing_columns:
+            LOGGER.error(
+                "[MOTD-DB] ALERTA: Colunas faltantes em guild_configs: %s",
+                missing_columns,
+            )
+        else:
+            LOGGER.info(
+                "[MOTD-DB] guild_configs OK — %d colunas presentes.",
+                len(columns),
+            )
 
     @staticmethod
     async def _ensure_guild_config_columns(db: aiosqlite.Connection) -> None:
@@ -294,7 +390,7 @@ class DatabaseManager:
                         await db.rollback()
                         raise
         except Exception:
-            logging.error(
+            LOGGER.error(
                 "Falha ao gravar configuracao da guild_id=%s.",
                 guild_id,
                 exc_info=True,
@@ -399,7 +495,7 @@ class DatabaseManager:
                 recap_time=str(row["recap_time"]) if row["recap_time"] is not None else "18:00",
             )
         except Exception:
-            logging.error(
+            LOGGER.error(
                 "Falha ao buscar configuracao da guild_id=%s.",
                 guild_id,
                 exc_info=True,
@@ -440,7 +536,7 @@ class DatabaseManager:
                         await db.rollback()
                         raise
         except Exception:
-            logging.error(
+            LOGGER.error(
                 "Falha ao adicionar tmdb_id=%s na blacklist da guild_id=%s.",
                 tmdb_id,
                 guild_id,
@@ -472,7 +568,7 @@ class DatabaseManager:
                         await db.rollback()
                         raise
         except Exception:
-            logging.error(
+            LOGGER.error(
                 "Falha ao remover tmdb_id=%s da blacklist da guild_id=%s.",
                 tmdb_id,
                 guild_id,
@@ -497,7 +593,7 @@ class DatabaseManager:
 
             return row is not None
         except Exception:
-            logging.error(
+            LOGGER.error(
                 "Falha ao validar blacklist tmdb_id=%s guild_id=%s.",
                 tmdb_id,
                 guild_id,
@@ -537,7 +633,7 @@ class DatabaseManager:
                 for row in rows
             ]
         except Exception:
-            logging.error(
+            LOGGER.error(
                 "Falha ao listar blacklist da guild_id=%s.",
                 guild_id,
                 exc_info=True,
@@ -583,7 +679,7 @@ class DatabaseManager:
                         await db.rollback()
                         raise
         except Exception:
-            logging.error(
+            LOGGER.error(
                 "Falha ao adicionar historico MOTD para guild_id=%s.",
                 guild_id,
                 exc_info=True,
@@ -615,7 +711,7 @@ class DatabaseManager:
                 ) for row in rows
             ]
         except Exception:
-            logging.error(
+            LOGGER.error(
                 "Falha ao buscar historico MOTD para guild_id=%s.",
                 guild_id,
                 exc_info=True,
@@ -657,7 +753,7 @@ class DatabaseManager:
                         await db.rollback()
                         raise
         except Exception:
-            logging.error(
+            LOGGER.error(
                 "Falha ao adicionar na fila MOTD tmdb_id=%s guild_id=%s.",
                 tmdb_id,
                 guild_id,
@@ -697,7 +793,7 @@ class DatabaseManager:
                 for row in rows
             ]
         except Exception:
-            logging.error(
+            LOGGER.error(
                 "Falha ao listar fila MOTD guild_id=%s.",
                 guild_id,
                 exc_info=True,
@@ -755,7 +851,7 @@ class DatabaseManager:
                         await db.rollback()
                         raise
         except Exception:
-            logging.error(
+            LOGGER.error(
                 "Falha ao remover item da fila MOTD guild_id=%s.",
                 guild_id,
                 exc_info=True,
@@ -779,7 +875,7 @@ class DatabaseManager:
 
             return row is not None
         except Exception:
-            logging.error(
+            LOGGER.error(
                 "Falha ao validar fila MOTD tmdb_id=%s guild_id=%s.",
                 tmdb_id,
                 guild_id,

@@ -65,6 +65,7 @@ class MovieCog(commands.Cog):
 
     async def cog_load(self) -> None:
         await self.db_manager.init_db()
+        self.bot.motd_db_manager = self.db_manager
         if not self.scheduler.running:
             self.scheduler.start()
         LOGGER.info("MovieCog inicializado com APScheduler em %s.", SCHEDULER_TIMEZONE)
@@ -73,6 +74,7 @@ class MovieCog(commands.Cog):
         if self.scheduler.running:
             self.scheduler.shutdown(wait=False)
         await self.tmdb_client.close()
+        await self.db_manager.close()
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:

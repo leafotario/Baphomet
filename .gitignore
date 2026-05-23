@@ -3,6 +3,8 @@ token.json
 client_secret.json
 venv/
 __pycache__/
-data/tier_templates.sqlite3*
-data/assets/tier_templates/
+data/*.sqlite3
+data/*.sqlite3-wal
+data/*.sqlite3-shm
+data/*.db
 .cache
