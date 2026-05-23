@@ -1,129 +1,74 @@
 import asyncio
+import uuid
+import time
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from core_db_transaction import BaphometTransactionManager, SacrificeValidationError
-from occult_ui_framework import AbyssalRNG, SacrificialView
+from occult_ui_framework import AbyssalRNG
 
-class AbyssCrashView(SacrificialView):
-    def __init__(self, author_id: int, tx_manager: BaphometTransactionManager, escrow_id: int, aposta: int, rng: AbyssalRNG, bot_loop: asyncio.AbstractEventLoop):
-        super().__init__(author_id)
+class AbyssCrashView(discord.ui.View):
+    def __init__(self, tx_manager: BaphometTransactionManager, session_id: str):
+        super().__init__(timeout=None)
         self.tx_manager = tx_manager
-        self.escrow_id = escrow_id
-        self.aposta = aposta
-        self.rng = rng
-        self.is_finalized = False
+        self.session_id = session_id
         
-        # Fórmulas Matemáticas da Colisão do Poço (Curva de Pareto adaptada)
-        u = self.rng.generate_float()
-        # Se u for 0, o crash é imediato (1.0). Limitamos a curva p/ evitar crash infinito e lidamos c/ a casa.
-        # Pareto: x_m / (1 - u)^(1/alpha). Adaptado: x_m = 1.0, alpha=1.
-        raw_crash = 1.0 / (1.0 - u)
-        
-        # Aplica a borda estática p/ proteger a banca (ex: casa puxa o teto pra baixo)
-        self.crash_point = self.rng.calculate_house_edge(1.0, raw_crash, 0.05)
-        if self.crash_point < 1.0:
-            self.crash_point = 1.0
-            
-        self.current_multiplier = 1.0
-        self.interaction_message: discord.Message | None = None
-        
-        # Gera o ciclo autônomo. Salva a referência para cancelá-lo em caso de fuga
-        self.crash_task = bot_loop.create_task(self._crash_loop())
+        btn = discord.ui.Button(label="Escapar (Cashout)", style=discord.ButtonStyle.success, custom_id=f"crash:esc:{self.session_id}")
+        btn.callback = self.escape_btn
+        self.add_item(btn)
 
-    async def _crash_loop(self):
-        """Ciclo assíncrono iterativo focado em varrer a contagem exponencial."""
-        try:
-            # Aguarda a mensagem ser injetada primeiro
-            await asyncio.sleep(2.0)
-            
-            while not self.is_finalized:
-                # Interrupção temporal estrita de 1.2s para mitigar Rate Limits da API
-                await asyncio.sleep(1.2)
-                
-                # Crescimento exponencial assustador (mas calculável visualmente)
-                growth = 0.1 * (self.current_multiplier ** 1.1)
-                self.current_multiplier += max(0.1, growth)
-                
-                # Checa a colisão mecânica (Teto atingido)
-                if self.current_multiplier >= self.crash_point:
-                    self.current_multiplier = self.crash_point
-                    await self._execute_crash()
-                    break
-                
-                # Substitui recursivamente o texto de aviso
-                if self.interaction_message and not self.is_finalized:
-                    embed = self.interaction_message.embeds[0]
-                    embed.description = f"O abismo começa a se abrir... **[{self.current_multiplier:.2f}x]**\nAssista à força do motor puxando você."
-                    embed.color = 0xFFFF00 # Yellow warning
-                    try:
-                        await self.interaction_message.edit(embed=embed, view=self)
-                    except discord.errors.NotFound:
-                        break # Mensagem deletada, aborta loop
-
-        except asyncio.CancelledError:
-            # Task foi interrompida com sucesso pela fuga
-            pass
-        except Exception:
-            pass
-
-    async def _execute_crash(self):
-        """Dispara a obliteração quando o limite de Pareto é atingido antes da Fuga."""
-        if self.is_finalized:
-            return
-            
-        self.is_finalized = True
-        try:
-            await self.tx_manager.resolve_escrow(self.escrow_id, 0)
-            
-            if self.interaction_message:
-                embed = self.interaction_message.embeds[0]
-                embed.description = f"COLAPSO ESTRUTURAL! O abismo fechou suas mandíbulas em **[{self.crash_point:.2f}x]**.\nTodo o sacrifício foi obliterado antes que você pudesse gritar."
-                embed.color = 0x8B0000
-                embed.clear_fields()
-                embed.add_field(name="Retorno", value="0 XP (Devorado)", inline=False)
-                
-                # Injeta a instrução final de disable e edit_original
-                for child in self.children:
-                    if hasattr(child, 'disabled'):
-                        child.disabled = True
-                await self.interaction_message.edit(embed=embed, view=self)
-        except Exception:
-            pass
-
-    @discord.ui.button(label="Escapar (Cashout)", style=discord.ButtonStyle.success)
-    async def escape_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        """Gatilho primário que interrompe o fluxo repetitivo da thread (fuga)."""
+    async def escape_btn(self, interaction: discord.Interaction):
         await interaction.response.defer()
         
-        if self.is_finalized:
-            return
+        async with self.tx_manager.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT s.escrow_id, s.user_id, s.current_multiplier, s.is_finalized, e.bet_amount "
+                "FROM abyss_crash_state s "
+                "JOIN escrows e ON s.escrow_id = e.escrow_id "
+                "WHERE s.session_id = ?", (self.session_id,)
+            )
+            state = await cursor.fetchone()
             
-        self.is_finalized = True
-        # Interrompe a Task secundária instantaneamente
-        if not self.crash_task.done():
-            self.crash_task.cancel()
+            if not state or state["is_finalized"]:
+                await interaction.followup.send("O abismo já devorou tudo ou a fuga já foi selada.", ephemeral=True)
+                return
+                
+            if interaction.user.id != state["user_id"]:
+                await interaction.followup.send("Sua alma não foi convidada para este pacto", ephemeral=True)
+                return
+                
+            escrow_id = state["escrow_id"]
+            aposta = state["bet_amount"]
+            current_multiplier = state["current_multiplier"]
             
-        try:
-            # Lucro aferido no momento exato do clique
-            final_payout = int(self.aposta * self.current_multiplier)
-            await self.tx_manager.resolve_escrow(self.escrow_id, final_payout)
+            # Finaliza o jogo atômico no SQL
+            await conn.execute("UPDATE abyss_crash_state SET is_finalized = 1 WHERE session_id = ?", (self.session_id,))
+            await conn.execute("DELETE FROM active_games_state WHERE session_id = ?", (self.session_id,))
+            await conn.commit()
+            
+            final_payout = int(aposta * current_multiplier)
+            await self.tx_manager.resolve_escrow(escrow_id, final_payout)
             
             embed = interaction.message.embeds[0]
-            embed.description = f"Você saltou no vazio no momento exato: **[{self.current_multiplier:.2f}x]**!\nUma faísca de sanidade preservou sua vida antes do teto de colisão (que ocorreria em {self.crash_point:.2f}x)."
+            embed.description = f"Você saltou no vazio no momento exato: **[{current_multiplier:.2f}x]**!\nUma faísca de sanidade preservou sua vida."
             embed.color = 0x00FF00
             embed.clear_fields()
             embed.add_field(name="Vitalidade Resgatada", value=f"{final_payout} XP", inline=False)
             
-            await self.finalize_view(interaction)
-        except Exception:
-            pass
-
+            for child in self.children:
+                child.disabled = True
+                
+            await interaction.edit_original_response(embed=embed, view=self)
 
 class AbyssCrashCog(commands.Cog):
     def __init__(self, bot, tx_manager: BaphometTransactionManager):
         self.bot = bot
         self.tx_manager = tx_manager
         self.rng = AbyssalRNG()
+        self._message_cache = {}
+        self.crash_updater_task.start()
+
+    def cog_unload(self):
+        self.crash_updater_task.cancel()
 
     @commands.hybrid_command(name="crash_abissal", description="Encare a colisão de Pareto. Escape com seus lucros ou morra na queda.")
     async def crash_abissal(self, ctx: commands.Context, aposta: int):
@@ -133,6 +78,15 @@ class AbyssCrashCog(commands.Cog):
             await ctx.send(f"Recusa do Pacto: {e}", ephemeral=True)
             return
 
+        session_id = str(uuid.uuid4())
+        expires = time.time() + 600.0 # 10 mins máximo
+        
+        u = self.rng.generate_float()
+        raw_crash = 1.0 / (1.0 - u)
+        crash_point = self.rng.calculate_house_edge(1.0, raw_crash, 0.05)
+        if crash_point < 1.0:
+            crash_point = 1.0
+
         embed = discord.Embed(
             title="Colapso Abissal",
             description="O abismo começa a se abrir... **[1.00x]**\nAssista à força do motor puxando você.",
@@ -140,12 +94,114 @@ class AbyssCrashCog(commands.Cog):
         )
         embed.add_field(name="Tributo Ancorado", value=f"{aposta} XP", inline=True)
         
-        view = AbyssCrashView(ctx.author.id, self.tx_manager, escrow_id, aposta, self.rng, self.bot.loop)
+        view = AbyssCrashView(self.tx_manager, session_id)
+        self.bot.add_view(view)
         
-        # Envia a mensagem original e ancora na view para edições do loop
-        message = await ctx.send(embed=embed, view=view)
-        view.interaction_message = message
+        msg = await ctx.send(embed=embed, view=view)
+        self._message_cache[session_id] = msg
+        
+        async with self.tx_manager.connection() as conn:
+            await conn.execute(
+                "INSERT INTO active_games_state (session_id, game_type, channel_id, guild_id, message_id, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, "crash", ctx.channel.id, ctx.guild.id, msg.id, expires)
+            )
+            await conn.execute(
+                "INSERT INTO abyss_crash_state (session_id, escrow_id, user_id, crash_point, current_multiplier, is_finalized) VALUES (?, ?, ?, ?, ?, 0)",
+                (session_id, escrow_id, ctx.author.id, crash_point, 1.0)
+            )
+            await conn.commit()
+
+    @tasks.loop(seconds=1.5)
+    async def crash_updater_task(self):
+        async with self.tx_manager.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT s.session_id, s.crash_point, s.current_multiplier, s.is_finalized, "
+                "g.channel_id, g.message_id, e.bet_amount "
+                "FROM abyss_crash_state s "
+                "JOIN active_games_state g ON s.session_id = g.session_id "
+                "JOIN escrows e ON s.escrow_id = e.escrow_id "
+                "WHERE s.is_finalized = 0"
+            )
+            active_crashes = await cursor.fetchall()
+            
+            if not active_crashes:
+                return
+
+            for crash in active_crashes:
+                session_id = crash["session_id"]
+                crash_point = crash["crash_point"]
+                multiplier = crash["current_multiplier"]
+                channel_id = crash["channel_id"]
+                message_id = crash["message_id"]
+                
+                growth = 0.1 * (multiplier ** 1.1)
+                new_multiplier = multiplier + max(0.1, growth)
+                
+                has_crashed = new_multiplier >= crash_point
+                if has_crashed:
+                    new_multiplier = crash_point
+
+                if has_crashed:
+                    await conn.execute("UPDATE abyss_crash_state SET is_finalized = 1 WHERE session_id = ?", (session_id,))
+                    await conn.execute("DELETE FROM active_games_state WHERE session_id = ?", (session_id,))
+                else:
+                    await conn.execute("UPDATE abyss_crash_state SET current_multiplier = ? WHERE session_id = ?", (new_multiplier, session_id))
+                
+                await conn.commit()
+
+                # Fetch Message
+                msg = self._message_cache.get(session_id)
+                if not msg:
+                    channel = self.bot.get_channel(channel_id)
+                    if channel:
+                        try:
+                            msg = await channel.fetch_message(message_id)
+                            self._message_cache[session_id] = msg
+                        except Exception:
+                            pass
+
+                if msg:
+                    embed = msg.embeds[0]
+                    if has_crashed:
+                        try:
+                            cursor = await conn.execute("SELECT escrow_id FROM abyss_crash_state WHERE session_id = ?", (session_id,))
+                            state_row = await cursor.fetchone()
+                            if state_row:
+                                await self.tx_manager.resolve_escrow(state_row["escrow_id"], 0)
+                        except Exception:
+                            pass
+
+                        embed.description = f"COLAPSO ESTRUTURAL! O abismo fechou suas mandíbulas em **[{crash_point:.2f}x]**.\nTodo o sacrifício foi obliterado antes que você pudesse gritar."
+                        embed.color = 0x8B0000
+                        embed.clear_fields()
+                        embed.add_field(name="Retorno", value="0 XP (Devorado)", inline=False)
+                        
+                        view = discord.ui.View() # view vazia (remove botões)
+                        try:
+                            await msg.edit(embed=embed, view=view)
+                        except Exception:
+                            pass
+                    else:
+                        embed.description = f"O abismo começa a se abrir... **[{new_multiplier:.2f}x]**\nAssista à força do motor puxando você."
+                        embed.color = 0xFFFF00
+                        try:
+                            await msg.edit(embed=embed)
+                        except Exception:
+                            pass
+
+    @crash_updater_task.before_loop
+    async def before_crash_updater(self):
+        await self.bot.wait_until_ready()
 
 async def setup(bot):
     if hasattr(bot, 'tx_manager'):
-        await bot.add_cog(AbyssCrashCog(bot, bot.tx_manager))
+        cog = AbyssCrashCog(bot, bot.tx_manager)
+        await bot.add_cog(cog)
+        
+        import time
+        async with bot.tx_manager.connection() as conn:
+            cursor = await conn.execute("SELECT session_id FROM active_games_state WHERE game_type = 'crash' AND expires_at > ?", (time.time(),))
+            sessions = await cursor.fetchall()
+            for row in sessions:
+                view = AbyssCrashView(bot.tx_manager, row["session_id"])
+                bot.add_view(view)

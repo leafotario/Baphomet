@@ -63,6 +63,59 @@ class BaphometTransactionManager:
                     created_at REAL NOT NULL
                 );
             """)
+
+            # Novas Tabelas de Persistência Global do Cassino
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS casino_configs (
+                    game_id TEXT PRIMARY KEY,
+                    min_bet INTEGER DEFAULT 1,
+                    max_bet INTEGER DEFAULT 1000000,
+                    house_edge REAL DEFAULT 0.05,
+                    is_enabled BOOLEAN DEFAULT 1
+                );
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS active_games_state (
+                    session_id TEXT PRIMARY KEY,
+                    game_type TEXT NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    guild_id INTEGER NOT NULL,
+                    message_id INTEGER DEFAULT NULL,
+                    expires_at REAL NOT NULL
+                );
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS labyrinth_cells (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    x_idx INTEGER NOT NULL,
+                    y_idx INTEGER NOT NULL,
+                    is_mine BOOLEAN NOT NULL,
+                    is_revealed BOOLEAN DEFAULT 0,
+                    FOREIGN KEY (session_id) REFERENCES active_games_state (session_id) ON DELETE CASCADE
+                );
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS black_flames_participants (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    escrow_id INTEGER NOT NULL,
+                    amount INTEGER NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES active_games_state (session_id) ON DELETE CASCADE
+                );
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS abyss_crash_state (
+                    session_id TEXT PRIMARY KEY,
+                    escrow_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    crash_point REAL NOT NULL,
+                    current_multiplier REAL DEFAULT 1.0,
+                    is_finalized BOOLEAN DEFAULT 0,
+                    FOREIGN KEY (session_id) REFERENCES active_games_state (session_id) ON DELETE CASCADE
+                );
+            """)
             await conn.commit()
 
         self._is_ready = True
