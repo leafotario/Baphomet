@@ -137,19 +137,19 @@ class SoulJudgementCog(commands.Cog):
         self.tx_manager = tx_manager
         self.rng = AbyssalRNG()
 
-    @commands.hybrid_command(name="blackjack", description="O Julgamento da Alma. Acumule unidades sem quebrar as leis herméticas.")
-    async def blackjack(self, ctx: commands.Context, aposta: int):
+    async def play_blackjack(self, interaction: discord.Interaction, aposta: int):
+        await interaction.response.defer()
         try:
-            escrow_id = await self.tx_manager.create_escrow(ctx.author.id, ctx.guild.id, aposta)
+            escrow_id = await self.tx_manager.create_escrow(interaction.user.id, interaction.guild_id, aposta)
         except SacrificeValidationError as e:
-            await ctx.send(f"Recusa do Pacto: {e}", ephemeral=True)
+            await interaction.followup.send(f"Recusa do Pacto: {e}", ephemeral=True)
             return
 
-        view = SoulJudgementView(ctx.author.id, self.tx_manager, escrow_id, aposta, self.rng)
+        view = SoulJudgementView(interaction.user.id, self.tx_manager, escrow_id, aposta, self.rng)
         embed = view.build_embed()
         embed.add_field(name="Tributo Ancorado", value=f"{aposta} XP", inline=False)
         
-        await ctx.send(embed=embed, view=view)
+        await interaction.followup.send(embed=embed, view=view)
 
 async def setup(bot):
     if hasattr(bot, 'tx_manager'):

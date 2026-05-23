@@ -9,14 +9,13 @@ class WheelOfTormentCog(commands.Cog):
         self.tx_manager = tx_manager
         self.rng = AbyssalRNG()
 
-    @commands.hybrid_command(name="macabra", description="Gire a Roda do Tormento. Escolhas secretas e consequências mortais.")
-    async def macabra(self, ctx: commands.Context, aposta: int):
+    async def play_macabra(self, interaction: discord.Interaction, aposta: int):
         """Simulação linear de escolhas (0 a 5) com impacto na vitalidade."""
+        await interaction.response.defer()
         try:
-            # Estabelecimento atômico do Escrow antes de engatilhar o RNG
-            escrow_id = await self.tx_manager.create_escrow(ctx.author.id, ctx.guild.id, aposta)
+            escrow_id = await self.tx_manager.create_escrow(interaction.user.id, interaction.guild_id, aposta)
         except SacrificeValidationError as e:
-            await ctx.send(f"Recusa do Pacto: {e}", ephemeral=True)
+            await interaction.followup.send(f"Recusa do Pacto: {e}", ephemeral=True)
             return
 
         choice = self.rng.generate_int(0, 5)
@@ -45,7 +44,7 @@ class WheelOfTormentCog(commands.Cog):
         embed.add_field(name="Retorno Kármico", value=f"{payout} XP", inline=True)
         embed.set_footer(text=f"A entidade cravou o vetor {choice}")
         
-        await ctx.send(embed=embed)
+        await interaction.followup.send(embed=embed)
 
 async def setup(bot):
     if hasattr(bot, 'tx_manager'):

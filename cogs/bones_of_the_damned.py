@@ -58,16 +58,16 @@ class BonesOfTheDamnedCog(commands.Cog):
         self.tx_manager = tx_manager
         self.rng = AbyssalRNG()
 
-    @commands.hybrid_command(name="ossos", description="Invoque os ossos dos condenados e enfrente as probabilidades do submundo.")
-    async def ossos(self, ctx: commands.Context, aposta: int):
+    async def play_ossos(self, interaction: discord.Interaction, aposta: int, faces: int):
+        await interaction.response.defer()
         try:
-            escrow_id = await self.tx_manager.create_escrow(ctx.author.id, ctx.guild.id, aposta)
+            escrow_id = await self.tx_manager.create_escrow(interaction.user.id, interaction.guild_id, aposta)
         except SacrificeValidationError as e:
-            await ctx.send(f"Recusa do Pacto: {e}", ephemeral=True)
+            await interaction.followup.send(f"Recusa do Pacto: {e}", ephemeral=True)
             return
 
-        d1 = self.rng.generate_int(1, 6)
-        d2 = self.rng.generate_int(1, 6)
+        d1 = self.rng.generate_int(1, faces)
+        d2 = self.rng.generate_int(1, faces)
         total = d1 + d2
         
         embed = discord.Embed(title="Os Ossos dos Condenados", color=0x8B0000)
@@ -80,18 +80,18 @@ class BonesOfTheDamnedCog(commands.Cog):
             embed.description = f"Soma macabra inicial: **{total}**. A sorte dos decaídos sorri para você. Vitória iminente liberada."
             embed.add_field(name="Retorno Final", value=f"{payout} XP", inline=False)
             await self.tx_manager.resolve_escrow(escrow_id, payout)
-            await ctx.send(embed=embed)
+            await interaction.followup.send(embed=embed)
             
         elif total in (2, 3, 12):
             embed.description = f"Ruína absoluta atingida na primeira invocação: **{total}**. Baphomet recolhe seus ossos. Valores retidos a zero."
             embed.add_field(name="Retorno Final", value=f"{payout} XP", inline=False)
             await self.tx_manager.resolve_escrow(escrow_id, payout)
-            await ctx.send(embed=embed)
+            await interaction.followup.send(embed=embed)
             
         else:
             embed.description = f"Um alvo de sangue foi selado: **{total}**. O rito exige novos lançamentos incessantes."
-            view = BonesNextThrowView(ctx.author.id, self.tx_manager, escrow_id, aposta, total, self.rng)
-            await ctx.send(embed=embed, view=view)
+            view = BonesNextThrowView(interaction.user.id, self.tx_manager, escrow_id, aposta, total, self.rng)
+            await interaction.followup.send(embed=embed, view=view)
 
 async def setup(bot):
     if hasattr(bot, 'tx_manager'):

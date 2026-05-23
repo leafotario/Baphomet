@@ -74,6 +74,10 @@ class BaphometTransactionManager:
                     is_enabled BOOLEAN DEFAULT 1
                 );
             """)
+            games = ["crash_abissal", "labirinto", "danca_negras", "pacto_cego", "oraculo", "ossos", "blackjack", "leviata", "pesados_pecados", "macabra"]
+            for game in games:
+                await conn.execute("INSERT OR IGNORE INTO casino_configs (game_id, min_bet) VALUES (?, 100)", (game,))
+
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS active_games_state (
                     session_id TEXT PRIMARY KEY,
@@ -138,7 +142,20 @@ class BaphometTransactionManager:
         finally:
             await self._pool.put(conn)
 
-    async def create_escrow(self, user_id: int, guild_id: int, bet_amount: int) -> int:
+    async def get_casino_config(self, game_id: str) -> dict:
+        async with self.connection() as conn:
+            cursor = await conn.execute("SELECT min_bet, max_bet, house_edge, is_enabled FROM casino_configs WHERE game_id = ?", (game_id,))
+            row = await cursor.fetchone()
+            if row:
+                return dict(row)
+            return {"min_bet": 100, "max_bet": 1000000, "house_edge": 0.05, "is_enabled": 1}
+
+    async def update_casino_min_bet(self, game_id: str, min_bet: int) -> None:
+        async with self.connection() as conn:
+            await conn.execute("UPDATE casino_configs SET min_bet = ? WHERE game_id = ?", (min_bet, game_id))
+            await conn.commit()
+
+    async def _resolve_vinculo_context(self, user_id: int, guild_id: int, tx: aiosqlite.Connection) -> dict:
         """
         Processamento sob instrução BEGIN IMMEDIATE garantindo travas globais de linha
         (Row-Level Locking). Executado de maneira atômica e segura.

@@ -79,12 +79,12 @@ class BlindPactCog(commands.Cog):
         self.tx_manager = tx_manager
         self.rng = AbyssalRNG()
 
-    @commands.hybrid_command(name="pacto_cego", description="Matriz informacional oculta. Escolha seu carrasco e receba seu destino.")
-    async def pacto_cego(self, ctx: commands.Context, aposta: int):
+    async def play_pacto_cego(self, interaction: discord.Interaction, aposta: int):
+        await interaction.response.defer()
         try:
-            escrow_id = await self.tx_manager.create_escrow(ctx.author.id, ctx.guild.id, aposta)
+            escrow_id = await self.tx_manager.create_escrow(interaction.user.id, interaction.guild_id, aposta)
         except SacrificeValidationError as e:
-            await ctx.send(f"Recusa do Pacto: {e}", ephemeral=True)
+            await interaction.followup.send(f"Recusa do Pacto: {e}", ephemeral=True)
             return
 
         embed = discord.Embed(
@@ -94,8 +94,8 @@ class BlindPactCog(commands.Cog):
         )
         embed.add_field(name="Tributo Aprisionado (Escrow)", value=f"{aposta} XP", inline=False)
         
-        view = BlindPactView(ctx.author.id, self.tx_manager, escrow_id, aposta, self.rng)
-        await ctx.send(embed=embed, view=view)
+        view = BlindPactView(interaction.user.id, self.tx_manager, escrow_id, aposta, self.rng)
+        await interaction.followup.send(embed=embed, view=view)
 
 async def setup(bot):
     if hasattr(bot, 'tx_manager'):

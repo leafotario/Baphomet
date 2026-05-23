@@ -191,21 +191,35 @@ class LabyrinthCog(commands.Cog):
         self.tx_manager = tx_manager
         self.rng = AbyssalRNG()
 
-    @commands.hybrid_command(name="labirinto", description="Navegação em grade. Encontre caminhos seguros ou ative as minas letais.")
-    async def labirinto(self, ctx: commands.Context, aposta: int):
+    async def play_labirinto(self, interaction: discord.Interaction, aposta: int):
+        await interaction.response.defer()
         try:
-            escrow_id = await self.tx_manager.create_escrow(ctx.author.id, ctx.guild.id, aposta)
+            escrow_id = await self.tx_manager.create_escrow(interaction.user.id, interaction.guild_id, aposta)
         except SacrificeValidationError as e:
-            await ctx.send(f"Recusa do Pacto: {e}", ephemeral=True)
+            await interaction.followup.send(f"Acesso Negado: {e}", ephemeral=True)
             return
 
         session_id = str(uuid.uuid4())
         
+        view = BaphometsLabyrinthView(self.tx_manager, session_id, self.rng)
+        await view.initialize_grid()
+        
+        embed = discord.Embed(
+            title="O Labirinto de Baphomet",
+            description="Dezesseis selos obscuros à sua frente. Pisos seguros multiplicam sua alma, bestas escondidas a aniquilam de imediato.",
+            color=0x2b2d31
+        )
+        embed.add_field(name="Tributo Ancorado", value=f"{aposta} XP", inline=False)
+        
+        msg = await interaction.followup.send(embed=embed, view=view)
+        
         async with self.tx_manager.connection() as conn:
             import time
             expires = time.time() + 3600 # 1 Hora para jogar
-            await conn.execute("INSERT INTO active_games_state (session_id, game_type, channel_id, guild_id, expires_at) VALUES (?, ?, ?, ?, ?)", (session_id, "labirinto", ctx.channel.id, ctx.guild.id, expires))
-            
+            await conn.execute(
+                "INSERT INTO active_games_state (session_id, game_type, channel_id, guild_id, message_id, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, "labirinto", interaction.channel_id, interaction.guild_id, msg.id, expires)
+            )
             total_mines = 4
             vector = [True] * total_mines + [False] * (16 - total_mines)
             shuffled = []

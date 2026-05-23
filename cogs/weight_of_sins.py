@@ -103,12 +103,12 @@ class WeightOfSinsCog(commands.Cog):
         self.tx_manager = tx_manager
         self.rng = AbyssalRNG()
 
-    @commands.hybrid_command(name="pesados_pecados", description="Aposte no peso dos pecados. Push your luck infinito com dízimo escalar crescente.")
-    async def pesados_pecados(self, ctx: commands.Context, aposta: int):
+    async def play_pesados_pecados(self, interaction: discord.Interaction, aposta: int):
+        await interaction.response.defer()
         try:
-            escrow_id = await self.tx_manager.create_escrow(ctx.author.id, ctx.guild.id, aposta)
+            escrow_id = await self.tx_manager.create_escrow(interaction.user.id, interaction.guild_id, aposta)
         except SacrificeValidationError as e:
-            await ctx.send(f"Recusa do Pacto: {e}", ephemeral=True)
+            await interaction.followup.send(f"Recusa do Pacto: {e}", ephemeral=True)
             return
 
         embed = discord.Embed(
@@ -119,8 +119,8 @@ class WeightOfSinsCog(commands.Cog):
         embed.add_field(name="Tributo Aprisionado", value=f"{aposta} XP", inline=True)
         embed.add_field(name="Múltiplo Inicial", value="1.00x", inline=True)
         
-        view = WeightOfSinsView(ctx.author.id, self.tx_manager, escrow_id, aposta, self.rng)
-        await ctx.send(embed=embed, view=view)
+        view = WeightOfSinsView(interaction.user.id, self.tx_manager, escrow_id, aposta, self.rng)
+        await interaction.followup.send(embed=embed, view=view)
 
 async def setup(bot):
     if hasattr(bot, 'tx_manager'):

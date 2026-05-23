@@ -70,12 +70,12 @@ class AbyssCrashCog(commands.Cog):
     def cog_unload(self):
         self.crash_updater_task.cancel()
 
-    @commands.hybrid_command(name="crash_abissal", description="Encare a colisão de Pareto. Escape com seus lucros ou morra na queda.")
-    async def crash_abissal(self, ctx: commands.Context, aposta: int):
+    async def play_crash_abissal(self, interaction: discord.Interaction, aposta: int):
+        await interaction.response.defer()
         try:
-            escrow_id = await self.tx_manager.create_escrow(ctx.author.id, ctx.guild.id, aposta)
+            escrow_id = await self.tx_manager.create_escrow(interaction.user.id, interaction.guild_id, aposta)
         except SacrificeValidationError as e:
-            await ctx.send(f"Recusa do Pacto: {e}", ephemeral=True)
+            await interaction.followup.send(f"Recusa do Pacto: {e}", ephemeral=True)
             return
 
         session_id = str(uuid.uuid4())
@@ -97,17 +97,17 @@ class AbyssCrashCog(commands.Cog):
         view = AbyssCrashView(self.tx_manager, session_id)
         self.bot.add_view(view)
         
-        msg = await ctx.send(embed=embed, view=view)
+        msg = await interaction.followup.send(embed=embed, view=view)
         self._message_cache[session_id] = msg
         
         async with self.tx_manager.connection() as conn:
             await conn.execute(
                 "INSERT INTO active_games_state (session_id, game_type, channel_id, guild_id, message_id, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (session_id, "crash", ctx.channel.id, ctx.guild.id, msg.id, expires)
+                (session_id, "crash", interaction.channel_id, interaction.guild_id, msg.id, expires)
             )
             await conn.execute(
                 "INSERT INTO abyss_crash_state (session_id, escrow_id, user_id, crash_point, current_multiplier, is_finalized) VALUES (?, ?, ?, ?, ?, 0)",
-                (session_id, escrow_id, ctx.author.id, crash_point, 1.0)
+                (session_id, escrow_id, interaction.user.id, crash_point, 1.0)
             )
             await conn.commit()
 

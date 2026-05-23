@@ -20,12 +20,12 @@ class BloodOracleCog(commands.Cog):
             "✡️": 8.0
         }
 
-    @commands.hybrid_command(name="oraculo", description="O Caça-Níqueis Infernal. Alinhe os astros, evite o Sangue Corrompido.")
-    async def oraculo(self, ctx: commands.Context, aposta: int):
+    async def play_oraculo(self, interaction: discord.Interaction, aposta: int):
+        await interaction.response.defer()
         try:
-            escrow_id = await self.tx_manager.create_escrow(ctx.author.id, ctx.guild.id, aposta)
+            escrow_id = await self.tx_manager.create_escrow(interaction.user.id, interaction.guild_id, aposta)
         except SacrificeValidationError as e:
-            await ctx.send(f"Recusa do Pacto: {e}", ephemeral=True)
+            await interaction.followup.send(f"Recusa do Pacto: {e}", ephemeral=True)
             return
 
         embed = discord.Embed(
@@ -33,7 +33,7 @@ class BloodOracleCog(commands.Cog):
             description="Os pilares começam a girar...\n[ 🌀 ] - [ 🌀 ] - [ 🌀 ]",
             color=0x2b2d31
         )
-        msg = await ctx.send(embed=embed)
+        msg = await interaction.followup.send(embed=embed)
         
         columns = ["🌀", "🌀", "🌀"]
         

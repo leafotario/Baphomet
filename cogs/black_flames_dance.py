@@ -67,12 +67,11 @@ class BlackFlamesDanceCog(commands.Cog):
     def cog_unload(self):
         self.dance_resolver_task.cancel()
 
-    @commands.hybrid_command(name="danca_negras", description="A Dança das Chamas Negras (Multiplayer). Sorteio ponderado global pelo XP lançado na roda.")
-    async def danca_negras(self, ctx: commands.Context):
+    async def play_danca_negras(self, interaction: discord.Interaction):
         async with self.tx_manager.connection() as conn:
-            cursor = await conn.execute("SELECT session_id FROM active_games_state WHERE game_type = 'danca' AND channel_id = ?", (ctx.channel.id,))
+            cursor = await conn.execute("SELECT session_id FROM active_games_state WHERE game_type = 'danca' AND channel_id = ?", (interaction.channel_id,))
             if await cursor.fetchone():
-                await ctx.send("As Chamas já ardem neste canal. Aguarde o fim do sacrifício atual.", ephemeral=True)
+                await interaction.response.send_message("As Chamas já ardem neste canal. Aguarde o fim do sacrifício atual.", ephemeral=True)
                 return
 
             session_id = str(uuid.uuid4())
@@ -80,18 +79,18 @@ class BlackFlamesDanceCog(commands.Cog):
             
             await conn.execute(
                 "INSERT INTO active_games_state (session_id, game_type, channel_id, guild_id, expires_at) VALUES (?, ?, ?, ?, ?)",
-                (session_id, "danca", ctx.channel.id, ctx.guild.id, expires)
+                (session_id, "danca", interaction.channel_id, interaction.guild_id, expires)
             )
             await conn.commit()
 
-        view = DanceJoinView(self.tx_manager, ctx.guild.id, session_id)
+        view = DanceJoinView(self.tx_manager, interaction.guild_id, session_id)
         self.bot.add_view(view)
         embed = discord.Embed(
             title="A Dança das Chamas Negras",
             description="Um portal macabro foi aberto. Vocês têm exatos **30 segundos** para submeterem suas almas à roda.\n\nAquele que injetar mais energia (XP), adquire maior peso no sorteio e devora as apostas inimigas.",
             color=0x8B0000
         )
-        msg = await ctx.send(embed=embed, view=view)
+        msg = await interaction.response.send_message(embed=embed, view=view)
 
     @tasks.loop(seconds=5)
     async def dance_resolver_task(self):

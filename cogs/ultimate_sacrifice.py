@@ -13,20 +13,12 @@ class UltimateSacrificeCog(commands.Cog):
         # O limite da submissão exige blocos absurdos
         self.min_bet_required = 50000
 
-    @commands.hybrid_command(name="leviata", description="Rito Extremo Inter-Servidores. Chance de 1 em 10.000 de rasgar a realidade e clamar o jackpot.")
-    async def leviata(self, ctx: commands.Context, aposta: int):
-        # Validação estrita do bloqueio absurdo de XP
-        if aposta < self.min_bet_required:
-            await ctx.send(
-                f"Sua insignificância ofende O Leviatã. O acesso exige blocos de sacrifício pré-definidos acima de **{self.min_bet_required} XP**.", 
-                ephemeral=True
-            )
-            return
-
+    async def play_leviata(self, interaction: discord.Interaction, aposta: int):
+        await interaction.response.defer()
         try:
-            escrow_id = await self.tx_manager.create_escrow(ctx.author.id, ctx.guild.id, aposta)
+            escrow_id = await self.tx_manager.create_escrow(interaction.user.id, interaction.guild_id, aposta)
         except SacrificeValidationError as e:
-            await ctx.send(f"Recusa Oculta: {e}", ephemeral=True)
+            await interaction.followup.send(f"Recusa Oculta: {e}", ephemeral=True)
             return
 
         # Processo de loteria estatística severa: Escala 1 em 10.000
@@ -53,10 +45,10 @@ class UltimateSacrificeCog(commands.Cog):
                 description="As fundações do multiverso se estilhaçaram.\n\n**O Leviatã** abriu as garras e coroou seu sacrifício, devendo a você as almas de milhares de mundos mortos.",
                 color=0xFFD700 # Dourado de status mitológico final
             )
-            embed.add_field(name="O Novo Deus (Mortal Escolhido)", value=f"{ctx.author.name} (Juridição Original: {ctx.guild.name})", inline=False)
+            embed.add_field(name="O Novo Deus (Mortal Escolhido)", value=f"{interaction.user.name} (Juridição Original: {interaction.guild.name})", inline=False)
             embed.add_field(name="Poder Cósmico Injetado", value=f"{payout} XP", inline=False)
             
-            await ctx.send("Seus olhos queimam. Sua alma transborda.", embed=embed)
+            await interaction.followup.send("Seus olhos queimam. Sua alma transborda.", embed=embed)
             
             # Chamadas Sistêmicas Inter-Servidores (Broadcast universal iterando bot.guilds)
             for guild in self.bot.guilds:
@@ -85,15 +77,15 @@ class UltimateSacrificeCog(commands.Cog):
                 jackpot_contribution = aposta * 0.10
                 await conn.execute(
                     "INSERT OR IGNORE INTO guild_economy (guild_id, leviathan_jackpot) VALUES (?, 0.0)",
-                    (ctx.guild.id,)
+                    (interaction.guild_id,)
                 )
                 await conn.execute(
                     "UPDATE guild_economy SET leviathan_jackpot = leviathan_jackpot + ? WHERE guild_id = ?",
-                    (jackpot_contribution, ctx.guild.id)
+                    (jackpot_contribution, interaction.guild_id)
                 )
                 await conn.commit()
                 
-            await ctx.send(f"O Leviatã sorveu rapidamente seus **{aposta} XP** e cuspiu os restos no poço absoluto.\nA barreira permanece fechada. O abismo ainda tem fome.")
+            await interaction.followup.send(f"O Leviatã sorveu rapidamente seus **{aposta} XP** e cuspiu os restos no poço absoluto.\nA barreira permanece fechada. O abismo ainda tem fome.")
 
 async def setup(bot):
     if hasattr(bot, 'tx_manager'):
