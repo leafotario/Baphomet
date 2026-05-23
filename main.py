@@ -10,6 +10,8 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
+from core_db_transaction import BaphometTransactionManager
+
 # ==============================================================================
 # 1. CORES E ESTILOS PARA TERMINAL (ANSI)
 # ==============================================================================
@@ -84,6 +86,7 @@ class MyBot(commands.Bot):
             command_prefix="!",
             intents=intents
         )
+        self.tx_manager = BaphometTransactionManager(db_path="data/baphomet_transactions.sqlite3", pool_size=5)
 
     async def load_all_extensions(self) -> tuple[int, int]:
         """Varre o diretório /cogs e carrega as extensões."""
@@ -132,6 +135,9 @@ class MyBot(commands.Bot):
         except Exception as exc:
             log_error(f"Falha ao sincronizar comandos: {exc}")
 
+        # Inicializa o pool de conexões do tx_manager
+        await self.tx_manager.initialize()
+
     async def close(self) -> None:
         """Desligamento gracioso do Bot."""
         log_warn("Iniciando processo de desligamento seguro...")
@@ -162,6 +168,13 @@ class MyBot(commands.Bot):
                 log_success("Banco MOTD encerrado com sucesso.")
             except Exception as exc:
                 log_error(f"Erro ao fechar banco MOTD: {exc}")
+
+        try:
+            log_info("Encerrando Transaction Manager (tx_manager)...")
+            await self.tx_manager.close()
+            log_success("Transaction Manager encerrado com sucesso.")
+        except Exception as exc:
+            log_error(f"Erro ao fechar Transaction Manager: {exc}")
 
         log_discord("Bot desconectado da API.")
         await super().close()
