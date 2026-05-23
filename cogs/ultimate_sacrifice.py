@@ -13,7 +13,7 @@ class UltimateSacrificeCog(commands.Cog):
         # O limite da submissão exige blocos absurdos
         self.min_bet_required = 50000
 
-    @commands.hybrid_command(name="leviata", description="Rito Extremo Inter-Servidores. Uma chance em dez mil de rasgar a realidade e clamar o jackpot global.")
+    @commands.hybrid_command(name="leviata", description="Rito Extremo Inter-Servidores. Chance de 1 em 10.000 de rasgar a realidade e clamar o jackpot.")
     async def leviata(self, ctx: commands.Context, aposta: int):
         # Validação estrita do bloqueio absurdo de XP
         if aposta < self.min_bet_required:
