@@ -435,7 +435,7 @@ class MovieCog(commands.Cog):
         description = "\n".join(all_lines)
         if len(description) <= 4096:
             embed = discord.Embed(
-                title="Fila de Sugestões MOTD",
+                title="Fila de Sugestões do Filme do Dia",
                 description=description,
                 color=discord.Color.blue()
             )
@@ -446,7 +446,7 @@ class MovieCog(commands.Cog):
             for page_index, start in enumerate(range(0, len(entries), PAGE_SIZE), start=1):
                 chunk_lines = all_lines[start : start + PAGE_SIZE]
                 embed = discord.Embed(
-                    title=f"Fila de Sugestões MOTD ({page_index}/{total_pages})",
+                    title=f"Fila de Sugestões do Filme do Dia ({page_index}/{total_pages})",
                     description="\n".join(chunk_lines),
                     color=discord.Color.blue()
                 )
