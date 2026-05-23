@@ -462,7 +462,7 @@ class MovieCog(commands.Cog):
         if guild_id is None:
             return
 
-        await interaction.response.defer(ephemeral=False)
+        await interaction.response.defer(ephemeral=True)
 
         config = await self.db_manager.get_config(guild_id)
         if config is None or getattr(config, "is_active", False) is False:
@@ -507,7 +507,7 @@ class MovieCog(commands.Cog):
         avatar_url = interaction.user.display_avatar.url if interaction.user.display_avatar else None
         embed.set_footer(text=f"TMDB ID: {movie.tmdb_id} • Sugerido por {interaction.user.display_name}", icon_url=avatar_url)
 
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @sugerir_motd.error
     async def sugerir_motd_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:

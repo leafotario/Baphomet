@@ -1559,7 +1559,7 @@ class AlbumDoDia(commands.Cog):
         interaction: discord.Interaction,
         nome_album: str,
     ) -> None:
-        await interaction.response.defer(thinking=True)
+        await interaction.response.defer(ephemeral=True)
 
         try:
             album_info = await self.buscar_album_spotify(nome_album)
@@ -1618,7 +1618,7 @@ class AlbumDoDia(commands.Cog):
         if album_info.get("imagem"):
             embed.set_thumbnail(url=album_info["imagem"])
 
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
         await self.notificar_staff_nova_sugestao(
             interaction=interaction,
