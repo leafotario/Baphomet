@@ -48,12 +48,12 @@ class XpService:
         self,
         repository: XpRepository,
         *,
-        rng: secrets.SystemRandom().Random | None = None,
+        rng: secrets.SystemRandom | None = None,
         logger: logging.Logger | None = None,
         vinculos_provider: VinculoXpContextProvider | VinculoMultiplierProvider | None = None,
     ) -> None:
         self.repository = repository
-        self.rng = rng or secrets.SystemRandom().Random()
+        self.rng = rng or secrets.SystemRandom()
         self.logger = logger or logging.getLogger("baphomet.xp")
         self.vinculos_provider = vinculos_provider
         self._config_cache: dict[int, GuildXpConfig] = {}

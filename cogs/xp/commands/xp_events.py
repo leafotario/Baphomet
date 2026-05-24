@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import traceback
 
 import discord
 from discord.ext import commands, tasks
@@ -61,8 +62,17 @@ class XpEvents(commands.Cog):
                 await channel.send(embed=embed)
             except (discord.Forbidden, discord.HTTPException):
                 return
-        except Exception:
-            self.runtime.service.logger.exception("falha ao processar ganho de xp", exc_info=True)
+        except Exception as e:
+            tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+            guild_id = message.guild.id if message.guild else "DM"
+            user_id = message.author.id
+            self.runtime.service.logger.error(
+                f"❌ [XP EVENTS] Falha Crítica no on_message\n"
+                f"➤ Usuário: {message.author} (ID: {user_id})\n"
+                f"➤ Guilda: ID: {guild_id}\n"
+                f"➤ Erro: {type(e).__name__}: {e}\n"
+                f"➤ Traceback Integral:\n{tb_str}"
+            )
 
     @tasks.loop(minutes=10)
     async def sync_level_roles_task(self) -> None:
