@@ -1,3 +1,4 @@
+import math
 import discord
 import json
 import uuid
@@ -107,7 +108,7 @@ class BaphometsLabyrinthView(discord.ui.View):
                     
                     current_multiplier = 1.0 + (calm_routes_found * 0.15)
                     adjusted_multiplier = self.rng.calculate_house_edge(0.8, current_multiplier)
-                    current_payout = int(aposta * adjusted_multiplier)
+                    current_payout = int(math.floor((aposta * adjusted_multiplier) + 1e-9))
                     
                     embed = interaction.message.embeds[0]
                     embed.description = "Passos cuidadosos no labirinto. A escuridão ainda permanece adormecida."
@@ -161,7 +162,7 @@ class BaphometsLabyrinthView(discord.ui.View):
                 else:
                     current_multiplier = 1.0 + (calm_routes_found * 0.15)
                     adjusted_multiplier = self.rng.calculate_house_edge(0.8, current_multiplier)
-                    payout = int(aposta * adjusted_multiplier)
+                    payout = int(math.floor((aposta * adjusted_multiplier) + 1e-9))
                 
                 await self.tx_manager.resolve_escrow(escrow_id, payout)
                 await conn.execute("DELETE FROM active_games_state WHERE session_id = ?", (self.session_id,))

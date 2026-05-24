@@ -1,3 +1,4 @@
+import math
 import discord
 from discord.ext import commands
 from core_db_transaction import BaphometTransactionManager, SacrificeValidationError
@@ -104,11 +105,11 @@ class SoulJudgementView(SacrificialView):
             if d_val > 21:
                 status = "**TRIUNFO.** O Carrasco sucumbiu à própria corrupção. Sua alma retorna intacta e carregada."
                 color = 0x00FF00
-                payout = int(self.aposta * self.rng.calculate_house_edge(0.48, 2.0))
+                payout = int(math.floor((self.aposta * self.rng.calculate_house_edge(0.48, 2.0)) + 1e-9))
             elif p_val > d_val:
                 status = "**TRIUNFO.** Seu julgamento foi preciso. Você subjugou as intenções do Carrasco."
                 color = 0x00FF00
-                payout = int(self.aposta * self.rng.calculate_house_edge(0.48, 2.0))
+                payout = int(math.floor((self.aposta * self.rng.calculate_house_edge(0.48, 2.0)) + 1e-9))
             elif p_val == d_val:
                 status = "**EQUILÍBRIO.** Forças iguais colidem. Baphomet apenas suspira e devolve seu sacrifício original."
                 color = 0xFFFF00

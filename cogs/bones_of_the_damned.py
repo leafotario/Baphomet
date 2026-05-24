@@ -1,3 +1,4 @@
+import math
 import discord
 from discord.ext import commands
 from core_db_transaction import BaphometTransactionManager, SacrificeValidationError
@@ -31,7 +32,7 @@ class BonesNextThrowView(SacrificialView):
             payout = 0
             if total == self.point:
                 raw_multiplier = 2.0
-                payout = int(self.aposta * self.rng.calculate_house_edge(0.5, raw_multiplier))
+                payout = int(math.floor((self.aposta * self.rng.calculate_house_edge(0.5, raw_multiplier)) + 1e-9))
                 embed.description += f"\n\nNovo lançamento revelou **{total}**! O alvo foi estilhaçado. Sua vitalidade prospera nas trevas."
                 embed.add_field(name="Retorno Final", value=f"{payout} XP", inline=False)
                 await self.tx_manager.resolve_escrow(self.escrow_id, payout)
@@ -76,7 +77,7 @@ class BonesOfTheDamnedCog(commands.Cog):
         payout = 0
         if total in (7, 11):
             raw_multiplier = 2.0
-            payout = int(aposta * self.rng.calculate_house_edge(0.5, raw_multiplier))
+            payout = int(math.floor((aposta * self.rng.calculate_house_edge(0.5, raw_multiplier)) + 1e-9))
             embed.description = f"Soma macabra inicial: **{total}**. A sorte dos decaídos sorri para você. Vitória iminente liberada."
             embed.add_field(name="Retorno Final", value=f"{payout} XP", inline=False)
             await self.tx_manager.resolve_escrow(escrow_id, payout)

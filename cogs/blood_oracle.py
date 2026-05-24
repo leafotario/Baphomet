@@ -1,3 +1,4 @@
+import math
 import asyncio
 import discord
 from discord.ext import commands
@@ -63,7 +64,7 @@ class BloodOracleCog(commands.Cog):
             symbol = columns[0]
             raw_multiplier = self.payout_table.get(symbol, 0.0)
             adjusted = self.rng.calculate_house_edge(0.33, raw_multiplier)
-            payout = int(aposta * adjusted)
+            payout = int(math.floor((aposta * adjusted) + 1e-9))
             
             embed.description = f"**Bênção Sombria.** A constelação alinhou-se perfeitamente.\n[ {columns[0]} ] - [ {columns[1]} ] - [ {columns[2]} ]"
             embed.color = 0x00FF00

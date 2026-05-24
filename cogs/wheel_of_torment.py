@@ -1,3 +1,4 @@
+import math
 import discord
 from discord.ext import commands
 from core_db_transaction import BaphometTransactionManager, SacrificeValidationError
@@ -27,7 +28,7 @@ class WheelOfTormentCog(commands.Cog):
         elif choice in (1, 2):
             raw_multiplier = 2.0
             adjusted = self.rng.calculate_house_edge(1.0, raw_multiplier)
-            payout = int(aposta * adjusted)
+            payout = int(math.floor((aposta * adjusted) + 1e-9))
             msg = "A sombra acolhe sua audácia. O pacto floresce e sua vitalidade é dobrada pelas chamas."
         else:
             msg = "A roda gira, mas as brasas estão frias. Seu sacrifício foi devorado pelas trevas, sem agonia adicional, porém sem recompensa."

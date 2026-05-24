@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 import aiosqlite
+import redis.asyncio as redis
 from discord.ext import tasks
 
 logger = logging.getLogger("BaphometTransactionManager")
@@ -25,13 +26,15 @@ class BaphometTransactionManager:
         self.xp_db_path = xp_db_path
         self.pool_size = pool_size
         self._pool: asyncio.Queue[aiosqlite.Connection] = asyncio.Queue(maxsize=pool_size)
+        self._redis_lock_pool: redis.Redis = None
         self._is_ready = False
-        self._active_users: set[int] = set()
 
     async def initialize(self) -> None:
         """Inicializa o Connection Pool e a infraestrutura de tabelas."""
         if self._is_ready:
             return
+
+        self._redis_lock_pool = redis.Redis.from_url("redis://localhost:6379/0", decode_responses=True)
 
         for _ in range(self.pool_size):
             conn = await aiosqlite.connect(self.db_path)
@@ -125,6 +128,9 @@ class BaphometTransactionManager:
     async def close(self) -> None:
         """Encerra o Connection Pool e detém o coletor de escrows estagnados."""
         self.orphan_escrow_reclaimer.cancel()
+        if self._redis_lock_pool:
+            await self._redis_lock_pool.close()
+            
         while not self._pool.empty():
             conn = await self._pool.get()
             await conn.close()
@@ -166,10 +172,15 @@ class BaphometTransactionManager:
 
         bet_amount = int(bet_amount)
 
-        if user_id in self._active_users:
+        # Operação de Distributed Lock Atômica
+        lock_key = f"baphomet:locks:user_escrow:{user_id}"
+        if not self._redis_lock_pool:
+            raise SacrificeValidationError("O cluster nativo não foi conectado. Tente novamente.")
+
+        acquired = await self._redis_lock_pool.set(name=lock_key, value="LOCKED", nx=True, ex=15)
+        if not acquired:
             raise SacrificeValidationError("Você já tem um ritual em andamento. Aguarde a finalização.")
 
-        self._active_users.add(user_id)
         try:
             async with self.acquire() as conn:
                 try:
@@ -207,7 +218,8 @@ class BaphometTransactionManager:
                     await conn.rollback()
                     raise
         finally:
-            self._active_users.discard(user_id)
+            if self._redis_lock_pool:
+                await self._redis_lock_pool.delete(lock_key)
 
     async def resolve_escrow(self, escrow_id: int, payout_amount: int) -> None:
         """
@@ -232,6 +244,15 @@ class BaphometTransactionManager:
                 bet_amount = row["bet_amount"]
 
                 await conn.execute("DELETE FROM escrows WHERE escrow_id = ?", (escrow_id,))
+
+                # Profilaxia Matemática: Teto de 64-bits assinalado do SQLite
+                SQLITE_MAX_INT = 9223372036854775807
+                async with conn.execute("SELECT total_xp FROM xp_db.xp_profiles WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)) as prof_cursor:
+                    prof_row = await prof_cursor.fetchone()
+                    current_xp = int(prof_row["total_xp"]) if prof_row and prof_row["total_xp"] is not None else 0
+
+                if current_xp + payout_amount > SQLITE_MAX_INT:
+                    payout_amount = SQLITE_MAX_INT - current_xp
 
                 await conn.execute(
                     "UPDATE xp_db.xp_profiles SET total_xp = total_xp + ? WHERE guild_id = ? AND user_id = ?",
@@ -285,10 +306,20 @@ class BaphometTransactionManager:
                     g_id = orphan["guild_id"]
                     bet = orphan["bet_amount"]
                     
+                    # Profilaxia Matemática: Teto de 64-bits
+                    SQLITE_MAX_INT = 9223372036854775807
+                    async with conn.execute("SELECT total_xp FROM xp_db.xp_profiles WHERE guild_id = ? AND user_id = ?", (g_id, u_id)) as prof_cursor:
+                        prof_row = await prof_cursor.fetchone()
+                        current_xp = int(prof_row["total_xp"]) if prof_row and prof_row["total_xp"] is not None else 0
+                        
+                    safe_bet = bet
+                    if current_xp + safe_bet > SQLITE_MAX_INT:
+                        safe_bet = SQLITE_MAX_INT - current_xp
+
                     # Devolve integralmente a vitalidade ao portador inicial
                     await conn.execute(
                         "UPDATE xp_db.xp_profiles SET total_xp = total_xp + ? WHERE guild_id = ? AND user_id = ?",
-                        (bet, g_id, u_id)
+                        (safe_bet, g_id, u_id)
                     )
                     # Limpa da tabela
                     await conn.execute("DELETE FROM escrows WHERE escrow_id = ?", (esc_id,))

@@ -1,3 +1,4 @@
+import math
 import discord
 from discord.ext import commands
 from core_db_transaction import BaphometTransactionManager, SacrificeValidationError
@@ -32,7 +33,7 @@ class WeightOfSinsView(SacrificialView):
                 current_house_edge = min(0.99, 0.02 + (self.consecutive_wins * 0.2))
                 adjusted_multiplier = self.rng.calculate_house_edge(0.5, self.current_raw_multiplier, current_house_edge)
                 
-                potential_payout = int(self.aposta * adjusted_multiplier)
+                potential_payout = int(math.floor((self.aposta * adjusted_multiplier) + 1e-9))
                 
                 # Atualização sistemática da UI
                 embed.description = f"Seu palpite foi correto! O peso da balança recaiu sobre: **{'Pesado' if is_heavy else 'Leve'}**.\nVocê sobreviveu mais um degrau, mas a ganância aumenta a borda da casa."
@@ -102,7 +103,7 @@ class WeightOfSinsView(SacrificialView):
             self.is_finalized = True
             current_house_edge = min(0.99, 0.02 + (self.consecutive_wins * 0.2))
             adjusted_multiplier = self.rng.calculate_house_edge(0.5, self.current_raw_multiplier, current_house_edge)
-            payout = int(self.aposta * adjusted_multiplier)
+            payout = int(math.floor((self.aposta * adjusted_multiplier) + 1e-9))
             
             await self.tx_manager.resolve_escrow(self.escrow_id, payout)
             

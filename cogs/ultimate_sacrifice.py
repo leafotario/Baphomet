@@ -1,3 +1,4 @@
+import math
 import asyncio
 import discord
 from discord.ext import commands
@@ -37,7 +38,7 @@ class UltimateSacrificeCog(commands.Cog):
                 await conn.execute("UPDATE guild_economy SET leviathan_jackpot = 0.0")
                 await conn.commit()
                 
-            payout = int(aposta * 10) + int(total_jackpot)
+            payout = int(math.floor((aposta * 10.0) + 1e-9)) + int(math.floor(total_jackpot + 1e-9))
             await self.tx_manager.resolve_escrow(escrow_id, payout)
             
             embed = discord.Embed(

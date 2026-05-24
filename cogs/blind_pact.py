@@ -1,3 +1,4 @@
+import math
 import discord
 from discord.ext import commands
 from core_db_transaction import BaphometTransactionManager, SacrificeValidationError
@@ -59,7 +60,7 @@ class BlindPactView(SacrificialView):
                 payout = 0
                 msg = "A narrativa do desespero cego ecoa. Seu carrasco sorri e esmaga sua alma num abismo vazio. O pacto foi selado em dor e seu sacrifício pulverizado a 0x."
             else:
-                payout = int(self.aposta * self.rng.calculate_house_edge(0.33, raw_multiplier))
+                payout = int(math.floor((self.aposta * self.rng.calculate_house_edge(0.33, raw_multiplier)) + 1e-9))
                 msg = f"Sua barganha com {choice} foi aceitável. O véu se levanta revelando a recompensa multiplicada transmutada para o seu sangue."
             
             self.is_finalized = True

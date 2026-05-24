@@ -1,3 +1,4 @@
+import math
 import asyncio
 import itertools
 import time
@@ -140,7 +141,7 @@ class BlackFlamesDanceCog(commands.Cog):
                         break
                         
                 winner = participants[winner_idx]
-                final_pool = int(total_pool * self.rng.calculate_house_edge(1.0, 1.0, 0.05))
+                final_pool = int(math.floor((total_pool * self.rng.calculate_house_edge(1.0, 1.0, 0.05)) + 1e-9))
                 
                 matrix_details = []
                 for p in participants:
