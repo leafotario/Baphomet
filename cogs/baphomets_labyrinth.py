@@ -140,17 +140,44 @@ class BaphometsLabyrinthView(discord.ui.View):
         await interaction.response.defer()
         
         async with self.tx_manager.acquire() as conn:
-            cursor = await conn.execute(
-                "SELECT escrow_id, amount FROM escrows e JOIN active_games_state g ON e.user_id = (SELECT user_id FROM escrows WHERE escrow_id = e.escrow_id) WHERE g.session_id = ?",
-                (self.session_id,)
-            )
-            state_data = await cursor.fetchone()
+            import sqlite3
+            import traceback
+            query = "SELECT escrow_id, bet_amount FROM escrows e JOIN active_games_state g ON e.user_id = (SELECT user_id FROM escrows WHERE escrow_id = e.escrow_id) WHERE g.session_id = ?"
+            try:
+                cursor = await conn.execute(query, (self.session_id,))
+                state_data = await cursor.fetchone()
+            except sqlite3.OperationalError as e:
+                # Interceptor de Falha de Schema (Data Consistency Observer)
+                tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+                
+                # Coleta esquema atual das tabelas para diagnóstico forense
+                schema_info = ""
+                try:
+                    escrows_schema = await (await conn.execute("PRAGMA table_info('escrows')")).fetchall()
+                    schema_info += f"Escrows Columns: {[col['name'] for col in escrows_schema]}\n"
+                    active_games_schema = await (await conn.execute("PRAGMA table_info('active_games_state')")).fetchall()
+                    schema_info += f"Active Games Columns: {[col['name'] for col in active_games_schema]}"
+                except Exception as pragma_e:
+                    schema_info = f"Falha ao ler PRAGMA: {pragma_e}"
+                
+                from cogs.casino import logger
+                logger.critical(
+                    f"❌ [Labyrinth SQL Observer] Falha Crítica de Schema no process_escape\n"
+                    f"➤ Comando Exato:\n{query}\n"
+                    f"➤ Parâmetros: {self.session_id}\n"
+                    f"➤ Estrutura Atual Detectada no DB:\n{schema_info}\n"
+                    f"➤ Erro Bruto: {e}\n"
+                    f"➤ Traceback Integral:\n{tb_str}"
+                )
+                await interaction.followup.send("O sacrifício está temporariamente indisponível devido a uma inconsistência de dados. Tente novamente mais tarde.", ephemeral=True)
+                return
+                
             if not state_data:
                 await interaction.followup.send("O jogo já expirou ou foi processado.", ephemeral=True)
                 return
                 
             escrow_id = state_data["escrow_id"]
-            aposta = state_data["amount"]
+            aposta = state_data["bet_amount"]
 
             cursor = await conn.execute("SELECT COUNT(*) as found FROM labyrinth_cells WHERE session_id = ? AND is_revealed = 1 AND is_mine = 0", (self.session_id,))
             calm_routes_found = (await cursor.fetchone())["found"]
