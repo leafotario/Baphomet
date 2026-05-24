@@ -303,20 +303,30 @@ class InactivityPruneCog(commands.Cog):
         # ── Etapa de Confirmação (Prevenção de Desastres) ───────────────
         view = _ConfirmPruneView(self, targets, dias, interaction.user.id)
 
-        # Montar preview dos primeiros alvos
-        preview_lines = [f"`{i}.` **{m.display_name}** (`{m.id}`)" for i, m in enumerate(targets[:15], 1)]
-        if len(targets) > 15:
-            preview_lines.append(f"_...e mais {len(targets) - 15} membros._")
-
+        # Montar preview de todos os alvos
+        preview_lines = [f"`{i}.` **{m.display_name}**" for i, m in enumerate(targets, 1)]
         preview = "\n".join(preview_lines)
 
-        await interaction.followup.send(
-            f"🚨 **ANÁLISE CONCLUÍDA**\n\n"
-            f"Encontrei **{len(targets)} membros** que não enviam mensagens há mais de **{dias} dias**.\n\n"
-            f"{preview}\n\n"
-            f"Deseja prosseguir com a expulsão em massa?",
-            view=view,
-        )
+        content_header = f"🚨 **ANÁLISE CONCLUÍDA**\n\nEncontrei **{len(targets)} membros** que não enviam mensagens há mais de **{dias} dias**.\n\n"
+        content_footer = f"\n\nDeseja prosseguir com a expulsão em massa?"
+
+        if len(content_header) + len(preview) + len(content_footer) <= 2000:
+            await interaction.followup.send(
+                f"{content_header}{preview}{content_footer}",
+                view=view,
+            )
+        else:
+            await interaction.followup.send(content_header.strip())
+            chunk = ""
+            for line in preview_lines:
+                if len(chunk) + len(line) > 1800:
+                    await interaction.followup.send(chunk.strip())
+                    chunk = line + "\n"
+                else:
+                    chunk += line + "\n"
+                    
+            if chunk:
+                await interaction.followup.send(chunk.strip() + content_footer, view=view)
 
     # ── Execução Segura do Prune ────────────────────────────────────────
     async def execute_prune(self, interaction: discord.Interaction, targets: list[discord.Member], days: int) -> None:
