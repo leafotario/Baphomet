@@ -11,6 +11,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 from core_db_transaction import BaphometTransactionManager
+from core_redis_state import AbyssalRedisManager
 
 # ==============================================================================
 # 1. CORES E ESTILOS PARA TERMINAL (ANSI)
@@ -87,6 +88,7 @@ class MyBot(commands.Bot):
             intents=intents
         )
         self.tx_manager = BaphometTransactionManager(db_path="data/baphomet_transactions.sqlite3", pool_size=5)
+        self.redis_manager = AbyssalRedisManager()
 
     async def load_all_extensions(self) -> tuple[int, int]:
         """Varre o diretório /cogs e carrega as extensões."""
@@ -122,6 +124,10 @@ class MyBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         """Chamado pelo discord.py antes de logar o bot."""
+        # Inicializa o pool mestre do Redis e injeta no Transaction Manager
+        await self.redis_manager.connect()
+        self.tx_manager.inject_redis(self.redis_manager)
+
         # Inicializa o pool de conexões do tx_manager ANTES das cogs
         await self.tx_manager.initialize()
 
@@ -176,6 +182,13 @@ class MyBot(commands.Bot):
             log_success("Transaction Manager encerrado com sucesso.")
         except Exception as exc:
             log_error(f"Erro ao fechar Transaction Manager: {exc}")
+
+        try:
+            log_info("Encerrando Redis Manager (redis_manager)...")
+            await self.redis_manager.close()
+            log_success("Redis Manager encerrado com sucesso.")
+        except Exception as exc:
+            log_error(f"Erro ao fechar Redis Manager: {exc}")
 
         log_discord("Bot desconectado da API.")
         await super().close()

@@ -263,9 +263,9 @@ class AbyssCrashCog(commands.Cog):
         await self.bot.wait_until_ready()
 
 async def setup(bot):
-    if hasattr(bot, 'tx_manager'):
-        redis_manager = AbyssalRedisManager()
-        redis_alive = await redis_manager.connect()
+    if hasattr(bot, 'tx_manager') and hasattr(bot, 'redis_manager'):
+        redis_manager = bot.redis_manager
+        redis_alive = redis_manager._is_connected
         
         if not redis_alive:
             logger.error(

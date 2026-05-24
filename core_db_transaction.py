@@ -6,7 +6,6 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 import aiosqlite
-import redis.asyncio as redis
 from discord.ext import tasks
 
 logger = logging.getLogger("BaphometTransactionManager")
@@ -26,24 +25,19 @@ class BaphometTransactionManager:
         self.db_path = db_path
         self.xp_db_path = xp_db_path
         self.pool_size = pool_size
+        self.pool_size = pool_size
         self._pool: asyncio.Queue[aiosqlite.Connection] = asyncio.Queue(maxsize=pool_size)
-        self._redis_lock_pool: redis.Redis = None
+        self.redis_manager = None
         self._is_ready = False
+
+    def inject_redis(self, redis_manager):
+        """Injeta a dependência global do AbyssalRedisManager (Layer-1 Cache)."""
+        self.redis_manager = redis_manager
 
     async def initialize(self) -> None:
         """Inicializa o Connection Pool e a infraestrutura de tabelas."""
         if self._is_ready:
             return
-
-        # Distributed Lock Pool: Desacoplamento Ambiental via REDIS_URL
-        try:
-            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-            self._redis_lock_pool = redis.Redis.from_url(redis_url, decode_responses=True)
-            await self._redis_lock_pool.ping()
-            logger.info(f"[TransactionManager] Redis Lock Pool conectado e PING validado: {redis_url}")
-        except Exception as e:
-            logger.error(f"[TransactionManager] Redis Lock Pool INACESSÍVEL — o Distributed Lock operará sem proteção: {e}")
-            self._redis_lock_pool = None
 
         for _ in range(self.pool_size):
             conn = await aiosqlite.connect(self.db_path)
@@ -137,8 +131,6 @@ class BaphometTransactionManager:
     async def close(self) -> None:
         """Encerra o Connection Pool e detém o coletor de escrows estagnados."""
         self.orphan_escrow_reclaimer.cancel()
-        if self._redis_lock_pool:
-            await self._redis_lock_pool.close()
             
         while not self._pool.empty():
             conn = await self._pool.get()
@@ -183,10 +175,11 @@ class BaphometTransactionManager:
 
         # Operação de Distributed Lock Atômica
         lock_key = f"baphomet:locks:user_escrow:{user_id}"
-        if not self._redis_lock_pool:
+        
+        if not self.redis_manager or not self.redis_manager._is_connected:
             raise SacrificeValidationError("O cluster nativo não foi conectado. Tente novamente.")
 
-        acquired = await self._redis_lock_pool.set(name=lock_key, value="LOCKED", nx=True, ex=15)
+        acquired = await self.redis_manager._pool.set(name=lock_key, value="LOCKED", nx=True, ex=15)
         if not acquired:
             raise SacrificeValidationError("Você já tem um ritual em andamento. Aguarde a finalização.")
 
@@ -227,8 +220,8 @@ class BaphometTransactionManager:
                     await conn.rollback()
                     raise
         finally:
-            if self._redis_lock_pool:
-                await self._redis_lock_pool.delete(lock_key)
+            if self.redis_manager and self.redis_manager._is_connected:
+                await self.redis_manager._pool.delete(lock_key)
 
     async def resolve_escrow(self, escrow_id: int, payout_amount: int) -> None:
         """
