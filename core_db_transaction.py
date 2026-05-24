@@ -201,37 +201,25 @@ class BaphometTransactionManager:
             
         is_redis_ready = await self.redis_manager.ensure_connection()
         if not is_redis_ready:
-            # FAIL-OPEN (Aggressive Recovery): Permite que a aposta prossiga sem trava atômica global se o servidor estiver inoperante.
-            logger.critical(
-                f"❌ [TransactionManager FAIL-OPEN] O cluster Redis está Offline e a conexão On-Demand falhou.\n"
-                f"➤ Usuário ID: {user_id}\n"
-                f"➤ Guilda ID: {guild_id}\n"
-                f"➤ Host Resolvido: {getattr(self.redis_manager, '_resolved_host', 'Unknown')}\n"
-                f"➤ Última Latência (PING): {getattr(self.redis_manager, '_last_ping_latency', 0.0):.2f}ms\n"
-                f"➤ Ação: Bypassing Distributed Lock. Risco de Race Condition assumido."
+            # FAIL-CLOSED AMIGÁVEL: Recusa graciosamente a transação em vez de contornar a trava.
+            logger.warning(
+                f"[TransactionManager] Conexão L1 indisponível. Rejeitando transação para Usuário {user_id}."
             )
+            raise SacrificeValidationError("O serviço de rituais está temporariamente indisponível. Aguarde alguns instantes e tente novamente.")
         else:
             try:
                 acquired = await self.redis_manager._pool.set(name=lock_key, value="LOCKED", nx=True, ex=15)
                 if not acquired:
                     raise SacrificeValidationError("Você já tem um ritual em andamento. Aguarde a finalização.")
             except Exception as e:
-                # Ocorre se a conexão cair EXATAMENTE durante o SETNX. Fazemos Fail-Open também.
                 if isinstance(e, SacrificeValidationError):
-                    raise # Reraise explícito da trava atômica válida
+                    raise
                 
-                tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
                 logger.error(
-                    f"❌ [TransactionManager FORENSE] Exceção durante o SETNX do Lock\n"
-                    f"➤ Timestamp: {time.time()}\n"
-                    f"➤ Usuário ID: {user_id}\n"
-                    f"➤ Guilda ID: {guild_id}\n"
-                    f"➤ Última Latência (PING): {getattr(self.redis_manager, '_last_ping_latency', 0.0):.2f}ms\n"
-                    f"➤ Estado Redis: _is_connected={self.redis_manager._is_connected}\n"
-                    f"➤ Erro Bruto: {type(e).__name__}: {e}\n"
-                    f"➤ Traceback Integral:\n{tb_str}\n"
-                    f"➤ Ação: Bypassing Distributed Lock (Fail-Open)."
+                    f"❌ [TransactionManager FORENSE] Exceção durante o SETNX do Lock: {type(e).__name__} - {e}\n"
+                    f"➤ Usuário ID: {user_id} | Guilda ID: {guild_id}"
                 )
+                raise SacrificeValidationError("A infraestrutura transacional encontrou uma anomalia. Tente novamente em breve.")
 
         try:
             async with self.acquire() as conn:

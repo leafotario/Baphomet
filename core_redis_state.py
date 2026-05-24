@@ -23,8 +23,8 @@ logger = logging.getLogger("Baphomet.Redis")
 
 class AbyssalRedisManager:
     """
-    Gestor de Estado L1 (Layer 1 Cache) para o Cassino Abissal.
-    Substitui a retenção efêmera de dicts locais (e.g. self.active_games) por
+    Gerenciador global de cache Level-1 do cassino via Redis.
+    Opera como Singleton virtual, fornecendo pools para Distributed Lock e
     armazenamento in-memory chave-valor, provendo cross-guild isolation e auto-TTL.
     """
     def __init__(self, url: str = None):
@@ -34,8 +34,14 @@ class AbyssalRedisManager:
             logger.critical("[Redis L1] FATAL BOOT: A variável REDIS_URL não está definida no ambiente.")
             raise ImproperlyConfiguredError("A variável REDIS_URL é obrigatória e não foi encontrada no ambiente.")
             
-        self.url = env_url
         self.is_production = os.getenv("ENV", "development").lower() in ("production", "prod")
+        
+        # Validação de URL (Sanity Check para TLS/SSL)
+        if self.is_production and not env_url.startswith("rediss://"):
+            logger.critical("[Redis L1] Configuração de Redis inválida para o ambiente de produção. O servidor Upstash exige SSL (rediss://).")
+            raise ImproperlyConfiguredError("Configuração de Redis inválida para o ambiente de produção. O servidor Upstash exige SSL (rediss://).")
+            
+        self.url = env_url
         
         # Telemetria de Ambiente (Sanitização)
         parsed_test = urllib.parse.urlparse(self.url)
@@ -45,6 +51,11 @@ class AbyssalRedisManager:
         self._pool: Optional[redis.Redis] = None
         self._is_connected = False
         self._network_blackhole = False # Se True, interrompe loops de reconexão
+        
+        # Circuit Breaker Properties
+        self._failed_attempts = 0
+        self._last_failure_time = 0.0
+        self._circuit_open_duration = 60.0  # Halted Mode após 3 falhas
         
         self._last_ping_latency = 0.0
         self._resolved_host = "Unknown"
@@ -79,7 +90,15 @@ class AbyssalRedisManager:
 
         try:
             start_ping = time.perf_counter()
-            self._pool = redis.from_url(self.url, decode_responses=True)
+            # Implementação de Arquitetura de Conexão Robusta (ConnectionPool + TLS)
+            pool = redis.ConnectionPool.from_url(
+                self.url, 
+                ssl=self.url.startswith("rediss://"), 
+                decode_responses=True, 
+                socket_timeout=10.0, 
+                retry_on_timeout=True
+            )
+            self._pool = redis.Redis(connection_pool=pool)
             await self._pool.ping()
             end_ping = time.perf_counter()
             self._last_ping_latency = (end_ping - start_ping) * 1000
@@ -90,7 +109,12 @@ class AbyssalRedisManager:
             logger.info(f"[Redis L1] Conexão estabelecida e PING validado ({self._last_ping_latency:.2f}ms): {safe_url}")
             return True
         except (RedisConnectionError, RedisTimeoutError, OSError) as e:
-            logger.error(f"[Redis L1] FALHA DE CONEXÃO ou AUTH: ({type(e).__name__}) O daemon Redis recusou ou demorou em '{host}:{port}'.\nTraceback Técnico:\n{traceback.format_exc()}")
+            error_str = str(e).lower()
+            if "connection closed by server" in error_str:
+                logger.error("[Redis L1] Falha de protocolo TLS/SSL. Verifique se o servidor (ex: Upstash) exige SSL e se a autenticação foi passada corretamente (rediss://).")
+            else:
+                logger.error(f"[Redis L1] FALHA DE CONEXÃO ou AUTH: ({type(e).__name__}) O daemon Redis recusou ou demorou em '{host}:{port}'.\nTraceback Técnico:\n{traceback.format_exc()}")
+            
             self._pool = None
             self._is_connected = False
             return False
@@ -109,19 +133,31 @@ class AbyssalRedisManager:
         if self._is_connected:
             return True
             
-        if self._network_blackhole:
-            logger.warning("[Redis Manager] Reconexão bloqueada: O host configurado é inacessível (Network Blackhole). Operações do cassino em pausa (Sem Hard Reset loop).")
-            return False
-            
-        logger.warning("[Redis Aggressive Recovery] Redis reportado como Offline. Tentando Hard Reset da conexão (Lazy Connection) instantaneamente...")
-        await self.close() # Hard Reset explícito da pool morta
+        current_time = time.time()
+        
+        # Circuit Breaker: Anti-Spam de Logs (Halted Mode)
+        if self._failed_attempts >= 3:
+            time_since_failure = current_time - self._last_failure_time
+            if time_since_failure < self._circuit_open_duration:
+                # Silencioso: não inunda o console
+                return False
+            else:
+                logger.info("[Redis CB] Tempo de resfriamento esgotado. Tentando religar infraestrutura...")
+                self._failed_attempts = 0
+
+        logger.info("[Redis CB] Realizando tentativa de reconexão ativa...")
+        await self.close() # Hard Reset explícito
         success = await self.connect()
         
         if success:
-            logger.success("[Redis Aggressive Recovery] Hard Reset concluído com sucesso. Alta Disponibilidade restaurada.")
+            self._failed_attempts = 0
+            logger.info("[Redis CB] Circuito fechado. Alta Disponibilidade restaurada.")
             return True
         else:
-            logger.critical("[Redis Aggressive Recovery] A reconexão sob demanda falhou. O cluster permanece inacessível para essa tentativa.")
+            self._failed_attempts += 1
+            self._last_failure_time = current_time
+            if self._failed_attempts >= 3:
+                logger.critical("[Redis CB] Sistema em modo de espera por falha de conexão persistente. Entrando em Halted Mode por 60s.")
             return False
 
     async def close(self):
