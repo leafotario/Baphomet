@@ -36,7 +36,12 @@ class AbyssalRedisManager:
             
         self.is_production = os.getenv("ENV", "development").lower() in ("production", "prod")
         
-        # Validação de URL (Sanity Check para TLS/SSL)
+        # Lógica de Pré-processamento e Forçamento de TLS (Substitui o kwarg ssl=True)
+        if "upstash.io" in env_url or self.is_production:
+            if env_url.startswith("redis://"):
+                env_url = env_url.replace("redis://", "rediss://", 1)
+        
+        # Validação de URL (Sanity Check Estrutural)
         if self.is_production and not env_url.startswith("rediss://"):
             logger.critical("[Redis L1] Configuração de Redis inválida para o ambiente de produção. O servidor Upstash exige SSL (rediss://).")
             raise ImproperlyConfiguredError("Configuração de Redis inválida para o ambiente de produção. O servidor Upstash exige SSL (rediss://).")
@@ -90,15 +95,17 @@ class AbyssalRedisManager:
 
         try:
             start_ping = time.perf_counter()
-            # Implementação de Arquitetura de Conexão Robusta (ConnectionPool + TLS)
-            pool = redis.ConnectionPool.from_url(
-                self.url, 
-                ssl=self.url.startswith("rediss://"), 
-                decode_responses=True, 
-                socket_timeout=10.0, 
-                retry_on_timeout=True
-            )
-            self._pool = redis.Redis(connection_pool=pool)
+            
+            kwargs = {
+                "decode_responses": True,
+                "socket_timeout": 10.0,
+                "retry_on_timeout": True
+            }
+            logger.debug(f"DEBUG: Pool Params: {kwargs}")
+            
+            # Implementação robusta compatível com redis.asyncio (sem kwarg 'ssl')
+            self._pool = redis.from_url(self.url, **kwargs)
+            
             await self._pool.ping()
             end_ping = time.perf_counter()
             self._last_ping_latency = (end_ping - start_ping) * 1000
