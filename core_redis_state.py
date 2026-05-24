@@ -1,11 +1,15 @@
 import json
+import os
 import logging
 from typing import Dict, Any, Optional
 
 try:
     import redis.asyncio as redis
+    from redis.exceptions import ConnectionError as RedisConnectionError, TimeoutError as RedisTimeoutError
 except ImportError:
-    pass # AiORedis / redis.asyncio module. Fail gracefully in test environment.
+    redis = None
+    RedisConnectionError = OSError
+    RedisTimeoutError = OSError
 
 logger = logging.getLogger("Baphomet.Redis")
 
@@ -15,14 +19,38 @@ class AbyssalRedisManager:
     Substitui a retenção efêmera de dicts locais (e.g. self.active_games) por
     armazenamento in-memory chave-valor, provendo cross-guild isolation e auto-TTL.
     """
-    def __init__(self, url: str = "redis://localhost:6379/0"):
-        self.url = url
+    def __init__(self, url: str = None):
+        # Pilar 1: Desacoplamento Ambiental Estrito.
+        # A URL do Redis DEVE ser injetada via variável de ambiente REDIS_URL.
+        # O fallback para localhost existe apenas para desenvolvimento local.
+        self.url = url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
         self._pool = None
+        self._is_connected = False
 
-    async def connect(self):
-        """Estabelece o pool de conexões assíncronas com o Redis."""
-        self._pool = redis.from_url(self.url, decode_responses=True)
-        logger.info(f"Conexão Redis L1 estabelecida: {self.url}")
+    async def connect(self) -> bool:
+        """
+        Estabelece o pool de conexões assíncronas com o Redis.
+        Executa um Healthcheck de Pré-Ignição (PING) para validar
+        a topologia de rede antes de permitir operações de I/O.
+        Retorna True se a conexão foi bem-sucedida, False caso contrário.
+        """
+        try:
+            self._pool = redis.from_url(self.url, decode_responses=True)
+            # Healthcheck de Pré-Ignição: valida que o daemon Redis está vivo e respondendo
+            await self._pool.ping()
+            self._is_connected = True
+            logger.info(f"[Redis L1] Conexão estabelecida e PING validado: {self.url}")
+            return True
+        except (RedisConnectionError, RedisTimeoutError, OSError) as e:
+            logger.error(f"[Redis L1] FALHA DE CONEXÃO — o daemon Redis não respondeu em '{self.url}': {e}")
+            self._pool = None
+            self._is_connected = False
+            return False
+        except Exception as e:
+            logger.error(f"[Redis L1] Exceção inesperada durante o boot de conexão: {e}")
+            self._pool = None
+            self._is_connected = False
+            return False
 
     async def close(self):
         """Drena a conexão durante o shutdown gracioso."""

@@ -3,11 +3,20 @@ import asyncio
 import uuid
 import time
 import json
+import logging
 import discord
 from discord.ext import commands, tasks
 from core_db_transaction import BaphometTransactionManager, SacrificeValidationError
 from occult_ui_framework import AbyssalRNG
 from core_redis_state import AbyssalRedisManager
+
+try:
+    from redis.exceptions import ConnectionError as RedisConnectionError, TimeoutError as RedisTimeoutError
+except ImportError:
+    RedisConnectionError = OSError
+    RedisTimeoutError = OSError
+
+logger = logging.getLogger("Baphomet.AbyssCrash")
 
 class AbyssCrashView(discord.ui.View):
     def __init__(self, tx_manager: BaphometTransactionManager, redis_manager: AbyssalRedisManager, redis_key: str):
@@ -128,17 +137,35 @@ class AbyssCrashCog(commands.Cog):
     async def crash_updater_task(self):
         if not self.redis_manager._pool:
             return
-            
-        active_keys = await self.redis_manager._pool.smembers("baphomet:active_crashes")
+
+        # Pilar 2: Circuit Breaker de Tolerância a Falhas.
+        # Se o Redis piscar, reiniciar ou a latência de rede estourar,
+        # a task NÃO pode morrer. Ela recua e tenta no próximo ciclo de 1.5s.
+        try:
+            active_keys = await self.redis_manager._pool.smembers("baphomet:active_crashes")
+        except (RedisConnectionError, RedisTimeoutError, OSError) as e:
+            logger.warning(f"[Crash Loop] Redis inacessível durante SMEMBERS — recuo gracioso: {e}")
+            return
+        except Exception as e:
+            logger.error(f"[Crash Loop] Exceção inesperada durante SMEMBERS: {e}")
+            return
+
         if not active_keys:
             return
 
         for redis_key in active_keys:
-            raw_state = await self.redis_manager._pool.get(redis_key)
+            try:
+                raw_state = await self.redis_manager._pool.get(redis_key)
+            except (RedisConnectionError, RedisTimeoutError, OSError) as e:
+                logger.warning(f"[Crash Loop] Redis inacessível durante GET '{redis_key}' — recuo gracioso: {e}")
+                return
             
             if not raw_state:
                 # O usuário escapou (cashout atômico apagou a chave) ou o TTL estourou.
-                await self.redis_manager._pool.srem("baphomet:active_crashes", redis_key)
+                try:
+                    await self.redis_manager._pool.srem("baphomet:active_crashes", redis_key)
+                except (RedisConnectionError, RedisTimeoutError, OSError):
+                    pass
                 continue
 
             state = json.loads(raw_state)
@@ -158,15 +185,23 @@ class AbyssCrashCog(commands.Cog):
 
             if has_crashed:
                 # Obliteração atômica: loop deleta a chave primeiro para bloquear o view.escape_btn()
-                deleted = await self.redis_manager._pool.delete(redis_key)
-                await self.redis_manager._pool.srem("baphomet:active_crashes", redis_key)
+                try:
+                    deleted = await self.redis_manager._pool.delete(redis_key)
+                    await self.redis_manager._pool.srem("baphomet:active_crashes", redis_key)
+                except (RedisConnectionError, RedisTimeoutError, OSError) as e:
+                    logger.warning(f"[Crash Loop] Redis inacessível durante DELETE/SREM '{redis_key}': {e}")
+                    continue
                 
                 # Se o delete foi feito por nós e não pela fuga
                 if deleted:
                     await self.tx_manager.resolve_escrow(escrow_id, 0)
             else:
-                state["current_multiplier"] = new_multiplier
-                await self.redis_manager._pool.setex(name=redis_key, time=600, value=json.dumps(state))
+                try:
+                    state["current_multiplier"] = new_multiplier
+                    await self.redis_manager._pool.setex(name=redis_key, time=600, value=json.dumps(state))
+                except (RedisConnectionError, RedisTimeoutError, OSError) as e:
+                    logger.warning(f"[Crash Loop] Redis inacessível durante SETEX '{redis_key}': {e}")
+                    continue
 
             # Fetch Message
             msg = self._message_cache.get(redis_key)
@@ -230,16 +265,30 @@ class AbyssCrashCog(commands.Cog):
 async def setup(bot):
     if hasattr(bot, 'tx_manager'):
         redis_manager = AbyssalRedisManager()
-        await redis_manager.connect()
+        redis_alive = await redis_manager.connect()
+        
+        if not redis_alive:
+            logger.error(
+                "[Boot] O daemon Redis NÃO respondeu ao Healthcheck de Pré-Ignição. "
+                "O módulo AbyssCrash será carregado em MODO DEGRADADO (sem task de atualização). "
+                "Verifique a variável de ambiente REDIS_URL e a topologia de rede do contêiner."
+            )
         
         cog = AbyssCrashCog(bot, bot.tx_manager, redis_manager)
+        
+        # Se o Redis não estiver vivo, impedir que o loop rode no vazio
+        if not redis_alive:
+            cog.crash_updater_task.cancel()
+        
         await bot.add_cog(cog)
         
-        if redis_manager._pool:
+        if redis_alive and redis_manager._pool:
             try:
                 active_keys = await redis_manager._pool.smembers("baphomet:active_crashes")
                 for redis_key in active_keys:
                     view = AbyssCrashView(bot.tx_manager, redis_manager, redis_key)
                     bot.add_view(view)
-            except Exception:
-                pass
+            except (RedisConnectionError, RedisTimeoutError, OSError) as e:
+                logger.warning(f"[Boot] Falha ao restaurar Views persistentes do Redis: {e}")
+            except Exception as e:
+                logger.warning(f"[Boot] Exceção inesperada ao restaurar Views: {e}")

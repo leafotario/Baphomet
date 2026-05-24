@@ -1,4 +1,5 @@
 import asyncio
+import os
 import time
 import logging
 from contextlib import asynccontextmanager
@@ -34,7 +35,15 @@ class BaphometTransactionManager:
         if self._is_ready:
             return
 
-        self._redis_lock_pool = redis.Redis.from_url("redis://localhost:6379/0", decode_responses=True)
+        # Distributed Lock Pool: Desacoplamento Ambiental via REDIS_URL
+        try:
+            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+            self._redis_lock_pool = redis.Redis.from_url(redis_url, decode_responses=True)
+            await self._redis_lock_pool.ping()
+            logger.info(f"[TransactionManager] Redis Lock Pool conectado e PING validado: {redis_url}")
+        except Exception as e:
+            logger.error(f"[TransactionManager] Redis Lock Pool INACESSÍVEL — o Distributed Lock operará sem proteção: {e}")
+            self._redis_lock_pool = None
 
         for _ in range(self.pool_size):
             conn = await aiosqlite.connect(self.db_path)
