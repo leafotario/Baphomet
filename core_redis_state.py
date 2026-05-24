@@ -26,8 +26,12 @@ class AbyssalRedisManager:
     def __init__(self, url: str = None):
         # Pilar 1: Desacoplamento Ambiental Estrito.
         # A URL do Redis DEVE ser injetada via variável de ambiente REDIS_URL.
-        # O fallback para localhost existe apenas para desenvolvimento local.
-        self.url = url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        env_url = os.getenv("REDIS_URL")
+        self.url = env_url or "redis://localhost:6379/0"
+        self.is_production = os.getenv("ENV", "development").lower() in ("production", "prod")
+        
+        logger.info(f"[Redis L1] Iniciando AbyssalRedisManager. REDIS_URL informada: {env_url}. Modo de Operação: {'Produção' if self.is_production else 'Desenvolvimento'}")
+        
         self._pool: Optional[redis.Redis] = None
         self._is_connected = False
         
@@ -46,13 +50,20 @@ class AbyssalRedisManager:
         port = parsed_url.port or 6379
         
         logger.debug(f"[Redis L1] Iniciando diagnóstico de conexão para o host: {host}:{port}")
+        
+        if self.is_production and host in ("localhost", "127.0.0.1", "::1"):
+            logger.critical("[Redis L1] FATAL SECURITY: Ambiente detectado como PRODUÇÃO, mas a REDIS_URL aponta para localhost. O bot requer uma topologia distribuída autêntica no Docker. Abortando conexão.")
+            self._pool = None
+            self._is_connected = False
+            return False
 
-        # Active Network Probing (DNS Resolution)
+        # Active Network Probing (DNS Resolution Strict)
         try:
-            socket.getaddrinfo(host, port)
-            logger.debug(f"[Redis L1] Probe DNS SUCESSO: '{host}' foi resolvido na rede local.")
+            resolved_ip = socket.gethostbyname(host)
+            self._resolved_host = resolved_ip
+            logger.debug(f"[Redis L1] Probe DNS SUCESSO: Host '{host}' foi resolvido para o IP {resolved_ip}.")
         except socket.gaierror as e:
-            logger.error(f"[Redis L1] FATAL FORENSE: Falha de resolução DNS. O contêiner não enxerga o host '{host}'. Erro: {e}")
+            logger.error(f"[Redis L1] FATAL FORENSE: Falha de conexão: Host '{host}' não resolvido ou inacessível. Erro: {e}")
             self._pool = None
             self._is_connected = False
             return False
@@ -89,6 +100,7 @@ class AbyssalRedisManager:
             return True
             
         logger.warning("[Redis Aggressive Recovery] Redis reportado como Offline. Tentando Hard Reset da conexão (Lazy Connection) instantaneamente...")
+        await self.close() # Hard Reset explícito da pool morta
         success = await self.connect()
         
         if success:

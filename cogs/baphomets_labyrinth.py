@@ -234,19 +234,6 @@ class LabyrinthCog(commands.Cog):
                     await conn.execute("INSERT INTO labyrinth_cells (session_id, x_idx, y_idx, is_mine) VALUES (?, ?, ?, ?)", (session_id, row, col, shuffled[idx]))
                     idx += 1
             await conn.commit()
-
-        embed = discord.Embed(
-            title="O Labirinto de Baphomet",
-            description="Dezesseis selos obscuros à sua frente. Pisos seguros multiplicam sua alma, bestas escondidas a aniquilam de imediato.",
-            color=0x2b2d31
-        )
-        embed.add_field(name="Tributo Ancorado", value=f"{aposta} XP", inline=False)
-        
-        view = BaphometsLabyrinthView(self.tx_manager, session_id, self.rng)
-        await view.initialize_grid()
-        self.bot.add_view(view) # Registra globalmente para lidar com restart
-        await ctx.send(embed=embed, view=view)
-
 async def setup(bot):
     if hasattr(bot, 'tx_manager'):
         cog = LabyrinthCog(bot, bot.tx_manager)

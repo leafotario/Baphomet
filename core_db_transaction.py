@@ -262,7 +262,20 @@ class BaphometTransactionManager:
                     await conn.commit()
                     return escrow_id
 
-                except Exception:
+                except Exception as db_e:
+                    if isinstance(db_e, SacrificeValidationError):
+                        await conn.rollback()
+                        raise db_e
+                        
+                    tb_str = "".join(traceback.format_exception(type(db_e), db_e, db_e.__traceback__))
+                    logger.error(
+                        f"❌ [TransactionManager DB FORENSE] Colapso Crítico no Banco de Dados SQLite\n"
+                        f"➤ Usuário ID: {user_id}\n"
+                        f"➤ Guilda ID: {guild_id}\n"
+                        f"➤ Aposta: {bet_amount}\n"
+                        f"➤ Erro Bruto: {type(db_e).__name__}: {db_e}\n"
+                        f"➤ Traceback Integral:\n{tb_str}"
+                    )
                     await conn.rollback()
                     raise
         finally:

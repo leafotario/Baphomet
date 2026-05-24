@@ -1,6 +1,10 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+import traceback
+import logging
+
+logger = logging.getLogger("baphomet.casino")
 
 class CasinoRouterCog(commands.Cog):
     """
@@ -15,6 +19,31 @@ class CasinoRouterCog(commands.Cog):
         if not hasattr(bot, 'tx_manager'):
             raise RuntimeError("Bot não possui tx_manager inicializado.")
         self.tx_manager = bot.tx_manager
+
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        """Global Exception Interceptor (Forense) para todos os rituais do Cassino."""
+        original_error = getattr(error, 'original', error)
+        tb_str = "".join(traceback.format_exception(type(original_error), original_error, original_error.__traceback__))
+        
+        logger.error(
+            f"❌ [CASSINO FORENSE] Falha Catastrófica em Rota de Jogo\n"
+            f"➤ Comando: '/{interaction.command.name if interaction.command else 'Unknown'}'\n"
+            f"➤ Usuário: {interaction.user} (ID: {interaction.user.id})\n"
+            f"➤ Guilda: {interaction.guild.name if interaction.guild else 'DM'} (ID: {interaction.guild_id})\n"
+            f"➤ Erro Bruto: {type(original_error).__name__}: {original_error}\n"
+            f"➤ Traceback Integral:\n{tb_str}"
+        )
+        
+        # Mensagem degradada amigável para o usuário, não revelando stack trace sensível
+        msg = "O tecido da realidade rasgou. A entidade que processa os rituais encontrou uma anomalia estrutural e interrompeu seu sacrifício temporariamente."
+        
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
     async def validate_bet(self, interaction: discord.Interaction, game_id: str, aposta: int) -> bool:
         """Valida o sacrifício contra as configurações dinâmicas de SQL."""
