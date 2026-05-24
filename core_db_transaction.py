@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+import traceback
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
@@ -190,14 +191,28 @@ class BaphometTransactionManager:
         # Operação de Distributed Lock Atômica
         lock_key = f"baphomet:locks:user_escrow:{user_id}"
         
-        if not self.redis_manager or not self.redis_manager._is_connected:
-            logger.error(f"[TransactionManager] SacrificeValidationError! create_escrow bloqueado para Usuário {user_id}: O cluster Redis está Offline.")
+        if not self.redis_manager:
+            logger.error(f"[TransactionManager] SacrificeValidationError! O Redis Manager não foi injetado na aplicação.")
+            raise SacrificeValidationError("O cluster nativo não foi conectado. Tente novamente.")
+            
+        is_redis_ready = await self.redis_manager.ensure_connection()
+        if not is_redis_ready:
+            logger.error(f"[TransactionManager] SacrificeValidationError! create_escrow bloqueado para Usuário {user_id} na Guilda {guild_id}: O cluster Redis está Offline e o Self-Healing falhou ou está em resfriamento.")
             raise SacrificeValidationError("O cluster nativo não foi conectado. Falha temporária de infraestrutura, tente novamente.")
 
         try:
             acquired = await self.redis_manager._pool.set(name=lock_key, value="LOCKED", nx=True, ex=15)
         except Exception as e:
-            logger.error(f"[TransactionManager] Exceção durante o SETNX do Lock: {type(e).__name__} - {e}")
+            tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+            logger.error(
+                f"❌ [TransactionManager FORENSE] Exceção durante o SETNX do Lock\n"
+                f"➤ Timestamp: {time.time()}\n"
+                f"➤ Usuário ID: {user_id}\n"
+                f"➤ Guilda ID: {guild_id}\n"
+                f"➤ Estado Redis: _is_connected={self.redis_manager._is_connected}\n"
+                f"➤ Erro Bruto: {type(e).__name__}: {e}\n"
+                f"➤ Traceback Integral:\n{tb_str}"
+            )
             raise SacrificeValidationError("Falha de rede ao tentar criar a trava transacional. Tente novamente.")
             
         if not acquired:
