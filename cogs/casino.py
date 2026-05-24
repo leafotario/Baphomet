@@ -63,8 +63,8 @@ class CasinoRouterCog(commands.Cog):
     # CASSINO GLOBAL COMMANDS
     # =========================================================================
 
-    @cassino.command(name="ajuda", description="O Livro Negro das Regras do Cassino. Veja limites e explicações.")
-    async def ajuda(self, interaction: discord.Interaction):
+    @cassino.command(name="status", description="O painel analítico do Cassino Abissal. Veja o status e limites dos rituais.")
+    async def status(self, interaction: discord.Interaction):
         # Reúne dados reais da Base de Dados
         games = {
             "crash_abissal": "Crash Abissal",
@@ -92,6 +92,38 @@ class CasinoRouterCog(commands.Cog):
             
         embed.set_footer(text="Use os comandos da família /cassino para invocar os rituais.")
         await interaction.response.send_message(embed=embed)
+
+    @cassino.command(name="ajuda", description="O Grimório Macabro dos rituais. Leia as leis do Abismo antes de sangrar seu XP.")
+    async def ajuda(self, interaction: discord.Interaction):
+        msg1 = (
+            "🕯️ **O GRIMÓRIO DO CASSINO ABISSAL** 🕯️\n\n"
+            "O Cassino Abissal não é um local de diversão, mortal. É um altar de sacrifícios onde a moeda corrente é a sua **Vitalidade (XP)**.\n"
+            "Ao invocar um ritual, o seu XP é temporariamente **retido pelo Abismo (Escrow)**. Se você sobreviver e vencer, a sua vitalidade é devolvida, purificada e multiplicada, após o dízimo inegociável da casa. Se você falhar, o Abismo consome sua alma e alimenta o Leviatã.\n\n"
+            "📜 **OS RITUAIS DE SANGUE** 📜\n\n"
+            "📉 **`/cassino crash_abissal` — O Poço Sem Fundo**\n"
+            "Encare a colisão de Pareto. Um multiplicador insano cresce a cada segundo que passa, mas o colapso estrutural é iminente. Ajoelhe-se e implore pelo momento certo de usar o *Cashout* e escapar com vida. Se o poço desabar antes de você fugir, o seu XP será obliterado.\n\n"
+            "🎡 **`/cassino macabra` — A Roda do Tormento**\n"
+            "Um giro sombrio (0 a 5). Oferte sua vitalidade à roda de ossos. O sacrifício pode dobrar a sua essência, pode ser aniquilado sem dor em um empate vazio, ou resultar em perda total e sangrenta.\n\n"
+            "🎲 **`/cassino ossos` — Os Ossos dos Condenados**\n"
+            "A dança macabra das probabilidades (regras ancestrais de Craps). O primeiro lançamento julga o seu destino:\n"
+            "• **Vitória imediata** se os ossos marcarem 7 ou 11.\n"
+            "• **Morte fulminante** se marcarem 2, 3 ou 12.\n"
+            "Qualquer outro valor torna-se a sua 'Marca'. Você deverá rolar os ossos novamente até atingir a Marca (e vencer) ou rolar um 7 (e encontrar o seu fim).\n\n"
+        )
+        msg2 = (
+            "👁️ **`/cassino pacto_cego` — O Pacto Cego**\n"
+            "Uma matriz informacional oculta. Três carrascos aguardam a sua escolha: O Leviatã, O Rastejante ou O Sussurrador. Cada um esconde um multiplicador criptográfico. Escolha o seu carrasco e receba o seu destino... mas saiba que o oblívio absoluto (0x) espreita nas sombras.\n\n"
+            "⚖️ **`/cassino pesados_pecados` — A Balança dos Pecados**\n"
+            "O rito infinito de adivinhação. Ajoelhe-se perante a balança e tente adivinhar se o próximo pecado será mais *Pesado* ou mais *Leve* que o anterior. Acertar aumenta a sua recompensa, permitindo que você continue num ciclo ganancioso, mas a cada passo, o dízimo da casa (borda) aumenta e esmaga as suas chances.\n\n"
+            "🐙 **`/cassino leviata` — O Sacrifício Supremo**\n"
+            "O rito global e extremo. A barreira de entrada exige blocos absurdos de XP. A sua chance de vitória? 1 em 10.000. Mas se os deuses antigos sorrirem para você, a própria realidade irá rachar, e você absorverá a totalidade do **Jackpot Multiversal** acumulado por todos os sacrifícios falhos de outros tolos.\n\n"
+            "🧩 **`/cassino labirinto`** — Sobreviva à grade minada.\n"
+            "🔥 **`/cassino danca_negras`** — O ritual multiplayer de sobrevivência.\n"
+            "🔮 **`/cassino oraculo`** — Alinhe os astros no caça-níqueis infernal.\n"
+            "🃏 **`/cassino blackjack`** — O julgamento da alma. Vença sem quebrar os selos herméticos (21)."
+        )
+        await interaction.response.send_message(msg1)
+        await interaction.followup.send(msg2)
 
     @cassino.command(name="crash_abissal", description="Encare a colisão de Pareto. Escape com seus lucros ou morra na queda.")
     async def crash_abissal(self, interaction: discord.Interaction, aposta: int):
