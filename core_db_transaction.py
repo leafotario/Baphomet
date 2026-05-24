@@ -20,8 +20,9 @@ class BaphometTransactionManager:
     Interface responsável por administrar operações atômicas de transação e
     Connection Pooling, impedindo ativamente Race Conditions e ataques de latência.
     """
-    def __init__(self, db_path: str = "data/baphomet_transactions.sqlite3", pool_size: int = 5):
+    def __init__(self, db_path: str = "data/baphomet_transactions.sqlite3", xp_db_path: str = "data/baphomet_xp.sqlite3", pool_size: int = 5):
         self.db_path = db_path
+        self.xp_db_path = xp_db_path
         self.pool_size = pool_size
         self._pool: asyncio.Queue[aiosqlite.Connection] = asyncio.Queue(maxsize=pool_size)
         self._is_ready = False
@@ -37,17 +38,12 @@ class BaphometTransactionManager:
             await conn.execute("PRAGMA journal_mode=WAL;")
             await conn.execute("PRAGMA synchronous=NORMAL;")
             await conn.execute("PRAGMA busy_timeout=5000;")
+            await conn.execute("ATTACH DATABASE ? AS xp_db", (self.xp_db_path,))
             await self._pool.put(conn)
         
         async with self.connection() as conn:
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS user_economy (
-                    user_id INTEGER,
-                    guild_id INTEGER,
-                    xp INTEGER DEFAULT 0,
-                    PRIMARY KEY (user_id, guild_id)
-                );
-            """)
+            # A tabela xp_profiles já é gerida pelo XpRepository na xp_db.
+            # Não é necessário criar user_economy — o casino opera diretamente sobre xp_db.xp_profiles.
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS guild_economy (
                     guild_id INTEGER PRIMARY KEY,
@@ -167,33 +163,30 @@ class BaphometTransactionManager:
         if bet_amount > 9223372036854775807:
             raise SacrificeValidationError("Sobrecarga cataclísmica: a aposta excede 9223372036854775807 (Integer Overflow preventivo).")
 
+        bet_amount = int(bet_amount)
+
         async with self.connection() as conn:
             try:
                 # Instrução mandatória para lock pessimista global de database/linha no driver SQLite.
                 await conn.execute("BEGIN IMMEDIATE;")
-                
-                # Garante pré-existência para a dedução evitar underflow implícito caso não existisse.
-                await conn.execute(
-                    "INSERT OR IGNORE INTO user_economy (user_id, guild_id, xp) VALUES (?, ?, 0)",
-                    (user_id, guild_id)
-                )
 
-                # Dedução estrita: verificar saldo real
+                # Consulta o saldo real da tabela xp_profiles na DB de XP (attached como xp_db).
                 async with conn.execute(
-                    "SELECT xp FROM user_economy WHERE user_id = ? AND guild_id = ?",
-                    (user_id, guild_id)
+                    "SELECT total_xp FROM xp_db.xp_profiles WHERE guild_id = ? AND user_id = ?",
+                    (guild_id, user_id)
                 ) as cursor:
                     row = await cursor.fetchone()
-                    if row is None or row["xp"] < bet_amount:
+                    current_xp = int(row["total_xp"]) if row and row["total_xp"] is not None else 0
+                    if current_xp < bet_amount:
                         raise SacrificeValidationError("Recursos insuficientes (XP) para realizar este sacrifício.")
 
-                # Consome o XP
+                # Consome o XP diretamente na tabela real de XP.
                 await conn.execute(
-                    "UPDATE user_economy SET xp = xp - ? WHERE user_id = ? AND guild_id = ?",
-                    (bet_amount, user_id, guild_id)
+                    "UPDATE xp_db.xp_profiles SET total_xp = total_xp - ? WHERE guild_id = ? AND user_id = ?",
+                    (bet_amount, guild_id, user_id)
                 )
 
-                # Gera o contrato
+                # Gera o contrato de escrow.
                 current_time = time.time()
                 cursor = await conn.execute(
                     "INSERT INTO escrows (user_id, guild_id, bet_amount, created_at) VALUES (?, ?, ?, ?)",
@@ -233,8 +226,8 @@ class BaphometTransactionManager:
                 await conn.execute("DELETE FROM escrows WHERE escrow_id = ?", (escrow_id,))
 
                 await conn.execute(
-                    "UPDATE user_economy SET xp = xp + ? WHERE user_id = ? AND guild_id = ?",
-                    (payout_amount, user_id, guild_id)
+                    "UPDATE xp_db.xp_profiles SET total_xp = total_xp + ? WHERE guild_id = ? AND user_id = ?",
+                    (payout_amount, guild_id, user_id)
                 )
 
                 # Destina 1.5% do sacrifício falho à reserva leviathan_jackpot
@@ -286,8 +279,8 @@ class BaphometTransactionManager:
                     
                     # Devolve integralmente a vitalidade ao portador inicial
                     await conn.execute(
-                        "UPDATE user_economy SET xp = xp + ? WHERE user_id = ? AND guild_id = ?",
-                        (bet, u_id, g_id)
+                        "UPDATE xp_db.xp_profiles SET total_xp = total_xp + ? WHERE guild_id = ? AND user_id = ?",
+                        (bet, g_id, u_id)
                     )
                     # Limpa da tabela
                     await conn.execute("DELETE FROM escrows WHERE escrow_id = ?", (esc_id,))
