@@ -15,6 +15,10 @@ except ImportError:
     RedisConnectionError = OSError
     RedisTimeoutError = OSError
 
+class ImproperlyConfiguredError(Exception):
+    """Lançada quando variáveis de ambiente essenciais estão ausentes ou mal configuradas."""
+    pass
+
 logger = logging.getLogger("Baphomet.Redis")
 
 class AbyssalRedisManager:
@@ -24,38 +28,42 @@ class AbyssalRedisManager:
     armazenamento in-memory chave-valor, provendo cross-guild isolation e auto-TTL.
     """
     def __init__(self, url: str = None):
-        # Pilar 1: Desacoplamento Ambiental Estrito.
-        # A URL do Redis DEVE ser injetada via variável de ambiente REDIS_URL.
-        env_url = os.getenv("REDIS_URL")
-        self.url = env_url or "redis://localhost:6379/0"
+        # Pilar 1: Desacoplamento Ambiental Estrito e Erradicação de Hardcoding.
+        env_url = url or os.getenv("REDIS_URL")
+        if not env_url or not env_url.strip():
+            logger.critical("[Redis L1] FATAL BOOT: A variável REDIS_URL não está definida no ambiente.")
+            raise ImproperlyConfiguredError("A variável REDIS_URL é obrigatória e não foi encontrada no ambiente.")
+            
+        self.url = env_url
         self.is_production = os.getenv("ENV", "development").lower() in ("production", "prod")
         
-        logger.info(f"[Redis L1] Iniciando AbyssalRedisManager. REDIS_URL informada: {env_url}. Modo de Operação: {'Produção' if self.is_production else 'Desenvolvimento'}")
+        # Telemetria de Ambiente (Sanitização)
+        parsed_test = urllib.parse.urlparse(self.url)
+        safe_boot_url = self.url.replace(parsed_test.password, "******") if parsed_test.password else self.url
+        logger.info(f"[Redis L1] Iniciando conexão Redis com URL: {safe_boot_url}. Modo: {'Produção' if self.is_production else 'Desenvolvimento'}")
         
         self._pool: Optional[redis.Redis] = None
         self._is_connected = False
+        self._network_blackhole = False # Se True, interrompe loops de reconexão
         
-        # Circuit Breaker Properties foram removidas em prol do Aggressive Recovery
         self._last_ping_latency = 0.0
         self._resolved_host = "Unknown"
         
     async def connect(self) -> bool:
         """
-        Estabelece o pool de conexões assíncronas com o Redis.
-        Executa Diagnóstico de Rede (DNS Probe) e Healthcheck de Pré-Ignição (PING).
-        Retorna True se a conexão foi bem-sucedida, False caso contrário.
+        Estabelece o pool de conexões assíncronas com o Redis de forma estrita.
         """
+        if self._network_blackhole:
+            return False
+
         parsed_url = urllib.parse.urlparse(self.url)
-        host = parsed_url.hostname or "localhost"
+        host = parsed_url.hostname
         port = parsed_url.port or 6379
         
-        logger.debug(f"[Redis L1] Iniciando diagnóstico de conexão para o host: {host}:{port}")
+        if not host:
+            raise ImproperlyConfiguredError(f"A REDIS_URL fornecida é malformada ou não possui hostname: {self.url}")
         
-        if self.is_production and host in ("localhost", "127.0.0.1", "::1"):
-            logger.critical("[Redis L1] FATAL SECURITY: Ambiente detectado como PRODUÇÃO, mas a REDIS_URL aponta para localhost. O bot requer uma topologia distribuída autêntica no Docker. Abortando conexão.")
-            self._pool = None
-            self._is_connected = False
-            return False
+        logger.debug(f"[Redis L1] Iniciando diagnóstico de conexão para o host: {host}:{port}")
 
         # Active Network Probing (DNS Resolution Strict)
         try:
@@ -66,6 +74,7 @@ class AbyssalRedisManager:
             logger.error(f"[Redis L1] FATAL FORENSE: Falha de conexão: Host '{host}' não resolvido ou inacessível. Erro: {e}")
             self._pool = None
             self._is_connected = False
+            self._network_blackhole = True # Pausa operações de cassino sem loop infinito
             return False
 
         try:
@@ -76,6 +85,7 @@ class AbyssalRedisManager:
             self._last_ping_latency = (end_ping - start_ping) * 1000
             
             self._is_connected = True
+            self._network_blackhole = False
             safe_url = self.url.replace(parsed_url.password, "******") if parsed_url.password else self.url
             logger.info(f"[Redis L1] Conexão estabelecida e PING validado ({self._last_ping_latency:.2f}ms): {safe_url}")
             return True
@@ -98,6 +108,10 @@ class AbyssalRedisManager:
         """
         if self._is_connected:
             return True
+            
+        if self._network_blackhole:
+            logger.warning("[Redis Manager] Reconexão bloqueada: O host configurado é inacessível (Network Blackhole). Operações do cassino em pausa (Sem Hard Reset loop).")
+            return False
             
         logger.warning("[Redis Aggressive Recovery] Redis reportado como Offline. Tentando Hard Reset da conexão (Lazy Connection) instantaneamente...")
         await self.close() # Hard Reset explícito da pool morta

@@ -44,13 +44,17 @@ class BaphometTransactionManager:
         if self.redis_manager:
             attempts = 0
             while not self.redis_manager._is_connected and attempts < 5:
+                if self.redis_manager._network_blackhole:
+                    logger.critical("[TransactionManager] Network Blackhole detectado no Redis Manager. Pausando tentativas de boot para evitar death loop.")
+                    break
+                    
                 logger.warning(f"[TransactionManager] Redis L1 não está pronto. Aguardando handshake (Tentativa {attempts + 1}/5)...")
                 await asyncio.sleep(2.0)
                 await self.redis_manager.connect() # Tenta forçar a reconexão
                 attempts += 1
                 
             if not self.redis_manager._is_connected:
-                logger.error("[TransactionManager] FALHA CRÍTICA DE BOOT: O Redis Lock Pool não pôde ser ativado após múltiplas tentativas. O cassino entrará em Lockdown.")
+                logger.error("[TransactionManager] FALHA CRÍTICA DE BOOT: O Redis Lock Pool não pôde ser ativado. O cassino entrará em Lockdown/Modo Degradado.")
         else:
             logger.error("[TransactionManager] O Redis Manager não foi injetado (bot.tx_manager.inject_redis() não foi chamado)!")
 
