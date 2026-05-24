@@ -123,13 +123,13 @@ class CasinoRouterCog(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
     @cassino.command(name="crash_abissal", description="Encare a colisão de Pareto. Escape com seus lucros ou morra na queda.")
-    async def crash_abissal(self, interaction: discord.Interaction, aposta: app_commands.Range[int, 1, 9223372036854775807]):
+    async def crash_abissal(self, interaction: discord.Interaction, aposta: app_commands.Range[int, 1, 9007199254740991]):
         if not await self.validate_bet(interaction, "crash_abissal", aposta): return
         cog = self.bot.get_cog("AbyssCrashCog")
         await cog.play_crash_abissal(interaction, aposta)
 
     @cassino.command(name="labirinto", description="Navegação em grade. Encontre caminhos seguros ou ative as minas letais.")
-    async def labirinto(self, interaction: discord.Interaction, aposta: app_commands.Range[int, 1, 9223372036854775807]):
+    async def labirinto(self, interaction: discord.Interaction, aposta: app_commands.Range[int, 1, 9007199254740991]):
         if not await self.validate_bet(interaction, "labirinto", aposta): return
         cog = self.bot.get_cog("LabyrinthCog")
         await cog.play_labirinto(interaction, aposta)
@@ -145,43 +145,43 @@ class CasinoRouterCog(commands.Cog):
         await cog.play_danca_negras(interaction)
 
     @cassino.command(name="pacto_cego", description="Matriz informacional oculta. Escolha seu carrasco e receba seu destino.")
-    async def pacto_cego(self, interaction: discord.Interaction, aposta: app_commands.Range[int, 1, 9223372036854775807]):
+    async def pacto_cego(self, interaction: discord.Interaction, aposta: app_commands.Range[int, 1, 9007199254740991]):
         if not await self.validate_bet(interaction, "pacto_cego", aposta): return
         cog = self.bot.get_cog("BlindPactCog")
         await cog.play_pacto_cego(interaction, aposta)
 
     @cassino.command(name="oraculo", description="O Caça-Níqueis Infernal. Alinhe os astros, evite o Sangue Corrompido.")
-    async def oraculo(self, interaction: discord.Interaction, aposta: app_commands.Range[int, 1, 9223372036854775807]):
+    async def oraculo(self, interaction: discord.Interaction, aposta: app_commands.Range[int, 1, 9007199254740991]):
         if not await self.validate_bet(interaction, "oraculo", aposta): return
         cog = self.bot.get_cog("BloodOracleCog")
         await cog.play_oraculo(interaction, aposta)
 
     @cassino.command(name="ossos", description="Invoque os ossos dos condenados e enfrente as probabilidades do submundo.")
-    async def ossos(self, interaction: discord.Interaction, aposta: app_commands.Range[int, 1, 9223372036854775807], faces: int = 6):
+    async def ossos(self, interaction: discord.Interaction, aposta: app_commands.Range[int, 1, 9007199254740991], faces: int = 6):
         if not await self.validate_bet(interaction, "ossos", aposta): return
         cog = self.bot.get_cog("BonesCog")
         await cog.play_ossos(interaction, aposta, faces)
 
     @cassino.command(name="blackjack", description="O Julgamento da Alma. Acumule unidades sem quebrar as leis herméticas.")
-    async def blackjack(self, interaction: discord.Interaction, aposta: app_commands.Range[int, 1, 9223372036854775807]):
+    async def blackjack(self, interaction: discord.Interaction, aposta: app_commands.Range[int, 1, 9007199254740991]):
         if not await self.validate_bet(interaction, "blackjack", aposta): return
         cog = self.bot.get_cog("SoulJudgementCog")
         await cog.play_blackjack(interaction, aposta)
 
     @cassino.command(name="leviata", description="Rito Extremo. Chance de 1 em 10.000 de rasgar a realidade e clamar o jackpot.")
-    async def leviata(self, interaction: discord.Interaction, aposta: app_commands.Range[int, 1, 9223372036854775807]):
+    async def leviata(self, interaction: discord.Interaction, aposta: app_commands.Range[int, 1, 9007199254740991]):
         if not await self.validate_bet(interaction, "leviata", aposta): return
         cog = self.bot.get_cog("UltimateSacrificeCog")
         await cog.play_leviata(interaction, aposta)
 
     @cassino.command(name="pesados_pecados", description="Aposte no peso dos pecados. Push your luck infinito com dízimo escalar crescente.")
-    async def pesados_pecados(self, interaction: discord.Interaction, aposta: app_commands.Range[int, 1, 9223372036854775807]):
+    async def pesados_pecados(self, interaction: discord.Interaction, aposta: app_commands.Range[int, 1, 9007199254740991]):
         if not await self.validate_bet(interaction, "pesados_pecados", aposta): return
         cog = self.bot.get_cog("WeightOfSinsCog")
         await cog.play_pesados_pecados(interaction, aposta)
 
     @cassino.command(name="macabra", description="Gire a Roda do Tormento. Escolhas secretas e consequências mortais.")
-    async def macabra(self, interaction: discord.Interaction, aposta: app_commands.Range[int, 1, 9223372036854775807]):
+    async def macabra(self, interaction: discord.Interaction, aposta: app_commands.Range[int, 1, 9007199254740991]):
         if not await self.validate_bet(interaction, "macabra", aposta): return
         cog = self.bot.get_cog("WheelOfTormentCog")
         await cog.play_macabra(interaction, aposta)

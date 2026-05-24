@@ -167,8 +167,8 @@ class BaphometTransactionManager:
         if bet_amount <= 0:
             raise SacrificeValidationError("O valor do sacrifício deve ser estritamente maior que zero.")
         
-        if bet_amount > 9223372036854775807:
-            raise SacrificeValidationError("Sobrecarga cataclísmica: a aposta excede 9223372036854775807 (Integer Overflow preventivo).")
+        if bet_amount > 9007199254740991:
+            raise SacrificeValidationError("Sobrecarga cataclísmica: a aposta excede 9007199254740991 (Integer Overflow preventivo).")
 
         bet_amount = int(bet_amount)
 
@@ -245,8 +245,8 @@ class BaphometTransactionManager:
 
                 await conn.execute("DELETE FROM escrows WHERE escrow_id = ?", (escrow_id,))
 
-                # Profilaxia Matemática: Teto de 64-bits assinalado do SQLite
-                SQLITE_MAX_INT = 9223372036854775807
+                # Profilaxia Matemática: Teto de 53-bits (MAX_SAFE_INTEGER) do IEEE 754 (Discord API)
+                SQLITE_MAX_INT = 9007199254740991
                 async with conn.execute("SELECT total_xp FROM xp_db.xp_profiles WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)) as prof_cursor:
                     prof_row = await prof_cursor.fetchone()
                     current_xp = int(prof_row["total_xp"]) if prof_row and prof_row["total_xp"] is not None else 0
@@ -306,8 +306,8 @@ class BaphometTransactionManager:
                     g_id = orphan["guild_id"]
                     bet = orphan["bet_amount"]
                     
-                    # Profilaxia Matemática: Teto de 64-bits
-                    SQLITE_MAX_INT = 9223372036854775807
+                    # Profilaxia Matemática: Teto de 53-bits (MAX_SAFE_INTEGER) do IEEE 754 (Discord API)
+                    SQLITE_MAX_INT = 9007199254740991
                     async with conn.execute("SELECT total_xp FROM xp_db.xp_profiles WHERE guild_id = ? AND user_id = ?", (g_id, u_id)) as prof_cursor:
                         prof_row = await prof_cursor.fetchone()
                         current_xp = int(prof_row["total_xp"]) if prof_row and prof_row["total_xp"] is not None else 0
