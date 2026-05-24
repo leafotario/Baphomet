@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
-import random
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import aiosqlite
@@ -235,7 +235,7 @@ class BumpReminderCog(commands.Cog):
         número 1 = primeira frase
         número 40 = última frase
         """
-        numero_sorteado = random.randint(1, len(BAPHOMET_BUMP_PHRASES))
+        numero_sorteado = secrets.SystemRandom().randint(1, len(BAPHOMET_BUMP_PHRASES))
         frase = BAPHOMET_BUMP_PHRASES[numero_sorteado - 1].format(ping=ping)
         return numero_sorteado, frase
 

@@ -23,7 +23,7 @@ class DanceJoinModal(discord.ui.Modal, title="Sua Oferta de Sangue"):
         try:
             aposta = int(self.bet_input.value)
             
-            async with self.view_parent.tx_manager.connection() as conn:
+            async with self.view_parent.tx_manager.acquire() as conn:
                 cursor = await conn.execute("SELECT amount FROM black_flames_participants WHERE session_id = ? AND user_id = ?", (self.view_parent.session_id, interaction.user.id))
                 if await cursor.fetchone():
                     await interaction.followup.send("Você já está preso na Roda de Fogo.", ephemeral=True)
@@ -68,7 +68,7 @@ class BlackFlamesDanceCog(commands.Cog):
         self.dance_resolver_task.cancel()
 
     async def play_danca_negras(self, interaction: discord.Interaction):
-        async with self.tx_manager.connection() as conn:
+        async with self.tx_manager.acquire() as conn:
             cursor = await conn.execute("SELECT session_id FROM active_games_state WHERE game_type = 'danca' AND channel_id = ?", (interaction.channel_id,))
             if await cursor.fetchone():
                 await interaction.response.send_message("As Chamas já ardem neste canal. Aguarde o fim do sacrifício atual.", ephemeral=True)
@@ -95,7 +95,7 @@ class BlackFlamesDanceCog(commands.Cog):
     @tasks.loop(seconds=5)
     async def dance_resolver_task(self):
         now = time.time()
-        async with self.tx_manager.connection() as conn:
+        async with self.tx_manager.acquire() as conn:
             cursor = await conn.execute("SELECT session_id, channel_id FROM active_games_state WHERE game_type = 'danca' AND expires_at <= ?", (now,))
             expired_dances = await cursor.fetchall()
             
@@ -175,7 +175,7 @@ async def setup(bot):
         await bot.add_cog(cog)
 
         import time
-        async with bot.tx_manager.connection() as conn:
+        async with bot.tx_manager.acquire() as conn:
             cursor = await conn.execute("SELECT session_id, guild_id FROM active_games_state WHERE game_type = 'danca' AND expires_at > ?", (time.time(),))
             sessions = await cursor.fetchall()
             for row in sessions:

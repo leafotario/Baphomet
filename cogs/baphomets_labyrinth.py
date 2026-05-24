@@ -27,7 +27,7 @@ class BaphometsLabyrinthView(discord.ui.View):
         
     async def initialize_grid(self):
         """Reconstrói a grid a partir da base de dados"""
-        async with self.tx_manager.connection() as conn:
+        async with self.tx_manager.acquire() as conn:
             cursor = await conn.execute(
                 "SELECT x_idx, y_idx, is_mine, is_revealed FROM labyrinth_cells WHERE session_id = ? ORDER BY x_idx, y_idx",
                 (self.session_id,)
@@ -53,7 +53,7 @@ class BaphometsLabyrinthView(discord.ui.View):
     async def process_step(self, interaction: discord.Interaction, button: LabyrinthButton):
         await interaction.response.defer()
         
-        async with self.tx_manager.connection() as conn:
+        async with self.tx_manager.acquire() as conn:
             cursor = await conn.execute(
                 "SELECT escrow_id, amount FROM escrows e JOIN active_games_state g ON e.user_id = (SELECT user_id FROM escrows WHERE escrow_id = e.escrow_id) WHERE g.session_id = ?",
                 (self.session_id,)
@@ -138,7 +138,7 @@ class BaphometsLabyrinthView(discord.ui.View):
     async def process_escape(self, interaction: discord.Interaction):
         await interaction.response.defer()
         
-        async with self.tx_manager.connection() as conn:
+        async with self.tx_manager.acquire() as conn:
             cursor = await conn.execute(
                 "SELECT escrow_id, amount FROM escrows e JOIN active_games_state g ON e.user_id = (SELECT user_id FROM escrows WHERE escrow_id = e.escrow_id) WHERE g.session_id = ?",
                 (self.session_id,)
@@ -213,7 +213,7 @@ class LabyrinthCog(commands.Cog):
         
         msg = await interaction.followup.send(embed=embed, view=view)
         
-        async with self.tx_manager.connection() as conn:
+        async with self.tx_manager.acquire() as conn:
             import time
             expires = time.time() + 3600 # 1 Hora para jogar
             await conn.execute(
@@ -253,7 +253,7 @@ async def setup(bot):
         
         # Reconecta views após restart
         import time
-        async with bot.tx_manager.connection() as conn:
+        async with bot.tx_manager.acquire() as conn:
             cursor = await conn.execute("SELECT session_id FROM active_games_state WHERE game_type = 'labirinto' AND expires_at > ?", (time.time(),))
             sessions = await cursor.fetchall()
             for row in sessions:

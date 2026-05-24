@@ -6,7 +6,7 @@ import asyncio
 import difflib
 import hashlib
 import logging
-import random
+import secrets
 from collections import defaultdict, deque
 from datetime import timedelta
 from typing import Protocol
@@ -48,12 +48,12 @@ class XpService:
         self,
         repository: XpRepository,
         *,
-        rng: random.Random | None = None,
+        rng: secrets.SystemRandom().Random | None = None,
         logger: logging.Logger | None = None,
         vinculos_provider: VinculoXpContextProvider | VinculoMultiplierProvider | None = None,
     ) -> None:
         self.repository = repository
-        self.rng = rng or random.Random()
+        self.rng = rng or secrets.SystemRandom().Random()
         self.logger = logger or logging.getLogger("baphomet.xp")
         self.vinculos_provider = vinculos_provider
         self._config_cache: dict[int, GuildXpConfig] = {}

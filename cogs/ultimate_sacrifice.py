@@ -28,7 +28,7 @@ class UltimateSacrificeCog(commands.Cog):
             # Exceção absoluta de sucesso: O Rasgo na Realidade ocorreu.
             
             # 1. Resgate e esvaziamento de todo o jackpot global através do banco
-            async with self.tx_manager.connection() as conn:
+            async with self.tx_manager.acquire() as conn:
                 async with conn.execute("SELECT SUM(leviathan_jackpot) as total_jackpot FROM guild_economy") as cursor:
                     row = await cursor.fetchone()
                     total_jackpot = row["total_jackpot"] if row and row["total_jackpot"] else 0.0
@@ -73,7 +73,7 @@ class UltimateSacrificeCog(commands.Cog):
             await self.tx_manager.resolve_escrow(escrow_id, 0)
             
             # A alimenta parcial pro Leviatã: Aposta base tem 10% enviada ao Jackpot Global
-            async with self.tx_manager.connection() as conn:
+            async with self.tx_manager.acquire() as conn:
                 jackpot_contribution = aposta * 0.10
                 await conn.execute(
                     "INSERT OR IGNORE INTO guild_economy (guild_id, leviathan_jackpot) VALUES (?, 0.0)",

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
-import random
+import secrets
 import unicodedata
 from dataclasses import dataclass
 from threading import Lock
@@ -185,7 +185,7 @@ class VinculoCardRenderer:
         
         overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
-        rng = random.Random()
+        rng = secrets.SystemRandom().Random()
         
         # Draw irregular dark flame polygons along the edges
         for _ in range(120):
@@ -535,7 +535,7 @@ class VinculoCardRenderer:
 
         scratches = Image.new("RGBA", band.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(scratches)
-        rng = random.Random(seed)
+        rng = secrets.SystemRandom().Random(seed)
         for _ in range(52):
             y = rng.randint(-10, max(1, band.h + 10))
             x = rng.randint(-80, max(1, band.w - 20))
@@ -571,7 +571,7 @@ class VinculoCardRenderer:
     def _noise_layer(size: tuple[int, int], *, seed: int, opacity: int, scale: int) -> Image.Image:
         width, height = size
         small = (max(1, width // scale), max(1, height // scale))
-        rng = random.Random(seed)
+        rng = secrets.SystemRandom().Random(seed)
         noise = Image.new("L", small)
         noise.putdata([rng.randrange(256) for _ in range(small[0] * small[1])])
         noise = noise.filter(ImageFilter.GaussianBlur(0.6)).resize(size, Image.Resampling.BICUBIC)

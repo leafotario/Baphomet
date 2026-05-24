@@ -4,7 +4,7 @@ import asyncio
 import datetime as dt
 import json
 import os
-import random
+import secrets
 import re
 import sqlite3
 from pathlib import Path
@@ -689,7 +689,7 @@ class AlbumDoDia(commands.Cog):
                 return len(ids)
 
             ordem_original = ids.copy()
-            random.shuffle(ids)
+            secrets.SystemRandom().shuffle(ids)
 
             if ids == ordem_original:
                 ids = ids[1:] + ids[:1]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
-import random
+import secrets
 from typing import Iterable
 
 import discord
@@ -358,24 +358,24 @@ class XpCardRenderer:
             "¿¿¿???", "█▓▒░ CORRUPTED ░▒▓█",
         ]
         glitch_font = self._font(14)
-        for _ in range(random.randint(4, 8)):
-            gx = random.randint(40, width - 200)
-            gy = random.randint(30, height - 40)
-            text = random.choice(glitch_texts)
-            alpha = random.randint(40, 120)
+        for _ in range(secrets.SystemRandom().randint(4, 8)):
+            gx = secrets.SystemRandom().randint(40, width - 200)
+            gy = secrets.SystemRandom().randint(30, height - 40)
+            text = secrets.SystemRandom().choice(glitch_texts)
+            alpha = secrets.SystemRandom().randint(40, 120)
             draw.text(
                 (gx, gy), text,
                 font=glitch_font,
-                fill=(255, random.randint(0, 80), random.randint(0, 80), alpha),
+                fill=(255, secrets.SystemRandom().randint(0, 80), secrets.SystemRandom().randint(0, 80), alpha),
             )
 
         # ── Linhas de glitch horizontais aleatórias ──
-        for _ in range(random.randint(3, 6)):
-            gy = random.randint(0, height)
-            gh = random.randint(1, 4)
+        for _ in range(secrets.SystemRandom().randint(3, 6)):
+            gy = secrets.SystemRandom().randint(0, height)
+            gh = secrets.SystemRandom().randint(1, 4)
             draw.rectangle(
                 [(0, gy), (width, gy + gh)],
-                fill=(255, 0, random.randint(60, 180), random.randint(30, 90)),
+                fill=(255, 0, secrets.SystemRandom().randint(60, 180), secrets.SystemRandom().randint(30, 90)),
             )
 
         # Mesclar Layers

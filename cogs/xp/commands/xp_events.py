@@ -3,7 +3,7 @@ from __future__ import annotations
 """Eventos do Sistema de XP."""
 
 import asyncio
-import random
+import secrets
 
 import discord
 from discord.ext import commands, tasks
@@ -52,7 +52,7 @@ class XpEvents(commands.Cog):
             channel = message.guild.get_channel(config.levelup_channel_id) if config.levelup_channel_id else message.channel
             if channel is None:
                 return
-            message_template = random.choice(LEVEL_UP_MESSAGES)
+            message_template = secrets.SystemRandom().choice(LEVEL_UP_MESSAGES)
             embed = discord.Embed(
                 description=message_template.format(mention=message.author.mention, level=result.new_level),
                 color=discord.Color.from_rgb(120, 60, 240),

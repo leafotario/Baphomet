@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import random
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -246,7 +246,7 @@ class TMDBClient:
             return None
 
         page_numbers = list(range(1, max_page + 1))
-        random.shuffle(page_numbers)
+        secrets.SystemRandom().shuffle(page_numbers)
         candidates: list[Mapping[str, Any]] = []
 
         for page_number in page_numbers:
@@ -259,7 +259,7 @@ class TMDBClient:
             if not isinstance(movies, list):
                 continue
 
-            random.shuffle(movies)
+            secrets.SystemRandom().shuffle(movies)
             for movie in movies:
                 if not isinstance(movie, Mapping):
                     continue
@@ -283,7 +283,7 @@ class TMDBClient:
             )
             return None
 
-        return random.choice(candidates)
+        return secrets.SystemRandom().choice(candidates)
 
     async def _fetch_discover_page(
         self,

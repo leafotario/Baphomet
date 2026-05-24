@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
-import random
+import secrets
 
 import discord
 from discord import app_commands
@@ -87,7 +87,7 @@ class XpPublicCommands(commands.Cog):
             channel = message.guild.get_channel(config.levelup_channel_id) if config.levelup_channel_id else message.channel
             if channel is None:
                 return
-            message_template = random.choice(LEVEL_UP_MESSAGES)
+            message_template = secrets.SystemRandom().choice(LEVEL_UP_MESSAGES)
             embed = discord.Embed(
                 description=message_template.format(mention=message.author.mention, level=result.new_level),
                 color=discord.Color.from_rgb(120, 60, 240),
@@ -122,7 +122,7 @@ class XpPublicCommands(commands.Cog):
             try:
                 image = await self.cards.render_baphomet_card(guild=interaction.guild, bot_user=target)
                 await interaction.edit_original_response(
-                    content=random.choice(EASTER_EGG_MESSAGES),
+                    content=secrets.SystemRandom().choice(EASTER_EGG_MESSAGES),
                     attachments=[discord.File(image, filename="baphomet_rank.png")],
                 )
             except Exception:

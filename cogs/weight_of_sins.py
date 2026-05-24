@@ -44,7 +44,14 @@ class WeightOfSinsView(SacrificialView):
                 embed.add_field(name="Vitalidade Acumulada", value=f"{potential_payout} XP", inline=True)
                 embed.set_footer(text="Fuja enquanto o abismo não o devora, ou tente pesar os pecados novamente.")
                 
-                await interaction.edit_original_response(embed=embed, view=self)
+                try:
+                    await interaction.edit_original_response(embed=embed, view=self)
+                except (discord.errors.NotFound, discord.errors.HTTPException):
+                    if self.message:
+                        try:
+                            await self.message.edit(embed=embed, view=self)
+                        except Exception:
+                            pass
             else:
                 # Falha: O abismo engole a aposta.
                 self.is_finalized = True
@@ -56,13 +63,29 @@ class WeightOfSinsView(SacrificialView):
                 embed.color = 0x000000
                 
                 # Limpa totalmente a view original apagando os controles
-                await interaction.edit_original_response(embed=embed, view=None)
+                try:
+                    await interaction.edit_original_response(embed=embed, view=None)
+                except (discord.errors.NotFound, discord.errors.HTTPException):
+                    if self.message:
+                        try:
+                            await self.message.edit(embed=embed, view=None)
+                        except Exception:
+                            pass
                 
         except Exception as e:
             if not self.is_finalized:
                 self.is_finalized = True
                 await self.tx_manager.resolve_escrow(self.escrow_id, 0)
             raise e
+
+    async def on_timeout(self) -> None:
+        if not self.is_finalized:
+            self.is_finalized = True
+            try:
+                await self.tx_manager.resolve_escrow(self.escrow_id, 0)
+            except Exception:
+                pass
+        await super().on_timeout()
 
     @discord.ui.button(label="Pesado", style=discord.ButtonStyle.danger)
     async def guess_heavy(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -120,7 +143,8 @@ class WeightOfSinsCog(commands.Cog):
         embed.add_field(name="Múltiplo Inicial", value="1.00x", inline=True)
         
         view = WeightOfSinsView(interaction.user.id, self.tx_manager, escrow_id, aposta, self.rng)
-        await interaction.followup.send(embed=embed, view=view)
+        msg = await interaction.followup.send(embed=embed, view=view)
+        view.message = msg
 
 async def setup(bot):
     if hasattr(bot, 'tx_manager'):

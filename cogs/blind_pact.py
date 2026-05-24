@@ -25,6 +25,7 @@ class BlindPactView(SacrificialView):
         self.escrow_id = escrow_id
         self.aposta = aposta
         self.rng = rng
+        self.is_finalized = False
         self.add_item(BlindPactSelect())
         
         # Vetores criptográficos de recompensa pré-gerados e ocultos
@@ -61,6 +62,7 @@ class BlindPactView(SacrificialView):
                 payout = int(self.aposta * self.rng.calculate_house_edge(0.33, raw_multiplier))
                 msg = f"Sua barganha com {choice} foi aceitável. O véu se levanta revelando a recompensa multiplicada transmutada para o seu sangue."
             
+            self.is_finalized = True
             await self.tx_manager.resolve_escrow(self.escrow_id, payout)
             
             embed = interaction.message.embeds[0]
@@ -68,9 +70,23 @@ class BlindPactView(SacrificialView):
             embed.add_field(name="Múltiplo Secreto do Algoz", value=f"{raw_multiplier}x", inline=True)
             embed.add_field(name="Retorno Real Pós-Dízimo", value=f"{payout} XP", inline=True)
             
+        except Exception as e:
+            if not getattr(self, 'is_finalized', False):
+                self.is_finalized = True
+                await self.tx_manager.resolve_escrow(self.escrow_id, 0)
+            raise e
         finally:
             # Fechamento absoluto: Itena componentes em button.disabled = True e edita
             await self.finalize_view(interaction)
+
+    async def on_timeout(self) -> None:
+        if not getattr(self, 'is_finalized', False):
+            self.is_finalized = True
+            try:
+                await self.tx_manager.resolve_escrow(self.escrow_id, 0)
+            except Exception:
+                pass
+        await super().on_timeout()
 
 
 class BlindPactCog(commands.Cog):
@@ -95,7 +111,8 @@ class BlindPactCog(commands.Cog):
         embed.add_field(name="Tributo Aprisionado (Escrow)", value=f"{aposta} XP", inline=False)
         
         view = BlindPactView(interaction.user.id, self.tx_manager, escrow_id, aposta, self.rng)
-        await interaction.followup.send(embed=embed, view=view)
+        msg = await interaction.followup.send(embed=embed, view=view)
+        view.message = msg
 
 async def setup(bot):
     if hasattr(bot, 'tx_manager'):

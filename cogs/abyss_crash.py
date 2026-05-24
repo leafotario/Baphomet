@@ -19,7 +19,7 @@ class AbyssCrashView(discord.ui.View):
     async def escape_btn(self, interaction: discord.Interaction):
         await interaction.response.defer()
         
-        async with self.tx_manager.connection() as conn:
+        async with self.tx_manager.acquire() as conn:
             cursor = await conn.execute(
                 "SELECT s.escrow_id, s.user_id, s.current_multiplier, s.is_finalized, e.bet_amount "
                 "FROM abyss_crash_state s "
@@ -100,7 +100,7 @@ class AbyssCrashCog(commands.Cog):
         msg = await interaction.followup.send(embed=embed, view=view)
         self._message_cache[session_id] = msg
         
-        async with self.tx_manager.connection() as conn:
+        async with self.tx_manager.acquire() as conn:
             await conn.execute(
                 "INSERT INTO active_games_state (session_id, game_type, channel_id, guild_id, message_id, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
                 (session_id, "crash", interaction.channel_id, interaction.guild_id, msg.id, expires)
@@ -113,7 +113,7 @@ class AbyssCrashCog(commands.Cog):
 
     @tasks.loop(seconds=1.5)
     async def crash_updater_task(self):
-        async with self.tx_manager.connection() as conn:
+        async with self.tx_manager.acquire() as conn:
             cursor = await conn.execute(
                 "SELECT s.session_id, s.crash_point, s.current_multiplier, s.is_finalized, "
                 "g.channel_id, g.message_id, e.bet_amount "
@@ -177,17 +177,40 @@ class AbyssCrashCog(commands.Cog):
                         embed.add_field(name="Retorno", value="0 XP (Devorado)", inline=False)
                         
                         view = discord.ui.View() # view vazia (remove botões)
-                        try:
-                            await msg.edit(embed=embed, view=view)
-                        except Exception:
-                            pass
+                        
+                        # Fallback for RateLimits and Network issues
+                        attempts = 0
+                        while attempts < 3:
+                            try:
+                                await msg.edit(embed=embed, view=view)
+                                break
+                            except discord.HTTPException as e:
+                                if e.status == 429: # Rate Limited
+                                    retry_after = e.retry_after if hasattr(e, 'retry_after') else 2.0
+                                    await asyncio.sleep(retry_after)
+                                    attempts += 1
+                                else:
+                                    break
+                            except Exception:
+                                break
                     else:
                         embed.description = f"O abismo começa a se abrir... **[{new_multiplier:.2f}x]**\nAssista à força do motor puxando você."
                         embed.color = 0xFFFF00
-                        try:
-                            await msg.edit(embed=embed)
-                        except Exception:
-                            pass
+                        
+                        attempts = 0
+                        while attempts < 3:
+                            try:
+                                await msg.edit(embed=embed)
+                                break
+                            except discord.HTTPException as e:
+                                if e.status == 429:
+                                    retry_after = e.retry_after if hasattr(e, 'retry_after') else 2.0
+                                    await asyncio.sleep(retry_after)
+                                    attempts += 1
+                                else:
+                                    break
+                            except Exception:
+                                break
 
     @crash_updater_task.before_loop
     async def before_crash_updater(self):
@@ -199,7 +222,7 @@ async def setup(bot):
         await bot.add_cog(cog)
         
         import time
-        async with bot.tx_manager.connection() as conn:
+        async with bot.tx_manager.acquire() as conn:
             cursor = await conn.execute("SELECT session_id FROM active_games_state WHERE game_type = 'crash' AND expires_at > ?", (time.time(),))
             sessions = await cursor.fetchall()
             for row in sessions:

@@ -26,6 +26,7 @@ class BaphometTransactionManager:
         self.pool_size = pool_size
         self._pool: asyncio.Queue[aiosqlite.Connection] = asyncio.Queue(maxsize=pool_size)
         self._is_ready = False
+        self._active_users: set[int] = set()
 
     async def initialize(self) -> None:
         """Inicializa o Connection Pool e a infraestrutura de tabelas."""
@@ -41,7 +42,7 @@ class BaphometTransactionManager:
             await conn.execute("ATTACH DATABASE ? AS xp_db", (self.xp_db_path,))
             await self._pool.put(conn)
         
-        async with self.connection() as conn:
+        async with self.acquire() as conn:
             # A tabela xp_profiles já é gerida pelo XpRepository na xp_db.
             # Não é necessário criar user_economy — o casino opera diretamente sobre xp_db.xp_profiles.
             await conn.execute("""
@@ -130,7 +131,7 @@ class BaphometTransactionManager:
         self._is_ready = False
 
     @asynccontextmanager
-    async def connection(self) -> AsyncIterator[aiosqlite.Connection]:
+    async def acquire(self) -> AsyncIterator[aiosqlite.Connection]:
         """Gerencia o ciclo de vida de uma conexão adquirida do Pool."""
         conn = await self._pool.get()
         try:
@@ -139,7 +140,7 @@ class BaphometTransactionManager:
             await self._pool.put(conn)
 
     async def get_casino_config(self, game_id: str) -> dict:
-        async with self.connection() as conn:
+        async with self.acquire() as conn:
             cursor = await conn.execute("SELECT min_bet, max_bet, house_edge, is_enabled FROM casino_configs WHERE game_id = ?", (game_id,))
             row = await cursor.fetchone()
             if row:
@@ -147,7 +148,7 @@ class BaphometTransactionManager:
             return {"min_bet": 100, "max_bet": 1000000, "house_edge": 0.05, "is_enabled": 1}
 
     async def update_casino_min_bet(self, game_id: str, min_bet: int) -> None:
-        async with self.connection() as conn:
+        async with self.acquire() as conn:
             await conn.execute("UPDATE casino_configs SET min_bet = ? WHERE game_id = ?", (min_bet, game_id))
             await conn.commit()
 
@@ -165,48 +166,55 @@ class BaphometTransactionManager:
 
         bet_amount = int(bet_amount)
 
-        async with self.connection() as conn:
-            try:
-                # Instrução mandatória para lock pessimista global de database/linha no driver SQLite.
-                await conn.execute("BEGIN IMMEDIATE;")
+        if user_id in self._active_users:
+            raise SacrificeValidationError("Você já tem um ritual em andamento. Aguarde a finalização.")
 
-                # Consulta o saldo real da tabela xp_profiles na DB de XP (attached como xp_db).
-                async with conn.execute(
-                    "SELECT total_xp FROM xp_db.xp_profiles WHERE guild_id = ? AND user_id = ?",
-                    (guild_id, user_id)
-                ) as cursor:
-                    row = await cursor.fetchone()
-                    current_xp = int(row["total_xp"]) if row and row["total_xp"] is not None else 0
-                    if current_xp < bet_amount:
-                        raise SacrificeValidationError("Recursos insuficientes (XP) para realizar este sacrifício.")
+        self._active_users.add(user_id)
+        try:
+            async with self.acquire() as conn:
+                try:
+                    # Instrução mandatória para lock pessimista global de database/linha no driver SQLite.
+                    await conn.execute("BEGIN IMMEDIATE;")
 
-                # Consome o XP diretamente na tabela real de XP.
-                await conn.execute(
-                    "UPDATE xp_db.xp_profiles SET total_xp = total_xp - ? WHERE guild_id = ? AND user_id = ?",
-                    (bet_amount, guild_id, user_id)
-                )
+                    # Consulta o saldo real da tabela xp_profiles na DB de XP (attached como xp_db).
+                    async with conn.execute(
+                        "SELECT total_xp FROM xp_db.xp_profiles WHERE guild_id = ? AND user_id = ?",
+                        (guild_id, user_id)
+                    ) as cursor:
+                        row = await cursor.fetchone()
+                        current_xp = int(row["total_xp"]) if row and row["total_xp"] is not None else 0
+                        if current_xp < bet_amount:
+                            raise SacrificeValidationError("Recursos insuficientes (XP) para realizar este sacrifício.")
 
-                # Gera o contrato de escrow.
-                current_time = time.time()
-                cursor = await conn.execute(
-                    "INSERT INTO escrows (user_id, guild_id, bet_amount, created_at) VALUES (?, ?, ?, ?)",
-                    (user_id, guild_id, bet_amount, current_time)
-                )
-                escrow_id = cursor.lastrowid
-                
-                await conn.commit()
-                return escrow_id
+                    # Consome o XP diretamente na tabela real de XP.
+                    await conn.execute(
+                        "UPDATE xp_db.xp_profiles SET total_xp = total_xp - ? WHERE guild_id = ? AND user_id = ?",
+                        (bet_amount, guild_id, user_id)
+                    )
 
-            except Exception:
-                await conn.rollback()
-                raise
+                    # Gera o contrato de escrow.
+                    current_time = time.time()
+                    cursor = await conn.execute(
+                        "INSERT INTO escrows (user_id, guild_id, bet_amount, created_at) VALUES (?, ?, ?, ?)",
+                        (user_id, guild_id, bet_amount, current_time)
+                    )
+                    escrow_id = cursor.lastrowid
+                    
+                    await conn.commit()
+                    return escrow_id
+
+                except Exception:
+                    await conn.rollback()
+                    raise
+        finally:
+            self._active_users.discard(user_id)
 
     async def resolve_escrow(self, escrow_id: int, payout_amount: int) -> None:
         """
         Encerra a garantia transacional, injetando o payout obtido e
         coletando sacrifícios falhos para o leviathan_jackpot.
         """
-        async with self.connection() as conn:
+        async with self.acquire() as conn:
             try:
                 await conn.execute("BEGIN IMMEDIATE;")
                 
@@ -257,7 +265,7 @@ class BaphometTransactionManager:
         """
         cutoff_time = time.time() - 300  # Limiar de 5 minutos (300 segundos)
         
-        async with self.connection() as conn:
+        async with self.acquire() as conn:
             try:
                 await conn.execute("BEGIN IMMEDIATE;")
                 

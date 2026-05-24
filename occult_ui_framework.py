@@ -42,6 +42,7 @@ class SacrificialView(View):
     def __init__(self, author_id: int, timeout: float = 60.0):
         super().__init__(timeout=timeout)
         self.author_id = author_id
+        self.message: discord.Message = None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         """
@@ -68,8 +69,32 @@ class SacrificialView(View):
                 
         try:
             await interaction.edit_original_response(view=self)
-        except discord.errors.NotFound:
-            pass
+        except (discord.errors.NotFound, discord.errors.HTTPException):
+            # Fallback para token expirado (Regra dos 15 minutos)
+            if self.message:
+                try:
+                    await self.message.edit(view=self)
+                except Exception:
+                    pass
+
+    async def on_timeout(self) -> None:
+        """
+        Desativação implacável.
+        A view expirou por inatividade e os botões devem morrer.
+        """
+        for child in self.children:
+            if hasattr(child, 'disabled'):
+                child.disabled = True
+                
+        if self.message:
+            try:
+                embed = self.message.embeds[0]
+                embed.set_footer(text="A entidade se entediou. O pacto expirou por inatividade.")
+                await self.message.edit(embed=embed, view=self)
+            except Exception:
+                pass
+                
+        # Subclasses devem dar override neste método para injetar logicamente o aborto do escrow e chamar super().on_timeout()
 
     # Exemplo base representativo de um callback protegido.
     @discord.ui.button(label="Invocar Pacto", style=discord.ButtonStyle.danger)

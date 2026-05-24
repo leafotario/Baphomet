@@ -6,7 +6,7 @@ import html
 import io
 import logging
 import os
-import random
+import secrets
 import re
 import time
 from dataclasses import dataclass, field
@@ -318,7 +318,7 @@ class WikimediaHttpClient:
 
     async def _sleep_before_retry(self, attempt: int, retry_after: float | None) -> None:
         delay = retry_after if retry_after is not None else min(8.0, 1.25 * (2 ** attempt))
-        delay += random.uniform(0.0, 0.35)
+        delay += secrets.SystemRandom().uniform(0.0, 0.35)
         await asyncio.sleep(delay)
 
 
@@ -945,7 +945,7 @@ class ImageDownloadService:
 
     async def _sleep_before_retry(self, attempt: int, retry_after: float | None) -> None:
         delay = retry_after if retry_after is not None else min(8.0, 1.25 * (2 ** attempt))
-        delay += random.uniform(0.0, 0.35)
+        delay += secrets.SystemRandom().uniform(0.0, 0.35)
         await asyncio.sleep(delay)
 
     def _hash(self, value: str) -> str:
