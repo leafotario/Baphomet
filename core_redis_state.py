@@ -1,6 +1,9 @@
 import json
 import os
 import logging
+import socket
+import urllib.parse
+import traceback
 from typing import Dict, Any, Optional
 
 try:
@@ -30,24 +33,39 @@ class AbyssalRedisManager:
     async def connect(self) -> bool:
         """
         Estabelece o pool de conexões assíncronas com o Redis.
-        Executa um Healthcheck de Pré-Ignição (PING) para validar
-        a topologia de rede antes de permitir operações de I/O.
+        Executa Diagnóstico de Rede (DNS Probe) e Healthcheck de Pré-Ignição (PING).
         Retorna True se a conexão foi bem-sucedida, False caso contrário.
         """
+        parsed_url = urllib.parse.urlparse(self.url)
+        host = parsed_url.hostname or "localhost"
+        port = parsed_url.port or 6379
+        
+        logger.debug(f"[Redis L1] Iniciando diagnóstico de conexão para o host: {host}:{port}")
+
+        # Active Network Probing (DNS Resolution)
+        try:
+            socket.getaddrinfo(host, port)
+            logger.debug(f"[Redis L1] Probe DNS SUCESSO: '{host}' foi resolvido na rede local.")
+        except socket.gaierror as e:
+            logger.error(f"[Redis L1] FATAL FORENSE: Falha de resolução DNS. O contêiner não enxerga o host '{host}'. Erro: {e}")
+            self._pool = None
+            self._is_connected = False
+            return False
+
         try:
             self._pool = redis.from_url(self.url, decode_responses=True)
-            # Healthcheck de Pré-Ignição: valida que o daemon Redis está vivo e respondendo
             await self._pool.ping()
             self._is_connected = True
-            logger.info(f"[Redis L1] Conexão estabelecida e PING validado: {self.url}")
+            safe_url = self.url.replace(parsed_url.password, "******") if parsed_url.password else self.url
+            logger.info(f"[Redis L1] Conexão estabelecida e PING validado: {safe_url}")
             return True
         except (RedisConnectionError, RedisTimeoutError, OSError) as e:
-            logger.error(f"[Redis L1] FALHA DE CONEXÃO — o daemon Redis não respondeu em '{self.url}': {e}")
+            logger.error(f"[Redis L1] FALHA DE CONEXÃO ou AUTH: ({type(e).__name__}) O daemon Redis recusou ou demorou em '{host}:{port}'.\nTraceback Técnico:\n{traceback.format_exc()}")
             self._pool = None
             self._is_connected = False
             return False
         except Exception as e:
-            logger.error(f"[Redis L1] Exceção inesperada durante o boot de conexão: {e}")
+            logger.error(f"[Redis L1] Falha atípica estrutural ao inicializar driver Redis: {type(e).__name__}\nTraceback Técnico:\n{traceback.format_exc()}")
             self._pool = None
             self._is_connected = False
             return False

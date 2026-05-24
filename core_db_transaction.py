@@ -39,6 +39,20 @@ class BaphometTransactionManager:
         if self._is_ready:
             return
 
+        # Wait-and-Retry Logic: Polling agressivo para boot assíncrono.
+        if self.redis_manager:
+            attempts = 0
+            while not self.redis_manager._is_connected and attempts < 5:
+                logger.warning(f"[TransactionManager] Redis L1 não está pronto. Aguardando handshake (Tentativa {attempts + 1}/5)...")
+                await asyncio.sleep(2.0)
+                await self.redis_manager.connect() # Tenta forçar a reconexão
+                attempts += 1
+                
+            if not self.redis_manager._is_connected:
+                logger.error("[TransactionManager] FALHA CRÍTICA DE BOOT: O Redis Lock Pool não pôde ser ativado após múltiplas tentativas. O cassino entrará em Lockdown.")
+        else:
+            logger.error("[TransactionManager] O Redis Manager não foi injetado (bot.tx_manager.inject_redis() não foi chamado)!")
+
         for _ in range(self.pool_size):
             conn = await aiosqlite.connect(self.db_path)
             conn.row_factory = aiosqlite.Row
@@ -177,9 +191,15 @@ class BaphometTransactionManager:
         lock_key = f"baphomet:locks:user_escrow:{user_id}"
         
         if not self.redis_manager or not self.redis_manager._is_connected:
-            raise SacrificeValidationError("O cluster nativo não foi conectado. Tente novamente.")
+            logger.error(f"[TransactionManager] SacrificeValidationError! create_escrow bloqueado para Usuário {user_id}: O cluster Redis está Offline.")
+            raise SacrificeValidationError("O cluster nativo não foi conectado. Falha temporária de infraestrutura, tente novamente.")
 
-        acquired = await self.redis_manager._pool.set(name=lock_key, value="LOCKED", nx=True, ex=15)
+        try:
+            acquired = await self.redis_manager._pool.set(name=lock_key, value="LOCKED", nx=True, ex=15)
+        except Exception as e:
+            logger.error(f"[TransactionManager] Exceção durante o SETNX do Lock: {type(e).__name__} - {e}")
+            raise SacrificeValidationError("Falha de rede ao tentar criar a trava transacional. Tente novamente.")
+            
         if not acquired:
             raise SacrificeValidationError("Você já tem um ritual em andamento. Aguarde a finalização.")
 

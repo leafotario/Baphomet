@@ -4,6 +4,7 @@ import os
 import platform
 import sys
 import time
+import traceback
 
 import discord
 from discord import app_commands
@@ -249,11 +250,19 @@ async def on_tree_error(
     elif isinstance(error, app_commands.NoPrivateMessage):
         msg = "Esse comando só pode ser usado dentro de um servidor."
     else:
-        msg = "Ocorreu um erro inesperado ao executar esse comando."
+        msg = "Falha Cataclísmica: O sistema não pôde computar sua requisição no Cassino."
+        
+        # Desempacota o erro original se existir na árvore de comandos do Discord
+        original_error = getattr(error, 'original', error)
+        tb_str = "".join(traceback.format_exception(type(original_error), original_error, original_error.__traceback__))
+        
         log_error(
-            f"Erro não tratado em slash command "
-            f"'{interaction.command.name if interaction.command else '?'}' "
-            f"por {interaction.user}: {type(error).__name__}: {error}"
+            f"❌ [GLOBAL EXCEPTION INTERCEPTOR] Erro Forense Detectado!\n"
+            f"➤ Comando: '/{interaction.command.name if interaction.command else '?'}'\n"
+            f"➤ Usuário: {interaction.user} (ID: {interaction.user.id})\n"
+            f"➤ Guilda:  {interaction.guild.name if interaction.guild else 'DM'} (ID: {interaction.guild_id})\n"
+            f"➤ Erro:    {type(original_error).__name__}: {original_error}\n"
+            f"➤ Traceback Integral:\n{tb_str}"
         )
 
     try:
