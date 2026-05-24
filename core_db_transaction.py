@@ -155,7 +155,7 @@ class BaphometTransactionManager:
             await conn.execute("UPDATE casino_configs SET min_bet = ? WHERE game_id = ?", (min_bet, game_id))
             await conn.commit()
 
-    async def _resolve_vinculo_context(self, user_id: int, guild_id: int, tx: aiosqlite.Connection) -> dict:
+    async def create_escrow(self, user_id: int, guild_id: int, bet_amount: int) -> int:
         """
         Processamento sob instrução BEGIN IMMEDIATE garantindo travas globais de linha
         (Row-Level Locking). Executado de maneira atômica e segura.
