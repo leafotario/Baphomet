@@ -31,11 +31,10 @@ class AbyssalRedisManager:
         self._pool: Optional[redis.Redis] = None
         self._is_connected = False
         
-        # Circuit Breaker Properties
-        self._failed_attempts = 0
-        self._last_failure_time = 0.0
-        self._circuit_open_duration = 30.0  # Secs em Degraded Mode após 3 falhas
-
+        # Circuit Breaker Properties foram removidas em prol do Aggressive Recovery
+        self._last_ping_latency = 0.0
+        self._resolved_host = "Unknown"
+        
     async def connect(self) -> bool:
         """
         Estabelece o pool de conexões assíncronas com o Redis.
@@ -59,11 +58,15 @@ class AbyssalRedisManager:
             return False
 
         try:
+            start_ping = time.perf_counter()
             self._pool = redis.from_url(self.url, decode_responses=True)
             await self._pool.ping()
+            end_ping = time.perf_counter()
+            self._last_ping_latency = (end_ping - start_ping) * 1000
+            
             self._is_connected = True
             safe_url = self.url.replace(parsed_url.password, "******") if parsed_url.password else self.url
-            logger.info(f"[Redis L1] Conexão estabelecida e PING validado: {safe_url}")
+            logger.info(f"[Redis L1] Conexão estabelecida e PING validado ({self._last_ping_latency:.2f}ms): {safe_url}")
             return True
         except (RedisConnectionError, RedisTimeoutError, OSError) as e:
             logger.error(f"[Redis L1] FALHA DE CONEXÃO ou AUTH: ({type(e).__name__}) O daemon Redis recusou ou demorou em '{host}:{port}'.\nTraceback Técnico:\n{traceback.format_exc()}")
@@ -79,35 +82,20 @@ class AbyssalRedisManager:
     async def ensure_connection(self) -> bool:
         """
         Garante que a conexão Redis está ativa antes de executar a transação.
-        Implementa padrão Circuit Breaker para evitar hangup em quedas prolongadas.
+        Implementa padrão Aggressive Recovery (Retry-On-Demand / Lazy Connection).
+        Se estiver offline, força um re-handshake instantâneo SEM cooldown.
         """
         if self._is_connected:
             return True
             
-        current_time = time.time()
-        
-        # Se o circuito estiver aberto, abortamos imediatamente sem bloquear
-        if self._failed_attempts >= 3:
-            time_since_failure = current_time - self._last_failure_time
-            if time_since_failure < self._circuit_open_duration:
-                logger.warning(f"[Redis CB] Circuito Aberto. Modo Degredado mantido. Nova tentativa em {self._circuit_open_duration - time_since_failure:.1f}s.")
-                return False
-            else:
-                logger.info("[Redis CB] Tempo de resfriamento esgotado. Fechando o circuito para Half-Open (Tentativa de Self-Healing)...")
-                self._failed_attempts = 0 # Entra em Half-Open
-
-        logger.info("[Redis CB] Realizando tentativa de reconexão ativa (Self-Healing)...")
+        logger.warning("[Redis Aggressive Recovery] Redis reportado como Offline. Tentando Hard Reset da conexão (Lazy Connection) instantaneamente...")
         success = await self.connect()
         
         if success:
-            self._failed_attempts = 0
-            logger.success("[Redis CB] Self-Healing concluído com sucesso. Circuito Fechado. Alta Disponibilidade restaurada.")
+            logger.success("[Redis Aggressive Recovery] Hard Reset concluído com sucesso. Alta Disponibilidade restaurada.")
             return True
         else:
-            self._failed_attempts += 1
-            self._last_failure_time = current_time
-            if self._failed_attempts >= 3:
-                logger.critical("[Redis CB] 3 tentativas de reconexão falharam. Circuito Aberto. Transições de cache desativadas temporariamente.")
+            logger.critical("[Redis Aggressive Recovery] A reconexão sob demanda falhou. O cluster permanece inacessível para essa tentativa.")
             return False
 
     async def close(self):

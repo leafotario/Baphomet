@@ -197,26 +197,37 @@ class BaphometTransactionManager:
             
         is_redis_ready = await self.redis_manager.ensure_connection()
         if not is_redis_ready:
-            logger.error(f"[TransactionManager] SacrificeValidationError! create_escrow bloqueado para Usuário {user_id} na Guilda {guild_id}: O cluster Redis está Offline e o Self-Healing falhou ou está em resfriamento.")
-            raise SacrificeValidationError("O cluster nativo não foi conectado. Falha temporária de infraestrutura, tente novamente.")
-
-        try:
-            acquired = await self.redis_manager._pool.set(name=lock_key, value="LOCKED", nx=True, ex=15)
-        except Exception as e:
-            tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-            logger.error(
-                f"❌ [TransactionManager FORENSE] Exceção durante o SETNX do Lock\n"
-                f"➤ Timestamp: {time.time()}\n"
+            # FAIL-OPEN (Aggressive Recovery): Permite que a aposta prossiga sem trava atômica global se o servidor estiver inoperante.
+            logger.critical(
+                f"❌ [TransactionManager FAIL-OPEN] O cluster Redis está Offline e a conexão On-Demand falhou.\n"
                 f"➤ Usuário ID: {user_id}\n"
                 f"➤ Guilda ID: {guild_id}\n"
-                f"➤ Estado Redis: _is_connected={self.redis_manager._is_connected}\n"
-                f"➤ Erro Bruto: {type(e).__name__}: {e}\n"
-                f"➤ Traceback Integral:\n{tb_str}"
+                f"➤ Host Resolvido: {getattr(self.redis_manager, '_resolved_host', 'Unknown')}\n"
+                f"➤ Última Latência (PING): {getattr(self.redis_manager, '_last_ping_latency', 0.0):.2f}ms\n"
+                f"➤ Ação: Bypassing Distributed Lock. Risco de Race Condition assumido."
             )
-            raise SacrificeValidationError("Falha de rede ao tentar criar a trava transacional. Tente novamente.")
-            
-        if not acquired:
-            raise SacrificeValidationError("Você já tem um ritual em andamento. Aguarde a finalização.")
+        else:
+            try:
+                acquired = await self.redis_manager._pool.set(name=lock_key, value="LOCKED", nx=True, ex=15)
+                if not acquired:
+                    raise SacrificeValidationError("Você já tem um ritual em andamento. Aguarde a finalização.")
+            except Exception as e:
+                # Ocorre se a conexão cair EXATAMENTE durante o SETNX. Fazemos Fail-Open também.
+                if isinstance(e, SacrificeValidationError):
+                    raise # Reraise explícito da trava atômica válida
+                
+                tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+                logger.error(
+                    f"❌ [TransactionManager FORENSE] Exceção durante o SETNX do Lock\n"
+                    f"➤ Timestamp: {time.time()}\n"
+                    f"➤ Usuário ID: {user_id}\n"
+                    f"➤ Guilda ID: {guild_id}\n"
+                    f"➤ Última Latência (PING): {getattr(self.redis_manager, '_last_ping_latency', 0.0):.2f}ms\n"
+                    f"➤ Estado Redis: _is_connected={self.redis_manager._is_connected}\n"
+                    f"➤ Erro Bruto: {type(e).__name__}: {e}\n"
+                    f"➤ Traceback Integral:\n{tb_str}\n"
+                    f"➤ Ação: Bypassing Distributed Lock (Fail-Open)."
+                )
 
         try:
             async with self.acquire() as conn:
