@@ -54,7 +54,7 @@ class BaphometTransactionManager:
                 attempts += 1
                 
             if not self.redis_manager._is_connected:
-                logger.error("[TransactionManager] FALHA CRÍTICA DE BOOT: O Redis Lock Pool não pôde ser ativado. O cassino entrará em Lockdown/Modo Degradado.")
+                logger.error("[TransactionManager] FALHA CRÍTICA DE BOOT: O Redis Lock Pool não pôde ser ativado. O sistema entrará em Lockdown/Modo Degradado.")
         else:
             logger.error("[TransactionManager] O Redis Manager não foi injetado (bot.tx_manager.inject_redis() não foi chamado)!")
 
@@ -69,7 +69,6 @@ class BaphometTransactionManager:
         
         async with self.acquire() as conn:
             # A tabela xp_profiles já é gerida pelo XpRepository na xp_db.
-            # Não é necessário criar user_economy — o casino opera diretamente sobre xp_db.xp_profiles.
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS guild_economy (
                     guild_id INTEGER PRIMARY KEY,
@@ -86,62 +85,6 @@ class BaphometTransactionManager:
                 );
             """)
 
-            # Novas Tabelas de Persistência Global do Cassino
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS casino_configs (
-                    game_id TEXT PRIMARY KEY,
-                    min_bet INTEGER DEFAULT 1,
-                    max_bet INTEGER DEFAULT 1000000,
-                    house_edge REAL DEFAULT 0.05,
-                    is_enabled BOOLEAN DEFAULT 1
-                );
-            """)
-            games = ["crash_abissal", "labirinto", "danca_negras", "pacto_cego", "oraculo", "ossos", "blackjack", "leviata", "pesados_pecados", "macabra"]
-            for game in games:
-                await conn.execute("INSERT OR IGNORE INTO casino_configs (game_id, min_bet) VALUES (?, 100)", (game,))
-
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS active_games_state (
-                    session_id TEXT PRIMARY KEY,
-                    game_type TEXT NOT NULL,
-                    channel_id INTEGER NOT NULL,
-                    guild_id INTEGER NOT NULL,
-                    message_id INTEGER DEFAULT NULL,
-                    expires_at REAL NOT NULL
-                );
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS labyrinth_cells (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    x_idx INTEGER NOT NULL,
-                    y_idx INTEGER NOT NULL,
-                    is_mine BOOLEAN NOT NULL,
-                    is_revealed BOOLEAN DEFAULT 0,
-                    FOREIGN KEY (session_id) REFERENCES active_games_state (session_id) ON DELETE CASCADE
-                );
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS black_flames_participants (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    escrow_id INTEGER NOT NULL,
-                    amount INTEGER NOT NULL,
-                    FOREIGN KEY (session_id) REFERENCES active_games_state (session_id) ON DELETE CASCADE
-                );
-            """)
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS abyss_crash_state (
-                    session_id TEXT PRIMARY KEY,
-                    escrow_id INTEGER NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    crash_point REAL NOT NULL,
-                    current_multiplier REAL DEFAULT 1.0,
-                    is_finalized BOOLEAN DEFAULT 0,
-                    FOREIGN KEY (session_id) REFERENCES active_games_state (session_id) ON DELETE CASCADE
-                );
-            """)
             await conn.commit()
 
         self._is_ready = True
@@ -164,19 +107,6 @@ class BaphometTransactionManager:
             yield conn
         finally:
             await self._pool.put(conn)
-
-    async def get_casino_config(self, game_id: str) -> dict:
-        async with self.acquire() as conn:
-            cursor = await conn.execute("SELECT min_bet, max_bet, house_edge, is_enabled FROM casino_configs WHERE game_id = ?", (game_id,))
-            row = await cursor.fetchone()
-            if row:
-                return dict(row)
-            return {"min_bet": 100, "max_bet": 1000000, "house_edge": 0.05, "is_enabled": 1}
-
-    async def update_casino_min_bet(self, game_id: str, min_bet: int) -> None:
-        async with self.acquire() as conn:
-            await conn.execute("UPDATE casino_configs SET min_bet = ? WHERE game_id = ?", (min_bet, game_id))
-            await conn.commit()
 
     async def create_escrow(self, user_id: int, guild_id: int, bet_amount: int) -> int:
         """

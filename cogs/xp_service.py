@@ -6,6 +6,7 @@ import asyncio
 import difflib
 import hashlib
 import logging
+import random
 import secrets
 from collections import defaultdict, deque
 from datetime import datetime, timedelta, timezone
@@ -19,9 +20,9 @@ from cogs.vinculos import ContractType
 
 
 class XpService:
-    def __init__(self, repository: XpRepository, *, rng: secrets.SystemRandom().Random | None = None, logger: logging.Logger | None = None) -> None:
+    def __init__(self, repository: XpRepository, *, rng: random.Random | None = None, logger: logging.Logger | None = None) -> None:
         self.repository = repository
-        self.rng = rng or secrets.SystemRandom().Random()
+        self.rng = rng or secrets.SystemRandom()
         self.logger = logger or logging.getLogger("baphomet.xp")
         self._config_cache: dict[int, GuildXpConfig] = {}
         self._user_locks: dict[tuple[int, int], asyncio.Lock] = defaultdict(asyncio.Lock)

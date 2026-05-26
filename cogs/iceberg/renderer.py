@@ -4,6 +4,7 @@ import io
 import logging
 import pathlib
 import re
+import random
 import secrets
 import textwrap
 from dataclasses import dataclass, replace
@@ -511,7 +512,7 @@ class IcebergRenderer:
             if item_w > available_width or item_h > available_height:
                 return None
 
-            rng = secrets.SystemRandom().Random(f"{project_id}-{layer_box.layer.id}-{item.id}")
+            rng = random.Random(f"{project_id}-{layer_box.layer.id}-{item.id}")
             placed = False
             for _ in range(100):  # max attempts per item
                 x1 = rng.randint(content_left, content_right - item_w)

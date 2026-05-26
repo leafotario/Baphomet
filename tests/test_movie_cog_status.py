@@ -26,7 +26,7 @@ class MovieCogStatusTests(unittest.IsolatedAsyncioTestCase):
             command.qualified_name for command in self.bot.tree.walk_commands()
         ]
 
-        self.assertIn("motd status", command_names)
+        self.assertIn("motd_config status", command_names)
 
     async def test_status_embed_lists_current_motd_configuration(self) -> None:
         config = MovieGuildConfig(

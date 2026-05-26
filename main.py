@@ -250,7 +250,7 @@ async def on_tree_error(
     elif isinstance(error, app_commands.NoPrivateMessage):
         msg = "Esse comando só pode ser usado dentro de um servidor."
     else:
-        msg = "Falha Cataclísmica: O sistema não pôde computar sua requisição no Cassino."
+        msg = "Falha Cataclísmica: O sistema não pôde computar sua requisição."
         
         # Desempacota o erro original se existir na árvore de comandos do Discord
         original_error = getattr(error, 'original', error)
