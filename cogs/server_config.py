@@ -122,6 +122,21 @@ class ServerConfig(app_commands.Group):
         if cog: await cog.welcome(interaction)
         else: await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 
+    async def on_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        msg = "Ocorreu uma falha no sistema interno."
+        if isinstance(error, app_commands.MissingPermissions):
+            msg = "⛔ Acesso negado: Credenciais insuficientes."
+        elif isinstance(error, app_commands.BotMissingPermissions):
+            msg = f"🔧 Erro de Configuração: O Bot precisa da permissão {', '.join(error.missing_permissions)} para fazer isso."
+        else:
+            import logging
+            logging.getLogger(__name__).exception("Crash não tratado no grupo de configuração", exc_info=error)
+
+        if not interaction.response.is_done():
+            await interaction.response.send_message(msg, ephemeral=True)
+        else:
+            await interaction.followup.send(msg, ephemeral=True)
+
 
 async def setup(bot: commands.Bot) -> None:
     bot.tree.add_command(ServerConfig())

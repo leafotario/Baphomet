@@ -128,12 +128,7 @@ class Denuncia(commands.Cog):
         await interaction.channel.send(embed=embed, view=BotaoAbrirDenuncia())
         await interaction.response.send_message("✅ Mensagem postada.", ephemeral=True)
 
-    @denuncia_chat.error
-    async def denuncia_chat_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        if isinstance(error, app_commands.MissingPermissions):
-            await interaction.response.send_message(
-                "❌ Apenas administradores podem usar esse comando.", ephemeral=True
-            )
+
 
     # ── /fechar_denuncia ──
     @app_commands.command(

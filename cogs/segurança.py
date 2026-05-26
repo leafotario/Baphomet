@@ -349,26 +349,7 @@ class ModerationCog(commands.Cog):
     # ERROR HANDLER CATCH-ALL
     # =========================================================
 
-    @set_geral.error
-    @set_permanencia.error
-    @set_convite.error
-    @convite.error
-    @antispam_toggle.error
-    @antispam_status.error
-    async def _command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-        msg = "Ocorreu uma falha no sistema interno."
-        
-        if isinstance(error, app_commands.MissingPermissions):
-            msg = "⛔ Acesso negado: Credenciais insuficientes."
-        elif isinstance(error, app_commands.BotMissingPermissions):
-            msg = f"🔧 Erro de Configuração: O Bot precisa da permissão {', '.join(error.missing_permissions)} para fazer isso."
-        else:
-            log.exception("Crash não tratado em Moderação Cog", exc_info=error)
 
-        if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(msg, ephemeral=True)
 
 
 # =========================================================
