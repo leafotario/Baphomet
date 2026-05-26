@@ -254,11 +254,6 @@ class ModerationCog(commands.Cog):
     # SLASH COMMANDS (Configurações)
     # =========================================================
 
-    @app_commands.command(name="set_geral", description="Define o canal onde o bot postará avisos de segurança")
-    @app_commands.describe(canal="Canal base do sistema")
-    @app_commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
     async def set_geral(self, interaction: discord.Interaction, canal: discord.TextChannel) -> None:
         if not interaction.guild_id: return
         
@@ -267,11 +262,6 @@ class ModerationCog(commands.Cog):
         
         await interaction.response.send_message(f"✅ Canal de alertas de segurança configurado: {canal.mention}", ephemeral=True)
 
-    @app_commands.command(name="set_permanencia", description="Tempo para análise de saída antecipada (Anti-Raid/Fakes)")
-    @app_commands.describe(minutos="Em minutos (1 a 10080)")
-    @app_commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
     async def set_permanencia(self, interaction: discord.Interaction, minutos: app_commands.Range[int, 1, 10080]) -> None:
         if not interaction.guild_id: return
         
@@ -280,11 +270,6 @@ class ModerationCog(commands.Cog):
         
         await interaction.response.send_message(f"✅ Nova régua de permanência: **{minutos} minuto(s)**.", ephemeral=True)
 
-    @app_commands.command(name="set_convite", description="Ajusta regras automáticas para gerador de convites")
-    @app_commands.describe(max_age="Validade em horas (0 para nunca expirar)", max_uses="Máx. de uso (0 para infinito)")
-    @app_commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
     async def set_convite(self, interaction: discord.Interaction, max_age: app_commands.Range[int, 0, 720], max_uses: app_commands.Range[int, 0, 1000]) -> None:
         if not interaction.guild_id: return
         
@@ -297,10 +282,6 @@ class ModerationCog(commands.Cog):
         uses_str = str(max_uses) if max_uses > 0 else "ilimitado"
         await interaction.response.send_message(f"✅ Gerador de convites ajustado:\n• Expira em: **{age_str}**\n• Usos: **{uses_str}**", ephemeral=True)
 
-    @app_commands.command(name="convite", description="Gera instantaneamente um link baseado nas regras de segurança")
-    @app_commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
     async def convite(self, interaction: discord.Interaction) -> None:
         if not interaction.guild: return
         
@@ -344,8 +325,6 @@ class ModerationCog(commands.Cog):
         default_permissions=discord.Permissions(administrator=True)
     )
 
-    @antispam_group.command(name="toggle", description="Ligar/Desligar vigilância de mensagens")
-    @app_commands.checks.has_permissions(administrator=True)
     async def antispam_toggle(self, interaction: discord.Interaction) -> None:
         if not interaction.guild_id: return
         
@@ -356,8 +335,6 @@ class ModerationCog(commands.Cog):
         estado = "✅ ATIVADA" if cfg["antispam_enabled"] else "🔴 SUSPENSA"
         await interaction.response.send_message(f"Vigilância de chat **{estado}**.", ephemeral=True)
 
-    @antispam_group.command(name="status", description="Exibir relatório atual do sistema anti-spam")
-    @app_commands.checks.has_permissions(administrator=True)
     async def antispam_status(self, interaction: discord.Interaction) -> None:
         if not interaction.guild_id: return
         

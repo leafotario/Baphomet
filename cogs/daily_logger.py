@@ -64,9 +64,6 @@ class DailyLoggerCog(commands.Cog):
     # =========================================================
     # COMANDO DE CONFIGURAÇÃO (Admin-Only)
     # =========================================================
-    @app_commands.command(name="configurar_logs", description="Define o canal de destino para os logs diários (suporta cross-server).")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
     async def configurar_logs(
         self, 
         interaction: discord.Interaction, 
@@ -108,9 +105,6 @@ class DailyLoggerCog(commands.Cog):
             ephemeral=True
         )
 
-    @app_commands.command(name="status_logs", description="Exibe a configuração atual do Daily Logger 📊")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
     async def status_logs(self, interaction: discord.Interaction) -> None:
         if not self._db:
             return await interaction.response.send_message("❌ Banco de dados não está pronto.", ephemeral=True)

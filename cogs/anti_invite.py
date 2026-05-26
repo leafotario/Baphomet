@@ -28,10 +28,6 @@ class AntiInviteCog(commands.Cog):
             json.dump(self.config, f, indent=4)
 
     # --- COMANDO DE TOGGLE (ADMIN ONLY) ---
-    @app_commands.command(name="anti_invite", description="Ativa ou desativa o bloqueio automático de convites.")
-    @app_commands.describe(estado="Ligar (True) ou Desligar (False) o bloqueio")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
     async def anti_invite_toggle(self, it: discord.Interaction, estado: bool):
         guild_id = str(it.guild.id)
         self.config[guild_id] = estado
@@ -40,9 +36,6 @@ class AntiInviteCog(commands.Cog):
         status_texto = "🔴 **ATIVADO**" if estado else "⚪ **DESATIVADO**"
         await it.response.send_message(f"O sistema de Anti-Invite agora está: {status_texto}", ephemeral=True)
 
-    @app_commands.command(name="anti_invite_status", description="Exibe a configuração atual do Anti-Invite.")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
     async def anti_invite_status(self, it: discord.Interaction):
         guild_id = str(it.guild.id)
         estado = self.config.get(guild_id, False)

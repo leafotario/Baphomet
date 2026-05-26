@@ -226,9 +226,6 @@ class GhostCleanupCog(commands.Cog):
         name="configurar_limpeza_saida",
         description="Apaga vestígios de membros que entram e saem rápido demais 👻",
     )
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.describe(minutos="Tempo máximo de permanência para ser considerado Ghost Joiner (0 para desativar)")
     async def configurar_limpeza_saida(
         self, interaction: discord.Interaction, minutos: app_commands.Range[int, 0, 1440]
     ) -> None:
@@ -248,8 +245,6 @@ class GhostCleanupCog(commands.Cog):
         name="status_limpeza_saida",
         description="Exibe a configuração atual do Ghost Cleanup 👻",
     )
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
     async def status_limpeza_saida(self, interaction: discord.Interaction) -> None:
         minutes = await self.repo.get_config(interaction.guild.id)
         

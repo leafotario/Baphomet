@@ -28,7 +28,7 @@ class AuditLookupResult:
     permission_error: bool = False
 
 
-class PunishmentLogs(commands.GroupCog, group_name="logs", group_description="configura os logs de punições"):
+class PunishmentLogs(commands.Cog):
     """
     cog de logs de punições com persistência em sqlite.
 
@@ -212,9 +212,6 @@ class PunishmentLogs(commands.GroupCog, group_name="logs", group_description="co
             ephemeral=True,
         )
 
-    @app_commands.command(name="status", description="exibe a configuração atual dos logs de punições")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
     async def status_logs(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
             return await interaction.response.send_message("esse comando só pode ser usado dentro de um servidor.", ephemeral=True)

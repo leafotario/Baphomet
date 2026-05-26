@@ -202,12 +202,6 @@ class BlacklistCog(commands.Cog):
         else:
             await ctx.send(content=content, embed=embed)
 
-    @commands.hybrid_command(name="bloquear", description="Bloqueia o uso de comandos em um canal.")
-    @commands.has_permissions(administrator=True)
-    @commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.guild_only()
-    @app_commands.describe(canal="Canal que será bloqueado para comandos")
     async def bloquear_canal(self, ctx: commands.Context, canal: discord.TextChannel | None = None) -> None:
         canal = canal or ctx.channel
 
@@ -231,12 +225,6 @@ class BlacklistCog(commands.Cog):
             f"✅ O canal {canal.mention} foi adicionado à lista negra. Comandos não funcionarão mais lá.",
         )
 
-    @commands.hybrid_command(name="desbloquear", description="Desbloqueia o uso de comandos em um canal.")
-    @commands.has_permissions(administrator=True)
-    @commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.guild_only()
-    @app_commands.describe(canal="Canal que será liberado para comandos")
     async def desbloquear_canal(self, ctx: commands.Context, canal: discord.TextChannel | None = None) -> None:
         canal = canal or ctx.channel
 
@@ -265,10 +253,6 @@ class BlacklistCog(commands.Cog):
         aliases=["status_canais", "listanegra"],
         description="Mostra quais canais estão bloqueados.",
     )
-    @commands.has_permissions(administrator=True)
-    @commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.guild_only()
     async def status_canais(self, ctx: commands.Context) -> None:
         guild = ctx.guild
         if guild is None:
