@@ -808,6 +808,81 @@ class XpRepository:
                 await conn.rollback()
                 raise
 
+    async def execute_purification(
+        self,
+        guild_id: int,
+        target_user_id: int,
+        top_user_ids: list[int],
+        slice_xp: int,
+        actor_user_id: int,
+    ) -> int:
+        now = utc_now_iso()
+        async with self._tx_lock:
+            conn = self.connection
+            await conn.execute("BEGIN IMMEDIATE")
+            try:
+                profile = await self.get_profile(guild_id, target_user_id)
+                total_sacrificed = profile.total_xp
+
+                await conn.execute(
+                    """
+                    UPDATE xp_profiles
+                    SET total_xp = 0,
+                        message_count = 0,
+                        last_awarded_at = NULL,
+                        last_message_hash = NULL,
+                        last_message_at = NULL,
+                        updated_at = ?
+                    WHERE guild_id = ? AND user_id = ?
+                    """,
+                    (now, guild_id, target_user_id),
+                )
+
+                await conn.execute(
+                    """
+                    INSERT INTO xp_adjustments(guild_id, target_user_id, actor_user_id, delta_xp, reason, created_at)
+                    VALUES(?, ?, ?, ?, ?, ?)
+                    """,
+                    (guild_id, target_user_id, actor_user_id, -total_sacrificed, "PURIFICAÇÃO (ALVO)", now),
+                )
+
+                for uid in top_user_ids:
+                    await conn.execute(
+                        """
+                        INSERT OR IGNORE INTO xp_profiles(
+                            guild_id,
+                            user_id,
+                            total_xp,
+                            message_count,
+                            created_at,
+                            updated_at
+                        ) VALUES(?, ?, 0, 0, ?, ?)
+                        """,
+                        (guild_id, uid, now, now),
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE xp_profiles
+                        SET total_xp = total_xp + ?,
+                            updated_at = ?
+                        WHERE guild_id = ? AND user_id = ?
+                        """,
+                        (slice_xp, now, guild_id, uid),
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO xp_adjustments(guild_id, target_user_id, actor_user_id, delta_xp, reason, created_at)
+                        VALUES(?, ?, ?, ?, ?, ?)
+                        """,
+                        (guild_id, uid, actor_user_id, slice_xp, "PURIFICAÇÃO (BENEFICIÁRIO)", now),
+                    )
+
+                await conn.commit()
+                return total_sacrificed
+            except Exception:
+                await conn.rollback()
+                raise
+
     async def count_ranked_profiles(self, guild_id: int) -> int:
         rows = await self.connection.execute_fetchall(
             "SELECT COUNT(*) AS c FROM xp_profiles WHERE guild_id = ? AND total_xp > 0",

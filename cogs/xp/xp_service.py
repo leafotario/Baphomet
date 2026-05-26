@@ -583,3 +583,48 @@ class XpService:
         old_progress = build_progress_snapshot(old_total, config.difficulty)
         new_progress = build_progress_snapshot(new_total, config.difficulty)
         return XpChangeResult(True, None, old_total, new_total, old_progress.level, new_progress.level, new_progress.level - old_progress.level, -old_total)
+
+    async def purify_member(
+        self,
+        guild: discord.Guild,
+        target_member: discord.Member,
+        actor_user_id: int,
+    ) -> tuple[int, int, list[discord.Member]]:
+        target_profile = await self.repository.get_profile(guild.id, target_member.id)
+        total_xp = target_profile.total_xp
+
+        if total_xp <= 0:
+            raise ValueError("A alma deste mortal já está seca e não serve para o ritual.")
+
+        top_profiles = await self.repository.get_top_profiles(guild.id, 6)
+        top_users = [p for p in top_profiles if p.user_id != target_member.id][:5]
+
+        if not top_users:
+            raise ValueError("Não há lordes suficientes no abismo para receber esta oferenda.")
+
+        slice_xp = total_xp // len(top_users)
+        top_user_ids = [p.user_id for p in top_users]
+
+        await self.repository.execute_purification(
+            guild_id=guild.id,
+            target_user_id=target_member.id,
+            top_user_ids=top_user_ids,
+            slice_xp=slice_xp,
+            actor_user_id=actor_user_id,
+        )
+
+        await self.sync_member_level_roles(target_member, reason="XP: purificação (alvo)")
+
+        blessed_members: list[discord.Member] = []
+        for uid in top_user_ids:
+            member = guild.get_member(uid)
+            if not member:
+                try:
+                    member = await guild.fetch_member(uid)
+                except (discord.NotFound, discord.HTTPException):
+                    continue
+            if member:
+                blessed_members.append(member)
+                await self.sync_member_level_roles(member, reason="XP: purificação (beneficiário)")
+
+        return total_xp, slice_xp, blessed_members

@@ -123,65 +123,7 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
         embed.description = f"O administrador {interaction.user.mention} marcou o cargo {role.mention} como **{'Ignorado' if enabled else 'Liberado'}** no sistema de XP."
         await self._send_audit_log(interaction.guild, embed)
 
-    @app_commands.command(name="add-xp", description="Adiciona XP A Um Membro ✨")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    async def add_xp(self, interaction: discord.Interaction, member: discord.Member, amount: int, reason: str | None = None) -> None:
-        if amount <= 0:
-            await interaction.response.send_message("⚠️ O valor deve ser maior que zero.", ephemeral=True)
-            return
-            
-        result = await self.runtime.service.give_xp(interaction.guild, member, amount, interaction.user.id, reason)
-        if result.new_level != result.old_level:
-            await self.runtime.service.sync_member_level_roles(
-                member,
-                reason=f"XP: ajuste administrativo para nível {result.new_level}",
-            )
-        await interaction.response.send_message(
-            f"✨ Sucesso! Adicionado **{amount:,} XP** a **{member.display_name}**.".replace(",", "."),
-            ephemeral=True
-        )
 
-        embed = discord.Embed(title="✨ XP Adicionado", color=discord.Color.green())
-        embed.add_field(name="Alvo", value=member.mention, inline=True)
-        embed.add_field(name="Administrador", value=interaction.user.mention, inline=True)
-        embed.add_field(name="Quantidade", value=f"{amount:,}".replace(",", "."), inline=True)
-        if reason:
-            embed.add_field(name="Motivo", value=reason, inline=False)
-        await self._send_audit_log(interaction.guild, embed)
-
-    @app_commands.command(name="resetar_xp_servidor", description="Zera o XP de TODOS os membros do servidor (Ação Irreversível) ☠️")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    async def resetar_xp_servidor(self, interaction: discord.Interaction) -> None:
-        view = ConfirmResetView(self.runtime, interaction)
-        await interaction.response.send_message(
-            "⚠️ **ALERTA MÁXIMO:** Você está prestes a zerar o XP e o Nível de **TODOS** os membros do servidor.\nEssa ação não pode ser desfeita. Tem certeza?",
-            view=view,
-            ephemeral=True
-        )
-
-    @app_commands.command(name="reset", description="Zera O XP De Um Membro ☠️")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    async def reset(self, interaction: discord.Interaction, member: discord.Member, reason: str | None = None) -> None:
-        result = await self.runtime.service.reset_xp(interaction.guild, member, interaction.user.id, reason)
-        await self.runtime.service.sync_member_level_roles(
-            member,
-            reason=f"XP: reset administrativo para nível {result.new_level}",
-        )
-        await interaction.response.send_message(
-            f"☠️ O Ritual Foi Reiniciado! **{member.display_name}** Teve O XP Zerado E Perdeu **{abs(result.delta_xp):,} XP** No Processo.".replace(",", "."),
-            ephemeral=True,
-        )
-
-        embed = discord.Embed(title="☠️ XP Zerado", color=discord.Color.red())
-        embed.add_field(name="Alvo", value=member.mention, inline=True)
-        embed.add_field(name="Administrador", value=interaction.user.mention, inline=True)
-        embed.add_field(name="Perda Total", value=f"{abs(result.delta_xp):,} XP".replace(",", "."), inline=True)
-        if reason:
-            embed.add_field(name="Motivo", value=reason, inline=False)
-        await self._send_audit_log(interaction.guild, embed)
 
     @app_commands.command(name="config", description="Mostra A Configuração Atual ⚙️")
     @app_commands.default_permissions(administrator=True)
@@ -298,51 +240,38 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
         embed.description = f"O administrador {interaction.user.mention} removeu o cargo automático do **Nível {level}**."
         await self._send_audit_log(interaction.guild, embed)
 
-class ConfirmResetView(discord.ui.View):
-    def __init__(self, runtime: XpRuntime, original_interaction: discord.Interaction):
-        super().__init__(timeout=60)
-        self.runtime = runtime
-        self.original_interaction = original_interaction
-
-    @discord.ui.button(label="Confirmar Reset", style=discord.ButtonStyle.danger, custom_id="xp_reset_confirm")
-    async def confirm_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.original_interaction.user.id:
-            await interaction.response.send_message("❌ Apenas quem iniciou o comando pode confirmar.", ephemeral=True)
+    @app_commands.command(name="purificar", description="Arranca a essência de um mortal e a oferece aos Lordes do Abismo 🩸")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def purificar(self, interaction: discord.Interaction, usuario: discord.Member) -> None:
+        if usuario.bot:
+            await interaction.response.send_message("💀 Máquinas não possuem almas para serem ceifadas.", ephemeral=True)
             return
 
-        # Desabilita botões
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(view=self)
-
-        deleted_count = await self.runtime.service.reset_guild_xp(interaction.guild, interaction.user.id)
-        stats = await self.runtime.service.sync_guild_level_roles(
-            interaction.guild,
-            reason=f"XP: reset global confirmado por {interaction.user}",
-        )
-
-        await interaction.followup.send(
-            f"☠️ O Ritual Foi Reiniciado! **{deleted_count} membros** tiveram o XP completamente zerado no servidor.\n"
-            f"Sync: **{stats['members']}** membros | +**{stats['added']}** / -**{stats['removed']}**.",
-            ephemeral=True,
-        )
-
-        embed = discord.Embed(title="☠️ RESET GLOBAL DE XP", color=discord.Color.red())
-        embed.description = f"O administrador {interaction.user.mention} zerou o XP de absolutamente todos no servidor."
-        embed.add_field(name="Perfis Apagados", value=f"{deleted_count:,}".replace(",", "."), inline=False)
-
-        config = await self.runtime.service.get_guild_config(interaction.guild.id)
-        if config.log_channel_id:
-            channel = interaction.guild.get_channel(config.log_channel_id)
-            if isinstance(channel, discord.TextChannel):
-                await channel.send(embed=embed)
-
-    @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary, custom_id="xp_reset_cancel")
-    async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.id != self.original_interaction.user.id:
-            await interaction.response.send_message("❌ Apenas quem iniciou o comando pode cancelar.", ephemeral=True)
+        try:
+            total_xp, slice_xp, blessed_members = await self.runtime.service.purify_member(
+                interaction.guild, usuario, interaction.user.id
+            )
+        except ValueError as e:
+            await interaction.response.send_message(f"🌑 **O ritual falhou:** {str(e)}", ephemeral=True)
             return
 
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(content="🛑 Ação de Reset Cancelada.", view=self)
+        embed = discord.Embed(
+            title="🩸 RITUAL DE PURIFICAÇÃO CONCLUÍDO 🩸",
+            description=f"A essência vital de {usuario.mention} foi brutalmente arrancada de seu receptáculo carnal.\n"
+                        f"**{total_xp:,}** almas que antes lhe pertenciam agora vagam pelo abismo, divididas e oferecidas como um banquete macabro aos mais fortes do culto.\n\n"
+                        f"O mortal agora rasteja na escuridão, desprovido de seu poder (Nível 0, 0 XP).",
+            color=discord.Color.dark_red()
+        )
+
+        blessed_text = ""
+        for m in blessed_members:
+            blessed_text += f"🦇 {m.mention} devorou **{slice_xp:,} XP**\n"
+
+        embed.add_field(name="📜 Os Abençoados pelo Banquete", value=blessed_text, inline=False)
+        embed.set_footer(text="O abismo sempre cobra seu preço, e a fome dos lordes é eterna.")
+
+        await interaction.response.send_message(embed=embed)
+        await self._send_audit_log(interaction.guild, embed)
+
+
