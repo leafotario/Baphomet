@@ -26,7 +26,7 @@ def _role_manage_error(guild: discord.Guild, role: discord.Role) -> str | None:
 
 
 @app_commands.default_permissions(administrator=True)
-class RankConfig(app_commands.GroupCog, group_name="rank_config", group_description="Configurações do sistema de rank."):
+class RankConfig(commands.GroupCog, group_name="rank_config", group_description="Configurações do sistema de rank."):
     insignia = app_commands.Group(
         name="insignia",
         description="Configura insignias visuais de rank.",
