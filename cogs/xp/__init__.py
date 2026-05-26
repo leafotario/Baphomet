@@ -4,7 +4,7 @@ import pathlib
 
 from discord.ext import commands
 
-from .commands import RankAdminCommands, XpAdminCommands, XpEvents, XpUserCommands
+from .commands import RankConfig, XpAdminCommands, XpEvents, XpUserCommands
 from .db import XpRepository
 from .rank_badges import RankBadgeService
 from .rendering import XpCardRenderer
@@ -42,7 +42,7 @@ async def setup(bot: commands.Bot) -> None:
         await bot.add_cog(XpEvents(bot, runtime))
         await bot.add_cog(XpUserCommands(bot, runtime))
         await bot.add_cog(XpAdminCommands(bot, runtime))
-        await bot.add_cog(RankAdminCommands(bot, runtime))
+        await bot.add_cog(RankConfig(bot, runtime))
     except Exception as e:
         tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         logger.error(

@@ -248,11 +248,6 @@ class BlacklistCog(commands.Cog):
             f"✅ O canal {canal.mention} foi removido da lista negra. Comandos liberados.",
         )
 
-    @commands.hybrid_command(
-        name="status-canais",
-        aliases=["status_canais", "listanegra"],
-        description="Mostra quais canais estão bloqueados.",
-    )
     async def status_canais(self, ctx: commands.Context) -> None:
         guild = ctx.guild
         if guild is None:

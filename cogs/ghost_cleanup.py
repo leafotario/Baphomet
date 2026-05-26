@@ -222,10 +222,6 @@ class GhostCleanupCog(commands.Cog):
         LOGGER.info(f"Protocolo de limpeza para user {user_id} finalizado.")
 
     # ── Comando de Configuração (Admin) ─────────────────────────────────────
-    @app_commands.command(
-        name="configurar_limpeza_saida",
-        description="Apaga vestígios de membros que entram e saem rápido demais 👻",
-    )
     async def configurar_limpeza_saida(
         self, interaction: discord.Interaction, minutos: app_commands.Range[int, 0, 1440]
     ) -> None:
@@ -241,10 +237,6 @@ class GhostCleanupCog(commands.Cog):
             ephemeral=True,
         )
 
-    @app_commands.command(
-        name="status_limpeza_saida",
-        description="Exibe a configuração atual do Ghost Cleanup 👻",
-    )
     async def status_limpeza_saida(self, interaction: discord.Interaction) -> None:
         minutes = await self.repo.get_config(interaction.guild.id)
         
