@@ -281,8 +281,31 @@ class BumpReminderCog(commands.Cog):
             # É uma resposta de cooldown ou erro — ignorar silenciosamente.
             return
 
-        # ── Bump confirmado! Agendar o próximo lembrete. ────────────────
         guild_id = message.guild.id
+
+        # ── INTERCEPTOR DE ACHIEVEMENT: Precisão Cirúrgica ───────────────
+        user_id = message.interaction.user.id if message.interaction else None
+        if user_id:
+            old_rows = await self.repo.conn.execute_fetchall(
+                "SELECT release_at FROM bump_pending WHERE guild_id = ?",
+                (guild_id,)
+            )
+            if old_rows:
+                old_release_iso = old_rows[0]["release_at"]
+                try:
+                    old_release_at = datetime.fromisoformat(old_release_iso)
+                    delta_time = message.created_at.timestamp() - old_release_at.timestamp()
+                    if abs(delta_time) <= 1.0:
+                        secret_cog = self.bot.get_cog("SecretAchievementsCog")
+                        if secret_cog:
+                            self.bot.loop.create_task(
+                                secret_cog.unlock_achievement(user_id, guild_id, "surgical_bump")
+                            )
+                except ValueError:
+                    pass
+        # ──────────────────────────────────────────────────────────────────
+
+        # ── Bump confirmado! Agendar o próximo lembrete. ────────────────
         release_at = datetime.now(timezone.utc) + BUMP_COOLDOWN
 
         # Decidir o canal de destino: configuração do admin ou canal atual.
