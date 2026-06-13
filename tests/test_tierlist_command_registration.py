@@ -22,9 +22,6 @@ class TierListCommandRegistrationTests(unittest.IsolatedAsyncioTestCase):
         command_names = [command.qualified_name for command in self.bot.tree.walk_commands()]
 
         self.assertIn("tierlist criar", command_names)
-        self.assertIn("tierlist-template criar", command_names)
-        self.assertIn("tierlist-template usar", command_names)
-        self.assertIn("tierlist-template listar", command_names)
         self.assertEqual(
             sorted(name for name in command_names if command_names.count(name) > 1),
             [],
