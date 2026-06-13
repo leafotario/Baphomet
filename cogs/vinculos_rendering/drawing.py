@@ -4,6 +4,8 @@ import io
 from dataclasses import dataclass
 
 from PIL import Image, ImageDraw
+from core_logger import log_exception
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,5 +46,6 @@ def load_rgba_from_bytes(image_bytes: bytes | None) -> Image.Image | None:
     try:
         with Image.open(io.BytesIO(image_bytes)) as image:
             return image.convert("RGBA")
-    except Exception:
+    except Exception as exc:
+        log_exception(exc)
         return None

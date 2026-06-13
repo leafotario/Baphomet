@@ -31,6 +31,8 @@ from .repository_utils import normalize_slug
 from .session_renderer import SessionRenderSnapshot, TierSessionRenderer
 from .session_repository import TierSessionRepository
 from .template_repository import TierTemplateRepository
+from core_logger import log_exception
+
 
 
 LOGGER = logging.getLogger("baphomet.tierlist_templates.cog")
@@ -169,12 +171,14 @@ class TierTemplateCog(commands.Cog):
                 session.id,
                 message.id,
             )
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("Falha ao usar template template=%r user_id=%s guild_id=%s.", template, interaction.user.id, interaction.guild_id)
             if created_session is not None and not message_created:
                 try:
                     await self.session_repository.abandon_session(created_session.id, owner_id=interaction.user.id)
-                except Exception:
+                except Exception as exc:
+                    log_exception(exc)
                     LOGGER.exception("Falha ao abandonar sessão criada sem mensagem session_id=%s.", created_session.id)
             await interaction.followup.send("❌ Não consegui criar a sessão desse template. O erro foi registrado.", ephemeral=True)
 
@@ -537,7 +541,8 @@ class TierTemplateCog(commands.Cog):
         try:
             if await self.bot.is_owner(interaction.user):
                 return True
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("Falha ao verificar owner do bot user_id=%s.", interaction.user.id)
         if template.visibility is TemplateVisibility.GUILD and template.guild_id == interaction.guild_id:
             permissions = getattr(interaction.user, "guild_permissions", None)
@@ -750,7 +755,8 @@ class TierTemplateCog(commands.Cog):
             await interaction.followup.send("✅ Template publicado e congelado.", ephemeral=True)
         except ValueError as exc:
             await interaction.followup.send(self.warning_message(exc), ephemeral=True)
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("Falha inesperada ao publicar template_id=%s version_id=%s.", template_id, version_id)
             await interaction.followup.send("❌ Não consegui publicar esse template. O erro foi registrado.", ephemeral=True)
 
@@ -785,7 +791,8 @@ class TierTemplateCog(commands.Cog):
                 embed=embed,
                 ephemeral=True,
             )
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("render_failed surface=template_preview template_id=%s version_id=%s.", template_id, version_id)
             await interaction.followup.send("❌ Não consegui gerar o preview agora. O erro foi registrado.", ephemeral=True)
 
@@ -943,7 +950,8 @@ class TierTemplateCog(commands.Cog):
 
         try:
             self.bot.remove_dynamic_items(TierSessionActionDynamicItem)
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("Falha ao remover DynamicItem de sessão.")
 
     async def expire_stale_active_sessions(self) -> int:
@@ -962,7 +970,8 @@ class TierTemplateCog(commands.Cog):
                 view = await self.build_session_view(session.id)
                 self.bot.add_view(view, message_id=session.message_id)
                 restored += 1
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 LOGGER.exception("Falha ao restaurar view persistente session_id=%s.", session.id)
         LOGGER.info("template_session_views_restored count=%s.", restored)
 
@@ -970,7 +979,8 @@ class TierTemplateCog(commands.Cog):
     async def purge_orphan_assets_periodically(self) -> None:
         try:
             summary = await self.purge_orphan_assets(dry_run=False)
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("Falha na limpeza periódica de assets órfãos.")
             return
 
@@ -1037,7 +1047,8 @@ class TierTemplateCog(commands.Cog):
                 author=author,
                 guild_icon_bytes=guild_icon_bytes,
             )
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("render_failed surface=session session_id=%s", session_id)
             raise
         return discord.File(buffer, filename="tierlist.png")
@@ -1184,7 +1195,8 @@ class TierTemplateCog(commands.Cog):
                 await self.edit_session_message(interaction.message, session_id=session_id, author=interaction.user)
             except ValueError as exc:
                 await interaction.followup.send(self.session_error_message(exc), ephemeral=True)
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 LOGGER.exception("Falha ao aplicar movimento session_id=%s user_id=%s.", session_id, interaction.user.id)
                 await interaction.followup.send("❌ Não consegui mover esse item. O erro foi registrado.", ephemeral=True)
 
@@ -1216,7 +1228,8 @@ class TierTemplateCog(commands.Cog):
                 await self.edit_session_message(interaction.message, session_id=session_id, author=interaction.user)
             except ValueError as exc:
                 await interaction.followup.send(self.session_error_message(exc), ephemeral=True)
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 LOGGER.exception("Falha ao mover item para inventário session_id=%s.", session_id)
                 await interaction.followup.send("❌ Não consegui devolver esse item ao inventário.", ephemeral=True)
 
@@ -1239,7 +1252,8 @@ class TierTemplateCog(commands.Cog):
                 await interaction.followup.send("🔄 Sessão resetada.", ephemeral=True)
             except ValueError as exc:
                 await interaction.followup.send(self.session_error_message(exc), ephemeral=True)
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 LOGGER.exception("Falha ao resetar sessão session_id=%s.", session_id)
                 await interaction.followup.send("❌ Não consegui resetar essa sessão.", ephemeral=True)
 
@@ -1257,7 +1271,8 @@ class TierTemplateCog(commands.Cog):
                 LOGGER.info("template_session_finalized user_id=%s guild_id=%s session_id=%s.", interaction.user.id, interaction.guild_id, session_id)
             except ValueError as exc:
                 await interaction.followup.send(self.session_error_message(exc), ephemeral=True)
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 LOGGER.exception("Falha ao finalizar sessão session_id=%s.", session_id)
                 await interaction.followup.send("❌ Não consegui finalizar essa sessão.", ephemeral=True)
 
@@ -1294,7 +1309,8 @@ class TierTemplateCog(commands.Cog):
             if snapshot.session.status is SessionStatus.ACTIVE:
                 try:
                     await self.session_repository.abandon_session(session_id, owner_id=snapshot.session.owner_id)
-                except Exception:
+                except Exception as exc:
+                    log_exception(exc)
                     LOGGER.exception("Falha ao abandonar sessão sem mensagem session_id=%s.", session_id)
         except discord.HTTPException:
             LOGGER.exception(

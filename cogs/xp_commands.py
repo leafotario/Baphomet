@@ -14,14 +14,13 @@ from .xp_cards import XpCardRenderer
 from .xp_models import XpDifficulty
 from .xp_repository import XpRepository
 from .xp_service import XpService
-from .xp_views import (
-    LeaderboardImagePaginator,
+from .xp_views import (    LeaderboardImagePaginator,
     LeaderboardView,
     RankCardView,
     _resolve_entries,
     build_leaderboard_embed,
 )
-
+from core_logger import log_exception
 LOGGER = logging.getLogger("baphomet.xp")
 DATA_DIR = pathlib.Path("data")
 DATA_DIR.mkdir(exist_ok=True)
@@ -96,7 +95,8 @@ class XpPublicCommands(commands.Cog):
                 await channel.send(embed=embed)
             except (discord.Forbidden, discord.HTTPException):
                 return
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             self.logger.exception("falha ao processar ganho de xp", exc_info=True)
 
     @app_commands.command(name="rank", description="Exibe O Rank De Uma Alma ✨")
@@ -125,7 +125,8 @@ class XpPublicCommands(commands.Cog):
                     content=secrets.SystemRandom().choice(EASTER_EGG_MESSAGES),
                     attachments=[discord.File(image, filename="baphomet_rank.png")],
                 )
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 await interaction.edit_original_response(
                     content="```ansi\n\u001b[31m[FATAL] rank_query(target=BAPHOMET) → Stack overflow. O sistema de XP não foi projetado para conter esse nível de poder.\u001b[0m\n```"
                 )
@@ -142,7 +143,8 @@ class XpPublicCommands(commands.Cog):
         try:
             image = await self.cards.render_rank_card(guild=interaction.guild, member=target, snapshot=snapshot)
             await interaction.edit_original_response(attachments=[discord.File(image, filename="rank.png")], view=view)
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             embed = discord.Embed(title="🔮 Rank De Prestígio", color=discord.Color.dark_purple())
             embed.description = (
                 f"**{snapshot.display_name}**\n"
@@ -177,7 +179,8 @@ class XpPublicCommands(commands.Cog):
         try:
             file = await view._render_page()
             await interaction.edit_original_response(attachments=[file], view=view)
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             # Fallback para embed de texto caso o Pillow falhe
             page = await self.service.get_leaderboard_page(interaction.guild, page=0, page_size=5)
             embed = build_leaderboard_embed(interaction.guild, page.entries, page.page, page.total_entries, page.page_size)

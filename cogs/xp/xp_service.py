@@ -29,6 +29,8 @@ from .utils import (
     utc_now,
 )
 from .db import XpRepository
+from core_logger import log_exception
+
 
 
 class VinculoXpContextProvider(Protocol):
@@ -103,19 +105,22 @@ class XpService:
         if callable(counter):
             try:
                 count = max(0, int(await counter(guild_id, user_id)))
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 self.logger.exception("falha ao contar vínculos guild_id=%s user_id=%s", guild_id, user_id)
         else:
             try:
                 count = max(0, int(await self.repository.count_active_vinculos(guild_id, user_id)))
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 self.logger.exception("falha ao contar vínculos no sqlite guild_id=%s user_id=%s", guild_id, user_id)
 
         multiplier_getter = getattr(self.vinculos_provider, "get_xp_multiplier", None) if self.vinculos_provider else None
         if callable(multiplier_getter):
             try:
                 return RankBondSummary(count=count, multiplier=max(0.0, float(await multiplier_getter(guild_id, user_id))))
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 self.logger.exception("falha ao obter multiplicador de vínculos guild_id=%s user_id=%s", guild_id, user_id)
 
         return RankBondSummary(count=count, multiplier=1.0 + (count * 0.1))
@@ -244,7 +249,8 @@ class XpService:
             index += 1
             try:
                 result = await self.sync_member_level_roles(member, reason=reason)
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 self.logger.exception("falha ao sincronizar cargos de nível guild_id=%s user_id=%s", guild.id, member.id)
                 continue
             stats["members"] += 1
@@ -381,7 +387,8 @@ class XpService:
                 rich_value = await rich_getter(guild_id, user_id, base_xp)
                 if isinstance(rich_value, VinculoXpContext):
                     return rich_value
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 self.logger.exception(
                     "falha ao calcular contexto rico de vínculos guild_id=%s user_id=%s",
                     guild_id,
@@ -399,7 +406,8 @@ class XpService:
             )
             if rich_context.source != "none":
                 return rich_context
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             self.logger.exception(
                 "falha ao calcular contexto de vínculos guild_id=%s user_id=%s",
                 guild_id,
@@ -412,7 +420,8 @@ class XpService:
         try:
             multiplier = await self.vinculos_provider.get_xp_multiplier(guild_id, user_id)
             multiplier_value = float(multiplier)
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             self.logger.exception(
                 "falha ao calcular multiplicador legado de vínculos guild_id=%s user_id=%s",
                 guild_id,

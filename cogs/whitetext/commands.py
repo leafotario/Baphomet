@@ -29,6 +29,8 @@ from .errors import (
 from .layout import CaptionStyle
 from .processor import MediaKind, WhiteTextProcessorConfig, process_gif_bytes, process_static_image_bytes
 from .video import VideoProcessingConfig, process_video_bytes_to_captioned_gif
+from core_logger import log_exception
+
 
 
 LOGGER = logging.getLogger("baphomet.whitetext")
@@ -207,7 +209,8 @@ class WhiteTextCog(commands.Cog):
             await self._send_error(interaction, "Nao tenho permissao para enviar arquivos neste canal.")
         except WhiteTextError as exc:
             await self._send_error(interaction, self._friendly_error_message(exc))
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception(
                 "whitetext_unexpected_failed user_id=%s guild_id=%s attachment=%s",
                 getattr(interaction.user, "id", None),

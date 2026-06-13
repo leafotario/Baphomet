@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING, Any
 import discord
 
 from .exceptions import TemplateItemResolveError
+from core_logger import log_exception
+
 
 if TYPE_CHECKING:
     from .cog import TierTemplateCog
@@ -47,7 +49,8 @@ class TemplateCreateModal(discord.ui.Modal, title="Criar Template de Tier List")
         except ValueError as exc:
             await interaction.followup.send(self.cog.warning_message(exc), ephemeral=True)
             return
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("Falha inesperada ao criar template.")
             await interaction.followup.send("❌ Não consegui criar esse template agora. O erro foi registrado.", ephemeral=True)
             return
@@ -97,7 +100,8 @@ class TemplateTextItemModal(discord.ui.Modal, title="Adicionar Item de Texto"):
         except ValueError as exc:
             await interaction.followup.send(self.cog.warning_message(exc), ephemeral=True)
             return
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("Falha inesperada ao adicionar item ao template %s.", self.template_id)
             await interaction.followup.send("❌ Não consegui adicionar esse item. O erro foi registrado.", ephemeral=True)
             return

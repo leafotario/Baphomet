@@ -15,6 +15,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
+from core_logger import log_exception
+
 
 
 # ============================================================
@@ -384,6 +386,7 @@ class AlbumDoDia(commands.Cog):
                             print(f"[AOTD] Fila migrada do JSON: {queue_file.resolve()}")
 
                     except Exception as exc:
+                        log_exception(exc)
                         print(f"[AOTD] Não consegui migrar a fila antiga: {exc}")
 
             config_file = self.encontrar_primeiro_arquivo_existente(OLD_CONFIG_FILES)
@@ -413,6 +416,7 @@ class AlbumDoDia(commands.Cog):
                         print(f"[AOTD] Config migrada do JSON: {config_file.resolve()}")
 
                 except Exception as exc:
+                    log_exception(exc)
                     print(f"[AOTD] Não consegui migrar a config antiga: {exc}")
 
             conn.commit()
@@ -878,7 +882,8 @@ class AlbumDoDia(commands.Cog):
         try:
             artist_info = sp.artist(artista["id"])
             generos_raw = artist_info.get("genres", []) or []
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             generos_raw = []
 
         generos = generos_raw[:4]
@@ -896,7 +901,8 @@ class AlbumDoDia(commands.Cog):
 
                 tracks_page = sp.next(tracks_page) if tracks_page.get("next") else None
 
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             duracao_ms = 0
 
         return {
@@ -1458,6 +1464,7 @@ class AlbumDoDia(commands.Cog):
         try:
             enviado = await self.despachar_album(channel)
         except Exception as exc:
+            log_exception(exc)
             print(f"[AOTD] Erro no envio automático: {exc}")
             return
 
@@ -1568,7 +1575,8 @@ class AlbumDoDia(commands.Cog):
             await interaction.followup.send(f"❌ {exc}", ephemeral=True)
             return
 
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             await interaction.followup.send(
                 "❌ Não consegui consultar o Spotify agora. Tenta de novo daqui a pouco.",
                 ephemeral=True,

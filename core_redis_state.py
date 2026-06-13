@@ -4,8 +4,8 @@ import logging
 import socket
 import time
 import urllib.parse
-import traceback
 from typing import Dict, Any, Optional
+from core_logger import log_exception
 
 try:
     import redis.asyncio as redis
@@ -120,13 +120,13 @@ class AbyssalRedisManager:
             if "connection closed by server" in error_str:
                 logger.error("[Redis L1] Falha de protocolo TLS/SSL. Verifique se o servidor (ex: Upstash) exige SSL e se a autenticação foi passada corretamente (rediss://).")
             else:
-                logger.error(f"[Redis L1] FALHA DE CONEXÃO ou AUTH: ({type(e).__name__}) O daemon Redis recusou ou demorou em '{host}:{port}'.\nTraceback Técnico:\n{traceback.format_exc()}")
+                log_exception(e, context=f"FALHA DE CONEXÃO ou AUTH: O daemon Redis recusou ou demorou em '{host}:{port}'")
             
             self._pool = None
             self._is_connected = False
             return False
         except Exception as e:
-            logger.error(f"[Redis L1] Falha atípica estrutural ao inicializar driver Redis: {type(e).__name__}\nTraceback Técnico:\n{traceback.format_exc()}")
+            log_exception(e, context="Falha atípica estrutural ao inicializar driver Redis")
             self._pool = None
             self._is_connected = False
             return False

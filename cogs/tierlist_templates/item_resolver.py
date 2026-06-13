@@ -17,6 +17,8 @@ from .exceptions import (
 from .migrations import dumps_json
 from .messages import CONFLICTING_IMAGE_SOURCES_MESSAGE, EMPTY_ITEM_MESSAGE
 from .models import TemplateItemType, TemplateSourceType
+from core_logger import log_exception
+
 
 
 LOGGER = logging.getLogger("baphomet.tierlist_templates.item_resolver")
@@ -260,6 +262,7 @@ class TierTemplateItemResolver:
                 user_id=user_id,
             )
         except Exception as exc:
+            log_exception(exc)
             code = getattr(exc, "code", "wikipedia_error")
             user_message = getattr(exc, "user_message", "Não consegui resolver essa imagem pela Wikipedia.")
             raise TemplateItemResolveError(user_message, detail=str(exc), code=str(code)) from exc
@@ -302,6 +305,7 @@ class TierTemplateItemResolver:
         try:
             resolution = await resolver.resolve(spotify_input, allow_ambiguous=False)
         except Exception as exc:
+            log_exception(exc)
             code = getattr(exc, "code", "spotify_error")
             user_message = getattr(exc, "user_message", "Não consegui resolver esse item do Spotify.")
             raise TemplateItemResolveError(user_message, detail=str(exc), code=str(code)) from exc
@@ -389,6 +393,7 @@ class TierTemplateItemResolver:
             try:
                 return await client.fetch_user(user_id)
             except Exception as exc:
+                log_exception(exc)
                 raise TemplateItemResolveError(
                     "Não consegui encontrar esse usuário para usar o avatar.",
                     detail=f"fetch_user falhou para {user_id}: {exc!r}",
@@ -419,6 +424,7 @@ class TierTemplateItemResolver:
         try:
             from cogs.tierlist_wikipedia.wikipedia import WikipediaImageService
         except Exception as exc:
+            log_exception(exc)
             raise TemplateItemResolveError(
                 "A integração com Wikipedia não está disponível neste ambiente.",
                 detail=f"Import WikipediaImageService falhou: {exc!r}",
@@ -431,6 +437,7 @@ class TierTemplateItemResolver:
         try:
             from cogs.tierlist_spotify.spotify import SpotifyInputResolver, SpotifyService
         except Exception as exc:
+            log_exception(exc)
             raise TemplateItemResolveError(
                 "A integração com Spotify não está disponível neste ambiente.",
                 detail=f"Import SpotifyInputResolver falhou: {exc!r}",

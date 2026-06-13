@@ -10,6 +10,8 @@ import aiosqlite
 from .xp_config import build_default_guild_config, normalize_difficulty, parse_iso, utc_now_iso
 from .xp_migrations import run_migrations
 from .xp_models import GuildXpConfig, UserXpProfile, XpDifficulty
+from core_logger import log_exception
+
 
 
 class XpRepository:
@@ -284,7 +286,8 @@ class XpRepository:
                 updated = await self.get_profile(guild_id, user_id)
                 await conn.commit()
                 return True, None, old_total, updated.total_xp
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 await conn.rollback()
                 raise
 
@@ -339,7 +342,8 @@ class XpRepository:
                 updated = await self.get_profile(guild_id, user_id)
                 await conn.commit()
                 return old_total, updated.total_xp
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 await conn.rollback()
                 raise
 
@@ -380,7 +384,8 @@ class XpRepository:
                 )
                 await conn.commit()
                 return old_total, 0
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 await conn.rollback()
                 raise
 

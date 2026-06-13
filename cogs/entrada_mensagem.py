@@ -35,6 +35,8 @@ import io
 from PIL import Image
 from datetime import datetime
 from typing import Optional
+from core_logger import log_exception
+
 
 # ─── Logger ────────────────────────────────────────────────────────────────────
 log = logging.getLogger("welcome_cog")
@@ -152,6 +154,7 @@ async def build_embed(cfg: dict, member: discord.Member) -> discord.Embed:
         loop = asyncio.get_running_loop()
         color_val = await loop.run_in_executor(None, extract_color)
     except Exception as e:
+        log_exception(e)
         log.warning("Falha ao extrair cor do avatar: %s", e)
         color_val = resolve_color(cfg.get("color", "blurple"))
 

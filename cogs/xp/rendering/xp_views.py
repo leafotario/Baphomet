@@ -8,6 +8,8 @@ from ..xp_service import XpService
 from ..utils import LeaderboardEntry
 from ..rank_badges import RankBadgeService
 from .xp_card_renderer import XpCardRenderer
+from core_logger import log_exception
+
 
 
 def build_leaderboard_embed(guild: discord.Guild, entries: list[LeaderboardEntry], page: int, total_entries: int, page_size: int) -> discord.Embed:
@@ -104,7 +106,8 @@ class RankCardView(discord.ui.View):
                 resolved.append((entry, member, badge_image_bytes))
             image = await self.cards.render_leaderboard_card(guild=interaction.guild, entries=resolved)
             await interaction.followup.send(file=discord.File(image, filename="leaderboard.png"), ephemeral=True)
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             page = await self.service.get_leaderboard_page(interaction.guild, page=0, page_size=5)
             embed = build_leaderboard_embed(interaction.guild, page.entries, page.page, page.total_entries, page.page_size)
             await interaction.followup.send(embed=embed, ephemeral=True)

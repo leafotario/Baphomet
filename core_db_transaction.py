@@ -4,6 +4,7 @@ import time
 import traceback
 import logging
 from contextlib import asynccontextmanager
+from core_logger import log_exception, task_error_handler
 from typing import AsyncIterator
 
 import aiosqlite
@@ -189,15 +190,7 @@ class BaphometTransactionManager:
                         await conn.rollback()
                         raise db_e
                         
-                    tb_str = "".join(traceback.format_exception(type(db_e), db_e, db_e.__traceback__))
-                    logger.error(
-                        f"❌ [TransactionManager DB FORENSE] Colapso Crítico no Banco de Dados SQLite\n"
-                        f"➤ Usuário ID: {user_id}\n"
-                        f"➤ Guilda ID: {guild_id}\n"
-                        f"➤ Aposta: {bet_amount}\n"
-                        f"➤ Erro Bruto: {type(db_e).__name__}: {db_e}\n"
-                        f"➤ Traceback Integral:\n{tb_str}"
-                    )
+                    log_exception(db_e, context=f"TransactionManager DB FORENSE - Usuário: {user_id}, Guilda: {guild_id}, Aposta: {bet_amount}")
                     await conn.rollback()
                     raise
         finally:
@@ -257,8 +250,9 @@ class BaphometTransactionManager:
                     )
 
                 await conn.commit()
-            except Exception:
+            except Exception as exc:
                 await conn.rollback()
+                log_exception(exc, context="resolve_escrow failure")
                 raise
 
     @tasks.loop(minutes=5)
@@ -311,9 +305,13 @@ class BaphometTransactionManager:
                 logger.info(f"[Orphan Reclaimer] {len(orphans)} escrows estagnados foram limpos e vitalidade devolvida.")
             except Exception as e:
                 await conn.rollback()
-                logger.error("Falha nativa no Orphan Escrow Reclaimer", exc_info=e)
+                log_exception(e, context="Falha nativa no Orphan Escrow Reclaimer")
 
     @orphan_escrow_reclaimer.before_loop
     async def before_reclaimer(self) -> None:
         """Assegura estabilidade inicial pre-loop da ext discord.ext.tasks."""
         await asyncio.sleep(5)
+        
+    @orphan_escrow_reclaimer.error
+    async def reclaimer_error_handler(self, exc: Exception):
+        log_exception(exc, context="Background Task Loop: orphan_escrow_reclaimer")

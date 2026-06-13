@@ -10,6 +10,8 @@ from typing import Any, AsyncIterator
 import aiosqlite
 
 from .models import IcebergProject, IcebergStatus, utc_now_iso
+from core_logger import log_exception
+
 
 
 LOGGER = logging.getLogger("baphomet.iceberg.repository")
@@ -122,7 +124,8 @@ class IcebergDatabaseManager:
             await self._begin_immediate_with_retry()
             try:
                 yield self.conn
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 await self.conn.rollback()
                 raise
             else:

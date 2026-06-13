@@ -21,6 +21,8 @@ from movie_logic import (
     validate_reaction_emoji,
 )
 from tmdb_api import TMDBClient
+from core_logger import log_exception
+
 
 
 LOGGER = logging.getLogger("baphomet.movie_cog")
@@ -129,12 +131,14 @@ class MovieCog(commands.Cog):
                     replace_existing=True,
                     kwargs={"bot": self.bot, "guild_id": guild_id, "db_manager": self.db_manager, "is_test": False}
                 )
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 pass
         else:
             try:
                 self.scheduler.remove_job(f"recap_{JOB_ID_PREFIX}{guild_id}")
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 pass
 
         LOGGER.info(
@@ -389,7 +393,8 @@ class MovieCog(commands.Cog):
                 self.tmdb_client,
                 is_test=True,
             )
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.error(
                 "Falha ao executar /test_movie guild_id=%s.",
                 guild_id,

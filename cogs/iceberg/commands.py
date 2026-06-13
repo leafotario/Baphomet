@@ -20,6 +20,8 @@ from .renderer import IcebergRenderer
 from .service import IcebergService
 from .sources.providers import IcebergSourceProviderRegistry, IcebergUserError
 from .themes import DEFAULT_THEME_ID, default_layer_name
+from core_logger import log_exception
+
 
 
 LOGGER = logging.getLogger("baphomet.iceberg.commands")
@@ -80,7 +82,8 @@ class IcebergCog(commands.Cog):
         except IcebergUserError as exc:
             await interaction.followup.send(exc.user_message, ephemeral=True)
             return
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("iceberg_create_failed user_id=%s guild_id=%s", interaction.user.id, interaction.guild_id)
             await interaction.followup.send("❌ Não consegui criar esse iceberg agora. O erro foi registrado.", ephemeral=True)
             return
@@ -143,7 +146,8 @@ class IcebergCog(commands.Cog):
         except IcebergUserError as exc:
             await interaction.followup.send(exc.user_message, ephemeral=True)
             return
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("iceberg_attachment_add_failed project_id=%s user_id=%s", projeto, interaction.user.id)
             await interaction.followup.send("❌ Não consegui adicionar esse attachment. O erro foi registrado.", ephemeral=True)
             return
@@ -185,7 +189,8 @@ class IcebergCog(commands.Cog):
         except IcebergUserError as exc:
             await interaction.followup.send(exc.user_message, ephemeral=True)
             return
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("iceberg_import_failed user_id=%s guild_id=%s", interaction.user.id, interaction.guild_id)
             await interaction.followup.send("❌ Não consegui importar esse iceberg. O erro foi registrado.", ephemeral=True)
             return
@@ -269,7 +274,8 @@ class IcebergCog(commands.Cog):
         except IcebergUserError as exc:
             await interaction.followup.send(exc.user_message, ephemeral=True)
             return
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("iceberg_render_failed project_id=%s user_id=%s", project_id, interaction.user.id)
             await interaction.followup.send("❌ Não consegui renderizar esse iceberg. O erro foi registrado.", ephemeral=True)
             return

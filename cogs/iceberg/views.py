@@ -8,6 +8,8 @@ import discord
 from .models import IcebergProject, ItemConfig, ItemSourceType
 from .sources.providers import IcebergUserError
 from .themes import default_layer_name
+from core_logger import log_exception
+
 
 if TYPE_CHECKING:
     from .commands import IcebergCog
@@ -191,7 +193,8 @@ class IcebergWikipediaCandidateSelect(discord.ui.Select):
         except IcebergUserError as exc:
             await interaction.followup.send(exc.user_message, ephemeral=True)
             return
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("iceberg_item_add_failed project_id=%s source_type=WIKIPEDIA", self.parent_view.project_id)
             await interaction.followup.send("❌ Não consegui adicionar esse item. O erro foi registrado.", ephemeral=True)
             return

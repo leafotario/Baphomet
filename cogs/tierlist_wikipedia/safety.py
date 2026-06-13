@@ -11,6 +11,8 @@ import unicodedata
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Protocol
+from core_logger import log_exception
+
 
 
 LOGGER = logging.getLogger("baphomet.tierlist.wikipedia.safety")
@@ -849,6 +851,7 @@ class StructuredDataSafetyFilter:
         try:
             qids = await self._fetch_depicts_qids(int(commons_pageid))
         except Exception as exc:
+            log_exception(exc)
             LOGGER.warning("Structured Data indisponível para M%s: %s", commons_pageid, exc)
             return SafetyDecision(
                 verdict=SAFETY_VERDICT_ALLOW,
@@ -959,6 +962,7 @@ class StructuredDataSafetyFilter:
             }
             payload = await self.http_client.get_json("wikidata", params)
         except Exception as exc:
+            log_exception(exc)
             LOGGER.warning("Não consegui consultar labels Wikidata: %s", exc)
             return tuple()
         entities = payload.get("entities", {}) if isinstance(payload, dict) else {}

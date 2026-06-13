@@ -17,6 +17,8 @@ from .xp_config import build_progress_snapshot, normalize_message_content, utc_n
 from .xp_models import GuildXpConfig, LeaderboardEntry, PageResult, RankSnapshot, XpChangeResult
 from .xp_repository import XpRepository
 from cogs.vinculos import ContractType
+from core_logger import log_exception
+
 
 
 class XpService:
@@ -151,7 +153,8 @@ class XpService:
                 eclipse_end = datetime.fromisoformat(settings.eclipse_ends_at)
                 if datetime.now(timezone.utc) < eclipse_end:
                     is_eclipse_active = True
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             pass
 
         for vinculo in vinculos:
@@ -285,6 +288,7 @@ class XpService:
                                 )
                                 await channel.send(embed=embed)
         except Exception as e:
+            log_exception(e)
             self.logger.error("Falha colossal na Avaliação de Contratos em Background: %s", e, exc_info=True)
 
     async def process_message(self, message: discord.Message) -> XpChangeResult | None:

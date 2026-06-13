@@ -9,6 +9,8 @@ from typing import AsyncIterator
 import aiosqlite
 
 from .migrations import run_tier_template_migrations
+from core_logger import log_exception
+
 
 
 LOGGER = logging.getLogger("baphomet.tierlist_templates.database")
@@ -93,7 +95,8 @@ class DatabaseManager:
             await self._begin_immediate_with_retry()
             try:
                 yield self.conn
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 await self.conn.rollback()
                 raise
             else:

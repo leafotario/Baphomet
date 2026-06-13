@@ -18,6 +18,8 @@ from cogs.vinculos_rendering.drawing import (
     rounded_mask,
 )
 from cogs.vinculos_rendering.fonts import FontManager
+from core_logger import log_exception
+
 
 
 LOGGER = logging.getLogger("baphomet.vinculos.renderer")
@@ -502,7 +504,8 @@ class VinculoCardRenderer:
         try:
             with self._font_lock:
                 return self.fonts.font(size, weight)
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             try:
                 return ImageFont.load_default(size=size)
             except TypeError:

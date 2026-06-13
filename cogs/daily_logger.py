@@ -9,6 +9,8 @@ import aiosqlite
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+from core_logger import log_exception
+
 
 # Constantes do módulo
 DATA_DIR = pathlib.Path("data")
@@ -155,6 +157,7 @@ class DailyLoggerCog(commands.Cog):
             )
             await self._db.commit()
         except Exception as e:
+            log_exception(e)
             LOGGER.error(f"Erro ao inserir mensagem no DB de logs: {e}")
 
     # =========================================================
@@ -246,6 +249,7 @@ class DailyLoggerCog(commands.Cog):
             except discord.HTTPException as e:
                 LOGGER.error(f"Erro HTTP ao enviar o arquivo de log: {e}")
             except Exception as e:
+                log_exception(e)
                 LOGGER.error(f"Erro crítico e inesperado ao processar os logs da guild {guild_id}: {e}")
 
     @daily_log_task.before_loop

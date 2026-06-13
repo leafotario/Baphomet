@@ -8,6 +8,8 @@ from discord.ext import commands
 
 from ..rendering import LeaderboardView, RankCardView, build_leaderboard_embed
 from ..xp_runtime import XpRuntime
+from core_logger import log_exception
+
 
 
 class XpUserCommands(commands.Cog):
@@ -35,7 +37,8 @@ class XpUserCommands(commands.Cog):
                 )
                 if sync_result.changed:
                     target = await interaction.guild.fetch_member(target.id)
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 self.runtime.service.logger.exception("falha ao sincronizar cargos antes do /rank")
         snapshot = await self.runtime.service.get_rank_snapshot(interaction.guild, target)
         bond_summary = await self.runtime.service.get_rank_bond_summary(interaction.guild.id, target.id)
@@ -53,7 +56,8 @@ class XpUserCommands(commands.Cog):
                 bond_multiplier=bond_summary.multiplier,
             )
             await interaction.edit_original_response(attachments=[discord.File(image, filename="rank.png")], view=view)
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             embed = discord.Embed(title="🔮 Rank De Prestígio", color=discord.Color.dark_purple())
             embed.description = (
                 f"**{snapshot.display_name}**\n"
@@ -92,7 +96,8 @@ class XpUserCommands(commands.Cog):
         try:
             image = await self.runtime.cards.render_leaderboard_card(guild=interaction.guild, entries=resolved)
             await interaction.edit_original_response(attachments=[discord.File(image, filename="leaderboard.png")], view=view)
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             page = await self.runtime.service.get_leaderboard_page(interaction.guild, page=0, page_size=5)
             embed = build_leaderboard_embed(interaction.guild, page.entries, page.page, page.total_entries, page.page_size)
             await interaction.edit_original_response(embed=embed, view=view)

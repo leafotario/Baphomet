@@ -28,8 +28,7 @@ from cogs.tierlist_wikipedia.wikipedia import (
     WikipediaResolvedImage,
     WikipediaUserError,
 )
-from cogs.tierlist_spotify.spotify import (
-    SpotifyImageDownloader,
+from cogs.tierlist_spotify.spotify import (    SpotifyImageDownloader,
     SpotifyImageError,
     SpotifyImageProcessor,
     SpotifyInputResolver,
@@ -38,7 +37,7 @@ from cogs.tierlist_spotify.spotify import (
     SpotifyService,
     SpotifyUserError,
 )
-
+from core_logger import log_exception
 LOGGER = logging.getLogger("baphomet.tierlist")
 
 
@@ -269,7 +268,8 @@ class TierListRenderer:
                 font = ImageFont.truetype(candidate, size)
                 self._font_cache[cache_key] = font
                 return font
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 continue
 
         if not self._warned_font_fallback:
@@ -609,10 +609,12 @@ class TierListRenderer:
             with Image.open(buffer) as raw:
                 try:
                     raw.seek(0)
-                except Exception:
+                except Exception as exc:
+                    log_exception(exc)
                     pass
                 return raw.convert("RGBA")
         except Exception as exc:
+            log_exception(exc)
             raise ValueError(f"imagem corrompida/ilegivel para {item_name}: {exc}") from exc
 
     def _item_has_image(self, item: "TierItem") -> bool:
@@ -713,7 +715,8 @@ class TierListRenderer:
         """
         try:
             channels = tuple(int(channel) for channel in color[:3])  # type: ignore[index]
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             return fallback
 
         if len(channels) != 3:
@@ -855,6 +858,7 @@ class TierListRenderer:
             raw = self._safe_open_image(item.image_bytes, item.name)
             fitted = self._fit_image_cover(raw, (self.ITEM_THUMB_SIZE, self.ITEM_THUMB_SIZE))
         except Exception as exc:
+            log_exception(exc)
             print(f"[ERRO] Fallback visual para item '{item.name}': {exc}")
             return False
 
@@ -885,6 +889,7 @@ class TierListRenderer:
             raw = self._safe_open_image(item.image_bytes, self._item_display_name(item) or "item com imagem")
             self._paste_cover_image(card, raw, image_box)
         except Exception as exc:
+            log_exception(exc)
             print(f"[ERRO] Fallback visual para item '{self._item_display_name(item)}': {exc}")
 
         if caption:
@@ -1111,7 +1116,8 @@ class TierListRenderer:
                 avatar.putalpha(mask)
                 base.paste(avatar, (x1, y1), mask=avatar)
                 return
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 pass
 
         layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
@@ -1568,7 +1574,8 @@ class AddItemModal(discord.ui.Modal):
                 LOGGER.exception("Falha amigável ao resolver Spotify: %s", exc.code)
                 await interaction.followup.send(f"❌ {exc.user_message}", ephemeral=True)
                 return
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 LOGGER.exception("Falha inesperada ao resolver entrada Spotify.")
                 await interaction.followup.send(
                     "❌ Não consegui consultar o Spotify agora. Tente novamente em instantes.",
@@ -1610,7 +1617,8 @@ class AddItemModal(discord.ui.Modal):
                 LOGGER.exception("Falha amigável ao preparar capa Spotify: %s", exc.code)
                 await interaction.followup.send(f"❌ {exc.user_message}", ephemeral=True)
                 return
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 LOGGER.exception("Falha inesperada ao preparar item Spotify.")
                 await interaction.followup.send(
                     "❌ A capa desse item não pôde ser baixada com segurança.",
@@ -1641,7 +1649,8 @@ class AddItemModal(discord.ui.Modal):
                 LOGGER.exception("Falha amigável ao resolver Wikipedia: %s", exc.code)
                 await interaction.followup.send(f"❌ {exc.user_message}", ephemeral=True)
                 return
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 LOGGER.exception("Falha inesperada ao resolver entrada Wikipedia.")
                 await interaction.followup.send(
                     "❌ Não consegui consultar a Wikipedia agora. Tente novamente em instantes.",
@@ -1830,7 +1839,8 @@ class SpotifyCandidateSelect(discord.ui.Select):
             LOGGER.exception("Falha amigável ao preparar candidato Spotify: %s", exc.code)
             await interaction.edit_original_response(content=f"❌ {exc.user_message}", view=None)
             return
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("Falha inesperada ao preparar candidato Spotify.")
             await interaction.edit_original_response(
                 content="❌ A capa desse item não pôde ser baixada com segurança.",
@@ -1960,7 +1970,8 @@ class WikipediaCandidateSelect(discord.ui.Select):
             LOGGER.exception("Falha amigável ao preparar candidato Wikipedia: %s", exc.code)
             await interaction.edit_original_response(content=f"❌ {exc.user_message}", view=None)
             return
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("Falha inesperada ao preparar candidato Wikipedia.")
             await interaction.edit_original_response(
                 content="❌ A imagem encontrada não pôde ser baixada com segurança.",
@@ -2141,6 +2152,7 @@ class EditTitleModal(discord.ui.Modal, title="Editar Nome da Tier List"):
                 
             await interaction.followup.send("✅ Título atualizado com sucesso!", ephemeral=True)
         except Exception as e:
+            log_exception(e)
             # Reverte em caso de falha visual para proteger os dados da sessão
             session.title = old_title
             await interaction.followup.send(f"❌ Falha ao atualizar o título: {e}", ephemeral=True)
@@ -2357,7 +2369,8 @@ class ItemSelectionView(discord.ui.View):
 
         try:
             await self.main_view.refresh_after_item_edit(interaction, session)
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             if removed_item is not None:
                 async with session.lock:
                     if tier_name not in session.items:
@@ -2566,7 +2579,8 @@ class EditItemModal(discord.ui.Modal):
 
             await interaction.followup.send("✅ Item editado com sucesso.", ephemeral=True)
 
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             # Rollback completo: restaura campos e recoloca o item na tier/indice
             # original caso ele tenha sido movido antes da falha.
             rollback_item = moved_item or current_item
@@ -2794,7 +2808,8 @@ class EditTierColorModal(discord.ui.Modal):
             else:
                 await interaction.followup.send("✅ Cor da tier atualizada.", ephemeral=True)
 
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             if old_color is None:
                 session.tier_colors.pop(self.tier_name, None)
             else:
@@ -3150,6 +3165,7 @@ class TierListControlView(discord.ui.View):
         try:
             hydrated_snapshot = await self.cog.hydrate_tier_images(tiers_snapshot)
         except Exception as exc:
+            log_exception(exc)
             print(f"[TIERLIST GENERATE] Hidratação falhou; renderizando snapshot sem novos downloads: {exc}")
             hydrated_snapshot = tiers_snapshot
 
@@ -3172,6 +3188,7 @@ class TierListControlView(discord.ui.View):
             )
 
         except Exception as exc:
+            log_exception(exc)
             print(f"[TIERLIST GENERATE] Render principal falhou; tentando fallback textual: {exc}")
             fallback_snapshot: OrderedDictType[str, list[TierItem]] = OrderedDict(
                 (
@@ -3200,6 +3217,7 @@ class TierListControlView(discord.ui.View):
                     tier_colors={},
                 )
             except Exception as fallback_exc:
+                log_exception(fallback_exc)
                 print(f"[TIERLIST GENERATE] Fallback textual também falhou: {fallback_exc}")
                 await interaction.followup.send(
                     "❌ Não consegui gerar a imagem final dessa vez.",
@@ -3340,7 +3358,8 @@ class TierListCog(
         except SpotifyUserError as exc:
             LOGGER.warning("Busca legada de capa Spotify falhou: %s", exc.code)
             return None
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("Busca legada de capa Spotify falhou inesperadamente.")
             return None
 
@@ -3795,7 +3814,8 @@ class TierListCog(
                     with Image.open(buffer) as raw_image:
                         try:
                             raw_image.seek(0)
-                        except Exception:
+                        except Exception as exc:
+                            log_exception(exc)
                             pass
                         purified_image = raw_image.convert("RGBA")
 
@@ -3804,13 +3824,15 @@ class TierListCog(
                     output.seek(0)
                     return output.getvalue()
                 except Exception as exc:
+                    log_exception(exc)
                     print(f"[IMAGE FETCH] Pillow recusou imagem de '{url}': {exc}")
                     return None
 
         # Tratamento cirúrgico de quebras de rede (Timeout e Falha de HTTP)
         except (aiohttp.ClientError, asyncio.TimeoutError):
             return None
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             return None
 
     async def hydrate_tier_images(
@@ -3873,6 +3895,7 @@ class TierListCog(
                     await asyncio.gather(*tasks, return_exceptions=True)
 
         except Exception as exc:
+            log_exception(exc)
             print(f"[IMAGE HYDRATION] Falha global na hidratação; renderizando fallback textual/imagens já salvas: {exc}")
 
         return tiers_snapshot

@@ -11,6 +11,8 @@ import aiosqlite
 import discord
 from discord import app_commands
 from discord.ext import commands
+from core_logger import log_exception
+
 
 logger = logging.getLogger(__name__)
 
@@ -361,6 +363,7 @@ class PunishmentLogs(commands.Cog):
             )
 
         except Exception as e:
+            log_exception(e)
             logger.exception("Erro inesperado em on_member_update ao processar timeout do membro %s: %s", after.id, e)
 
     # =========================

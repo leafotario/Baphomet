@@ -22,6 +22,8 @@ from ..utils import (
     utc_now_iso,
 )
 from .xp_migrations import run_migrations
+from core_logger import log_exception
+
 
 
 def build_default_guild_config(guild_id: int) -> GuildXpConfig:
@@ -620,7 +622,8 @@ class XpRepository:
                 updated = await self.get_profile(guild_id, user_id)
                 await conn.commit()
                 return True, None, old_total, updated.total_xp
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 await conn.rollback()
                 raise
 
@@ -738,7 +741,8 @@ class XpRepository:
                 updated = await self.get_profile(guild_id, user_id)
                 await conn.commit()
                 return old_total, updated.total_xp
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 await conn.rollback()
                 raise
 
@@ -763,7 +767,8 @@ class XpRepository:
                 )
                 await conn.commit()
                 return deleted_count
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 await conn.rollback()
                 raise
 
@@ -804,7 +809,8 @@ class XpRepository:
                 )
                 await conn.commit()
                 return old_total, 0
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 await conn.rollback()
                 raise
 
@@ -879,7 +885,8 @@ class XpRepository:
 
                 await conn.commit()
                 return total_sacrificed
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 await conn.rollback()
                 raise
 

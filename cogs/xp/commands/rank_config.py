@@ -8,6 +8,8 @@ from discord.ext import commands
 
 from ..rank_badges import RankBadgeImageError
 from ..xp_runtime import XpRuntime
+from core_logger import log_exception
+
 
 
 def _role_manage_error(guild: discord.Guild, role: discord.Role) -> str | None:
@@ -68,6 +70,7 @@ class RankConfig(commands.GroupCog, group_name="rank_config", group_description=
                 if isinstance(channel, discord.TextChannel):
                     await channel.send(embed=embed)
         except Exception as exc:
+            log_exception(exc)
             self.runtime.service.logger.warning("falha ao enviar audit log de rank guild_id=%s error=%s", guild.id, exc)
 
     @insignia.command(name="set", description="Define uma insignia visual de rank para um cargo.")

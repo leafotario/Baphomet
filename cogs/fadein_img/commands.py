@@ -18,6 +18,8 @@ from .errors import (
     UnsupportedMediaError,
 )
 from .processor import FadeInImageConfig, process_fadein_image_bytes
+from core_logger import log_exception
+
 
 
 LOGGER = logging.getLogger("baphomet.fadein_img")
@@ -102,7 +104,8 @@ class FadeInImageCog(commands.Cog):
             await self._send_error(interaction, "Nao tenho permissao para enviar arquivos neste canal.")
         except FadeInImageError as exc:
             await self._send_error(interaction, self._friendly_error_message(exc))
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception(
                 "fadein_img_unexpected_failed user_id=%s guild_id=%s attachment=%s",
                 getattr(interaction.user, "id", None),

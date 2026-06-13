@@ -18,6 +18,8 @@ DB_PATH = DATA_DIR / "baphomet_xp.sqlite3"
 
 import logging
 import traceback
+from core_logger import log_exception
+
 
 logger = logging.getLogger("baphomet.xp.setup")
 
@@ -44,6 +46,7 @@ async def setup(bot: commands.Bot) -> None:
         await bot.add_cog(XpAdminCommands(bot, runtime))
         await bot.add_cog(RankConfig(bot, runtime))
     except Exception as e:
+        log_exception(e)
         tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         logger.error(
             f"❌ [XP SETUP FORENSE] Falha Crítica ao inicializar o cogs.xp\n"

@@ -23,6 +23,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from cogs.vinculos_rendering.renderer import VINCULO_CARD_FILENAME, VinculoCardRenderer
+from core_logger import log_exception
+
 
 
 LOGGER = logging.getLogger("baphomet.vinculos")
@@ -824,7 +826,8 @@ class VinculoRepository:
             except aiosqlite.IntegrityError:
                 await conn.rollback()
                 return VinculoRequestCreation(status="pending_exists")
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 await conn.rollback()
                 raise
 
@@ -905,7 +908,8 @@ class VinculoRepository:
             except aiosqlite.IntegrityError:
                 await conn.rollback()
                 return "duplicate"
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 await conn.rollback()
                 raise
 
@@ -938,7 +942,8 @@ class VinculoRepository:
                 )
                 await conn.commit()
                 return status  # type: ignore[return-value]
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 await conn.rollback()
                 raise
 
@@ -1050,7 +1055,8 @@ class VinculoRepository:
                     penalty=penalty,
                     settings=settings,
                 )
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 await conn.rollback()
                 raise
 
@@ -1402,7 +1408,8 @@ class VinculoRepository:
                 )
                 await conn.commit()
                 return self._row_to_settings(rows[0])
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 await conn.rollback()
                 raise
 
@@ -1548,6 +1555,7 @@ class VinculoRepository:
                 )
                 await channel.send(embed=embed)
         except Exception as e:
+            log_exception(e)
             LOGGER.error("Falha ao propagar o Eclipse: %s", e)
 
     async def transfer_xp(self, guild_id: int, donor_id: int, receiver_id: int, amount: int) -> TransferResult:
@@ -1707,7 +1715,8 @@ class VinculoRepository:
                     receiver_balance_after=receiver_total + net_amount,
                     transfer_id=int(cur.lastrowid),
                 )
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 await conn.rollback()
                 raise
 
@@ -1747,7 +1756,8 @@ class VinculoRepository:
                         due.append((vinculo, affinity))
                 await conn.commit()
                 return due
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 await conn.rollback()
                 raise
 
@@ -1974,7 +1984,8 @@ class VinculoRequestView(discord.ui.View):
                 ephemeral=True,
             )
             await self._edit_message_after_followup("stale")
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("falha ao aceitar vínculo request_id=%s", self.request_id)
             await self.cog.send_interaction_error(interaction)
 
@@ -1993,7 +2004,8 @@ class VinculoRequestView(discord.ui.View):
                 ephemeral=True,
             )
             await self._edit_message_after_followup("stale")
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("falha ao recusar vínculo request_id=%s", self.request_id)
             await self.cog.send_interaction_error(interaction)
 
@@ -2016,7 +2028,8 @@ class VinculoRequestView(discord.ui.View):
     async def on_timeout(self) -> None:
         try:
             expired = await self.cog.repository.expire_request(self.request_id)
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("falha ao expirar vínculo request_id=%s", self.request_id)
             return
         if not expired:
@@ -2075,6 +2088,7 @@ class VinculosCog(commands.Cog):
                 if cursor.rowcount > 0:
                     LOGGER.debug("[Contract Reaper] %d contratos foram obliterados pela inércia dos mortais.", cursor.rowcount)
         except Exception as e:
+            log_exception(e)
             LOGGER.error("Falha intransponível no contract_reaper_task: %s", e, exc_info=True)
 
     @tasks.loop(time=time(hour=15, minute=0, tzinfo=timezone.utc))
@@ -2093,6 +2107,7 @@ class VinculosCog(commands.Cog):
                 current_month=now.month,
             )
         except Exception as e:
+            log_exception(e)
             LOGGER.error("Erro ao buscar candidatos de aniversário de vínculos: %s", e)
             return
 
@@ -2206,6 +2221,7 @@ class VinculosCog(commands.Cog):
                 await channel.send(content=f"{user_a.mention} {user_b.mention}", embed=embed, file=file)
 
             except Exception as e:
+                log_exception(e)
                 LOGGER.error("Erro inesperado ao processar aniversário para vínculo %s: %s", vinculo.id, e)
 
     @check_vinculo_anniversaries.before_loop
@@ -2969,7 +2985,8 @@ class VinculosCog(commands.Cog):
                 file=file,
                 ephemeral=True,
             )
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception(
                 "falha ao gerar prévia do card de vínculo guild_id=%s solicitante_id=%s aceitante_id=%s",
                 interaction.guild.id,
@@ -3288,7 +3305,8 @@ class VinculosCog(commands.Cog):
             due = await self.repository.mark_due_affinity_announcements(message.guild.id, message.author.id)
             for vinculo, affinity in due:
                 await self.announce_affinity_upgrade(message.guild, vinculo, affinity)
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception(
                 "falha ao atualizar presença de vínculo guild_id=%s user_id=%s",
                 message.guild.id,
@@ -3389,7 +3407,8 @@ class VinculosCog(commands.Cog):
             )
             image.seek(0)
             return discord.File(image, filename=VINCULO_CARD_FILENAME)
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception(
                 "falha ao gerar card público de vínculo guild_id=%s requester_id=%s target_id=%s",
                 getattr(guild, "id", None),

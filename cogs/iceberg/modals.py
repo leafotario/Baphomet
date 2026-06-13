@@ -9,6 +9,8 @@ import discord
 from .constants import ICEBERG_TITLE_MAX_LENGTH
 from .models import ItemSourceType, PlacementConfig
 from .sources.providers import IcebergUserError
+from core_logger import log_exception
+
 
 if TYPE_CHECKING:
     from .commands import IcebergCog
@@ -44,7 +46,8 @@ class IcebergGeneralModal(discord.ui.Modal, title="Editar Título"):
         except IcebergUserError as exc:
             await interaction.followup.send(exc.user_message, ephemeral=True)
             return
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("iceberg_general_update_failed project_id=%s", self.project_id)
             await interaction.followup.send("❌ Não consegui atualizar esse iceberg. O erro foi registrado.", ephemeral=True)
             return
@@ -124,7 +127,8 @@ class IcebergAddItemModal(discord.ui.Modal):
                 )
                 await interaction.followup.send("Selecione o candidato correto:", view=view, ephemeral=True)
                 return
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 LOGGER.exception("iceberg_wiki_search_failed project_id=%s", self.project_id)
                 await interaction.followup.send("❌ Erro ao buscar na Wikipedia. O erro foi registrado.", ephemeral=True)
                 return
@@ -142,7 +146,8 @@ class IcebergAddItemModal(discord.ui.Modal):
         except IcebergUserError as exc:
             await interaction.followup.send(exc.user_message, ephemeral=True)
             return
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("iceberg_item_add_failed project_id=%s source_type=%s", self.project_id, self.source_type)
             await interaction.followup.send("❌ Não consegui adicionar esse item. O erro foi registrado.", ephemeral=True)
             return
@@ -216,7 +221,8 @@ class IcebergEditItemModal(discord.ui.Modal, title="Editar Item"):
         except IcebergUserError as exc:
             await interaction.followup.send(exc.user_message, ephemeral=True)
             return
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             LOGGER.exception("iceberg_item_edit_failed project_id=%s item_id=%s", self.project_id, self.item_id)
             await interaction.followup.send("❌ Não consegui editar esse item. O erro foi registrado.", ephemeral=True)
             return

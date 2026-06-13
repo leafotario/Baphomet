@@ -11,6 +11,8 @@ import aiosqlite
 import discord
 from discord import app_commands
 from discord.ext import commands
+from core_logger import log_exception
+
 
 LOGGER = logging.getLogger("baphomet.prune")
 
@@ -94,7 +96,8 @@ class ActivityRepository:
             )
             await self.conn.commit()
             return self.conn.total_changes > 0
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             return False
 
     async def remove_whitelist(self, guild_id: int, target_id: int) -> bool:

@@ -11,6 +11,8 @@ import discord
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from .xp_models import LeaderboardEntry, RankSnapshot
+from core_logger import log_exception
+
 
 # Caminhos sugeridos para as fontes customizadas. 
 # O usuário deve colocar as fontes nesta pasta para o efeito máximo.
@@ -41,7 +43,8 @@ class XpCardRenderer:
             return None
         try:
             return await asset.read()
-        except Exception:
+        except Exception as exc:
+            log_exception(exc)
             return None
 
     # --- PIL Graphics Functions (CPU Bound - Executadas em Threads) ---
@@ -75,7 +78,8 @@ class XpCardRenderer:
         if avatar_bytes:
             try:
                 avatar = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 avatar = Image.new("RGBA", (size, size), (86, 64, 134, 255))
         else:
             avatar = Image.new("RGBA", (size, size), (86, 64, 134, 255))
@@ -145,7 +149,8 @@ class XpCardRenderer:
         if image_bytes:
             try:
                 bg = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 pass
         
         if not bg:

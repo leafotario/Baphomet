@@ -11,6 +11,8 @@ from discord.ext import commands, tasks
 
 from ..xp_constants import LEVEL_UP_MESSAGES
 from ..xp_runtime import XpRuntime
+from core_logger import log_exception
+
 
 
 class XpEvents(commands.Cog):
@@ -63,6 +65,7 @@ class XpEvents(commands.Cog):
             except (discord.Forbidden, discord.HTTPException):
                 return
         except Exception as e:
+            log_exception(e)
             tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
             guild_id = message.guild.id if message.guild else "DM"
             user_id = message.author.id
@@ -84,7 +87,8 @@ class XpEvents(commands.Cog):
         for guild in self.bot.guilds:
             try:
                 stats = await self.runtime.service.sync_guild_level_roles(guild)
-            except Exception:
+            except Exception as exc:
+                log_exception(exc)
                 logger.exception("falha no sync recorrente de cargos de nível guild_id=%s", guild.id)
                 continue
             total_members += stats["members"]

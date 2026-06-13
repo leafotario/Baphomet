@@ -9,6 +9,8 @@ from discord.ext import commands
 from ..xp_constants import DIFFICULTY_CHOICES, GuildChannelParam
 from ..xp_runtime import XpRuntime
 from ..utils import XpDifficulty
+from core_logger import log_exception
+
 
 
 def _role_manage_error(guild: discord.Guild, role: discord.Role) -> str | None:
@@ -48,6 +50,7 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
                 if isinstance(channel, discord.TextChannel):
                     await channel.send(embed=embed)
         except Exception as exc:
+            log_exception(exc)
             self.runtime.service.logger.warning(f"Falha ao enviar audit log para a guild {guild.id}: {exc}")
 
     @app_commands.command(name="difficulty", description="Define A Dificuldade Da Ascensão ⚙️")

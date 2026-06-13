@@ -15,6 +15,8 @@ from urllib.parse import unquote, urlparse
 
 import aiohttp
 from PIL import Image, ImageOps, UnidentifiedImageError
+from core_logger import log_exception
+
 
 LOGGER = logging.getLogger("baphomet.tierlist.wikipedia")
 
@@ -716,7 +718,8 @@ class PillowImageValidator:
             with Image.open(buffer) as raw_image:
                 try:
                     raw_image.seek(0)
-                except Exception:
+                except Exception as exc:
+                    log_exception(exc)
                     pass
 
                 width, height = raw_image.size

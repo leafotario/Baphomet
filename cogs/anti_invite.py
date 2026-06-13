@@ -4,6 +4,8 @@ from discord import app_commands
 import json
 import os
 import re
+from core_logger import log_exception
+
 
 class AntiInviteCog(commands.Cog):
     def __init__(self, bot):
@@ -89,6 +91,7 @@ class AntiInviteCog(commands.Cog):
                 # O convite é inválido ou expirou, mas por segurança, muitos preferem apagar mesmo assim
                 await message.delete()
             except Exception as e:
+                log_exception(e)
                 print(f"Erro ao processar convite: {e}")
 
 async def setup(bot):

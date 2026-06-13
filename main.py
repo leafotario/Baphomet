@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 from core_db_transaction import BaphometTransactionManager
 from core_redis_state import AbyssalRedisManager
+from core_logger import log_exception
 
 # ==============================================================================
 # 1. CORES E ESTILOS PARA TERMINAL (ANSI)
@@ -200,6 +201,17 @@ bot = MyBot()
 # 5. EVENTOS DO DISCORD
 # ==============================================================================
 @bot.event
+async def on_error(event_method: str, *args, **kwargs) -> None:
+    """
+    Handler global para erros não capturados em Event Listeners (on_message, etc).
+    """
+    exc_type, exc_value, exc_traceback = sys.exc_info()
+    if exc_value:
+        log_exception(exc_value, context=f"Event Listener Error: {event_method}", args=args, kwargs=kwargs)
+    else:
+        log_error(f"Erro em evento {event_method}, mas nenhuma exceção fornecida.")
+
+@bot.event
 async def on_ready() -> None:
     boot_time = round(time.time() - bot.start_time, 2)
     users_count = sum(guild.member_count for guild in bot.guilds if guild.member_count)
@@ -224,7 +236,12 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError) 
         log_warn(f"O usuário {ctx.author} tentou usar comando restrito (!{ctx.command}).")
         return
 
-    log_error(f"Erro na execução do comando '!{ctx.command}' por {ctx.author}: {error}")
+    original_error = getattr(error, 'original', error)
+    log_exception(original_error, context="Prefix Command Error", ctx=ctx)
+    try:
+        await ctx.send(f"❌ Ocorreu um erro interno: `{type(original_error).__name__}: {original_error}`")
+    except discord.HTTPException:
+        pass
 
 
 @bot.tree.error
@@ -254,16 +271,7 @@ async def on_tree_error(
         
         # Desempacota o erro original se existir na árvore de comandos do Discord
         original_error = getattr(error, 'original', error)
-        tb_str = "".join(traceback.format_exception(type(original_error), original_error, original_error.__traceback__))
-        
-        log_error(
-            f"❌ [GLOBAL EXCEPTION INTERCEPTOR] Erro Forense Detectado!\n"
-            f"➤ Comando: '/{interaction.command.name if interaction.command else '?'}'\n"
-            f"➤ Usuário: {interaction.user} (ID: {interaction.user.id})\n"
-            f"➤ Guilda:  {interaction.guild.name if interaction.guild else 'DM'} (ID: {interaction.guild_id})\n"
-            f"➤ Erro:    {type(original_error).__name__}: {original_error}\n"
-            f"➤ Traceback Integral:\n{tb_str}"
-        )
+        log_exception(original_error, context="Global Slash Command Error", interaction=interaction)
 
     try:
         if interaction.response.is_done():

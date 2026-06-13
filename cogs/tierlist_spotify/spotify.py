@@ -14,6 +14,8 @@ from urllib.parse import urlparse
 
 import aiohttp
 from PIL import Image, UnidentifiedImageError
+from core_logger import log_exception
+
 
 try:
     import spotipy
@@ -306,6 +308,7 @@ class SpotifyService:
             try:
                 return await asyncio.to_thread(func, *args, **kwargs)
             except Exception as exc:
+                log_exception(exc)
                 if SpotifyException is not None and isinstance(exc, SpotifyException):
                     status = int(getattr(exc, "http_status", 0) or 0)
                     last_error = exc
@@ -689,7 +692,8 @@ class SpotifyImageProcessor:
             with Image.open(buffer) as raw_image:
                 try:
                     raw_image.seek(0)
-                except Exception:
+                except Exception as exc:
+                    log_exception(exc)
                     pass
                 normalized = raw_image.convert("RGBA")
 
