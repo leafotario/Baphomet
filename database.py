@@ -85,6 +85,9 @@ class DatabaseManager:
 
     @staticmethod
     async def _apply_pragmas(db: aiosqlite.Connection) -> None:
+        async with db.execute("PRAGMA foreign_keys = ON;"):
+            pass
+        
         async with db.execute("PRAGMA journal_mode=WAL;") as cursor:
             await cursor.fetchone()
 

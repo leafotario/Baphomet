@@ -62,6 +62,7 @@ class BaphometTransactionManager:
         for _ in range(self.pool_size):
             conn = await aiosqlite.connect(self.db_path)
             conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA foreign_keys = ON;")
             await conn.execute("PRAGMA journal_mode=WAL;")
             await conn.execute("PRAGMA synchronous=NORMAL;")
             await conn.execute("PRAGMA busy_timeout=5000;")

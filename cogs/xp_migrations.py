@@ -99,6 +99,27 @@ CREATE INDEX IF NOT EXISTS idx_xp_profiles_guild_updated_at
 
 CREATE INDEX IF NOT EXISTS idx_xp_adjustments_guild_target_created
     ON xp_adjustments (guild_id, target_user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS achievements_def (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    internal_code TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    asset_path TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_achievements_internal_code ON achievements_def(internal_code);
+
+CREATE TABLE IF NOT EXISTS user_achievements (
+    user_id INTEGER NOT NULL,
+    guild_id INTEGER NOT NULL,
+    achievement_id INTEGER NOT NULL,
+    unlocked_at INTEGER DEFAULT (CAST(strftime('%s', 'now') AS INTEGER)),
+    PRIMARY KEY (user_id, guild_id, achievement_id),
+    FOREIGN KEY(achievement_id) REFERENCES achievements_def(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_achievements_guild_user ON user_achievements(guild_id, user_id);
 """
 
 

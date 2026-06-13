@@ -12,7 +12,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 from core_db_transaction import BaphometTransactionManager
-from core_redis_state import AbyssalRedisManager
+from core_redis_state import AbyssalRedisManager, RedisConnectionError
 from core_logger import log_exception
 
 # ==============================================================================
@@ -134,6 +134,8 @@ class MyBot(commands.Bot):
         await self.tx_manager.initialize()
 
         loaded, failed = await self.load_all_extensions()
+        
+        await self.load_achievements_cache()
 
         print_separator()
         log_info(f"Resumo de Cogs: {loaded} carregados com sucesso | {failed} falharam.")
@@ -145,6 +147,51 @@ class MyBot(commands.Bot):
             log_sync(f"{len(synced)} comandos sincronizados com sucesso!")
         except Exception as exc:
             log_error(f"Falha ao sincronizar comandos: {exc}")
+
+    async def load_achievements_cache(self) -> None:
+        """Sincroniza o subsistema de Secret Achievements do SQLite (XP DB) para o Redis L1."""
+        log_info("Iniciando cache estrito de Secret Achievements...")
+        if not self.redis_manager or not self.redis_manager._is_connected:
+            log_error("Redis L1 indisponível. Bypass do cache de Achievements ativado para prevenir falhas sistêmicas.")
+            return
+
+        try:
+            async with self.tx_manager.acquire() as conn:
+                async with conn.execute(
+                    """
+                    SELECT u.guild_id, u.user_id, a.internal_code 
+                    FROM xp_db.user_achievements u
+                    INNER JOIN xp_db.achievements_def a ON u.achievement_id = a.id
+                    """
+                ) as cursor:
+                    rows = await cursor.fetchall()
+            
+            pipe = self.redis_manager._pool.pipeline()
+            cache_count = 0
+            for row in rows:
+                guild_id = row["guild_id"]
+                user_id = row["user_id"]
+                internal_code = row["internal_code"]
+                key = f"baphomet:achievements:unlocked:{guild_id}:{user_id}"
+                pipe.sadd(key, internal_code)
+                cache_count += 1
+            
+            if cache_count > 0:
+                await pipe.execute()
+                logging.getLogger("Baphomet.Achievements").info(f"Foram cacheados in-memory com sucesso {cache_count} Secret Achievements na camada L1 (Redis).")
+                log_success(f"Cache populado: {cache_count} Secret Achievements carregados (O(1) lookups).")
+            else:
+                logging.getLogger("Baphomet.Achievements").info("Nenhum Secret Achievement encontrado no database relacional para cacheamento.")
+                log_info("Tabela de Secret Achievements vazia. Cache não modificado.")
+
+        except RedisConnectionError as e:
+            logging.getLogger("Baphomet.Achievements").error("Partição de rede detectada com o container Redis durante a transição do cache de Achievements.", exc_info=True)
+            log_exception(e, context="load_achievements_cache Redis Connection Error")
+            log_error("Falha de rede com o Redis L1 ao carregar conquistas.")
+        except Exception as e:
+            logging.getLogger("Baphomet.Achievements").error("Derrocada sistêmica inesperada durante o boot do cache de Achievements.", exc_info=True)
+            log_exception(e, context="load_achievements_cache Global Error")
+            log_error("Falha ao inicializar o cache L1 das conquistas secretas.")
 
 
     async def close(self) -> None:
