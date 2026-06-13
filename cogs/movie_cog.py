@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Final
 
 import discord
+from apscheduler.jobstores.base import JobLookupError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from discord import app_commands
@@ -135,8 +136,12 @@ class MovieCog(commands.Cog):
                 log_exception(exc)
                 pass
         else:
+            job_id = f"recap_{JOB_ID_PREFIX}{guild_id}"
             try:
-                self.scheduler.remove_job(f"recap_{JOB_ID_PREFIX}{guild_id}")
+                if self.scheduler.get_job(job_id):
+                    self.scheduler.remove_job(job_id)
+            except JobLookupError:
+                LOGGER.warning(f"[MovieCog] O job {job_id} não existia no registro para ser removido. Procedendo com a criação de um novo agendamento de fallback.")
             except Exception as exc:
                 log_exception(exc)
                 pass

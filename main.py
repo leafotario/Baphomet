@@ -157,15 +157,23 @@ class MyBot(commands.Bot):
 
         try:
             async with self.tx_manager.acquire() as conn:
-                async with conn.execute(
-                    """
-                    SELECT u.guild_id, u.user_id, a.internal_code 
-                    FROM xp_db.user_achievements u
-                    INNER JOIN xp_db.achievements_def a ON u.achievement_id = a.id
-                    """
-                ) as cursor:
-                    rows = await cursor.fetchall()
-            
+                try:
+                    async with conn.execute(
+                        """
+                        SELECT u.guild_id, u.user_id, a.internal_code 
+                        FROM xp_db.user_achievements u
+                        INNER JOIN xp_db.achievements_def a ON u.achievement_id = a.id
+                        """
+                    ) as cursor:
+                        rows = await cursor.fetchall()
+                except Exception as db_err:
+                    # Captura falha se a tabela não existir (ex: migração falhou)
+                    logging.getLogger("Baphomet.Achievements").warning(
+                        "Tabela de conquistas não encontrada ou falha no DDL. Bypass de cache ativado. Erro: %s", db_err
+                    )
+                    log_warn(f"Cache ignorado por ausência estrutural no DB: {db_err}")
+                    return
+
             pipe = self.redis_manager._pool.pipeline()
             cache_count = 0
             for row in rows:
@@ -189,9 +197,8 @@ class MyBot(commands.Bot):
             log_exception(e, context="load_achievements_cache Redis Connection Error")
             log_error("Falha de rede com o Redis L1 ao carregar conquistas.")
         except Exception as e:
-            logging.getLogger("Baphomet.Achievements").error("Derrocada sistêmica inesperada durante o boot do cache de Achievements.", exc_info=True)
-            log_exception(e, context="load_achievements_cache Global Error")
-            log_error("Falha ao inicializar o cache L1 das conquistas secretas.")
+            logging.getLogger("Baphomet.Achievements").warning("Falha inesperada no boot do cache de Achievements: %s", e)
+            log_warn(f"Falha amigável de boot L1 cache. O bot continuará online. Erro: {e}")
 
 
     async def close(self) -> None:

@@ -144,6 +144,27 @@ CREATE INDEX IF NOT EXISTS idx_vinculo_bonus_history_user
 
 CREATE INDEX IF NOT EXISTS idx_vinculo_bonus_history_vinculo
     ON vinculo_xp_bonus_history(vinculo_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS achievements_def (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    internal_code TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    asset_path TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_achievements_internal_code ON achievements_def(internal_code);
+
+CREATE TABLE IF NOT EXISTS user_achievements (
+    user_id INTEGER NOT NULL,
+    guild_id INTEGER NOT NULL,
+    achievement_id INTEGER NOT NULL,
+    unlocked_at INTEGER DEFAULT (CAST(strftime('%s', 'now') AS INTEGER)),
+    PRIMARY KEY (user_id, guild_id, achievement_id),
+    FOREIGN KEY(achievement_id) REFERENCES achievements_def(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_achievements_guild_user ON user_achievements(guild_id, user_id);
 """
 
 
@@ -291,6 +312,7 @@ async def run_migrations(conn: aiosqlite.Connection) -> None:
         "resonance_window_seconds INTEGER NOT NULL DEFAULT 86400",
         "resonance_window_seconds",
     )
+    await _ensure_column(conn, "xp_profiles", "curse_expires_at INTEGER NOT NULL DEFAULT 0", "curse_expires_at")
 
     applied_rows = await conn.execute_fetchall("SELECT version FROM xp_schema_migrations")
     applied = {int(row[0]) for row in applied_rows}
