@@ -62,6 +62,7 @@ class UserXpProfile:
     last_message_hash: Optional[str] = None
     last_message_at: Optional[str] = None
     last_known_name: Optional[str] = None
+    curse_expires_at: int = 0
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 

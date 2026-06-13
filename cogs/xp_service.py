@@ -318,6 +318,12 @@ class XpService:
             if not passes_repeat:
                 return None
             
+            # Sub-rotina Inibidora: Interceptação Condicional Silenciada ('A Maldicao')
+            profile = await self.repository.get_profile(message.guild.id, message.author.id)
+            if profile.curse_expires_at > 0 and int(now.timestamp()) < profile.curse_expires_at:
+                delta_xp = 0
+                self.logger.debug("Interceptação Silenciosa: Usuário %d no Servidor %d teve XP coberto por Maldição.", message.author.id, message.guild.id)
+            
             vinculo_multiplier = await self._resolve_vinculo_context(message.author.id, message)
             final_delta_xp = int(delta_xp * (1.0 + vinculo_multiplier))
 

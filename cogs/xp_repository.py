@@ -207,6 +207,7 @@ class XpRepository:
             last_message_hash=row["last_message_hash"],
             last_message_at=row["last_message_at"],
             last_known_name=row["last_known_name"],
+            curse_expires_at=int(row["curse_expires_at"]) if "curse_expires_at" in row.keys() else 0,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -450,6 +451,7 @@ class XpRepository:
             last_message_hash=row["last_message_hash"],
             last_message_at=row["last_message_at"],
             last_known_name=row["last_known_name"],
+            curse_expires_at=int(row["curse_expires_at"]) if "curse_expires_at" in row.keys() else 0,
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )

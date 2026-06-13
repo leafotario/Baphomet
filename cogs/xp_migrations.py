@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS xp_profiles (
     last_message_hash TEXT NULL,
     last_message_at TEXT NULL,
     last_known_name TEXT NULL,
+    curse_expires_at INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (guild_id, user_id)
@@ -244,6 +245,7 @@ async def run_migrations(conn: aiosqlite.Connection) -> None:
     await _ensure_column(conn, "xp_profiles", "last_message_hash TEXT NULL", "last_message_hash")
     await _ensure_column(conn, "xp_profiles", "last_message_at TEXT NULL", "last_message_at")
     await _ensure_column(conn, "xp_profiles", "last_known_name TEXT NULL", "last_known_name")
+    await _ensure_column(conn, "xp_profiles", "curse_expires_at INTEGER NOT NULL DEFAULT 0", "curse_expires_at")
 
     applied_rows = await conn.execute_fetchall("SELECT version FROM xp_schema_migrations")
     applied = {int(row[0]) for row in applied_rows}
