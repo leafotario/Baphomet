@@ -54,6 +54,7 @@ class XpUserCommands(commands.Cog):
                 badge_image_bytes=badge_image_bytes,
                 bond_count=bond_summary.count,
                 bond_multiplier=bond_summary.multiplier,
+                db_conn=self.runtime.repository.connection,
             )
             await interaction.edit_original_response(attachments=[discord.File(image, filename="rank.png")], view=view)
         except Exception as exc:

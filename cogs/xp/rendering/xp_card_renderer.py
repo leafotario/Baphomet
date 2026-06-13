@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import aiosqlite
 from typing import Iterable
 
 import discord
@@ -288,6 +289,26 @@ class XpCardRenderer:
         output.seek(0)
         return output
 
+    def _draw_achievements(self, base_image: Image.Image, asset_paths: list[str]) -> Image.Image:
+        import os
+        x_offset = base_image.width - 340
+        y_offset = 120
+        spacing = 50
+        
+        for path in asset_paths:
+            if not os.path.exists(path):
+                continue
+            try:
+                badge = Image.open(path).convert("RGBA")
+                badge.thumbnail((40, 40), Image.Resampling.LANCZOS)
+                layer = Image.new("RGBA", base_image.size, (0, 0, 0, 0))
+                layer.paste(badge, (x_offset, y_offset))
+                base_image = Image.alpha_composite(base_image, layer)
+                x_offset += spacing
+            except Exception as exc:
+                continue
+        return base_image
+
     async def render_rank_card(
         self,
         *,
@@ -297,9 +318,27 @@ class XpCardRenderer:
         badge_image_bytes: bytes | None = None,
         bond_count: int = 0,
         bond_multiplier: float = 1.0,
+        db_conn: aiosqlite.Connection | None = None,
     ) -> io.BytesIO:
-        """API Assíncrona. Fetch concorrente de imagens e execução em ThreadPool."""
+        """API Assíncrona. Fetch concorrente de imagens, injeção relacional SQL e execução em ThreadPool."""
         
+        asset_paths = []
+        if db_conn is not None:
+            try:
+                async with db_conn.execute(
+                    """
+                    SELECT a.asset_path 
+                    FROM xp_db.user_achievements u
+                    JOIN xp_db.achievements_def a ON u.achievement_id = a.id
+                    WHERE u.guild_id = ? AND u.user_id = ?
+                    """,
+                    (guild.id, member.id)
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                    asset_paths = [row[0] for row in rows]
+            except Exception as exc:
+                log_exception(exc)
+                
         # Download paralelo
         tasks = [self._read_asset(member.display_avatar)]
         
@@ -316,7 +355,7 @@ class XpCardRenderer:
         banner_bytes = results[1]
         
         # Offload para a Thread
-        return await asyncio.to_thread(
+        raw_io = await asyncio.to_thread(
             self._build_rank_card_image,
             guild.name,
             snapshot,
@@ -326,6 +365,17 @@ class XpCardRenderer:
             bond_count,
             bond_multiplier,
         )
+        
+        if asset_paths:
+            base_img = Image.open(raw_io)
+            loop = asyncio.get_running_loop()
+            final_img = await loop.run_in_executor(None, self._draw_achievements, base_img, asset_paths)
+            out_io = io.BytesIO()
+            final_img.save(out_io, format="PNG")
+            out_io.seek(0)
+            return out_io
+            
+        return raw_io
 
     def _build_leaderboard_image(self, guild_name: str, icon_bytes: bytes | None, entries_data: list[tuple[LeaderboardEntry, bytes | None, bytes | None]]) -> io.BytesIO:
         """Constrói o leaderboard com alinhamento matemático e espaçamento premium."""
