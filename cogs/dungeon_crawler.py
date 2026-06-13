@@ -30,7 +30,7 @@ class DungeonCrawlerCog(commands.Cog):
         redis = self.bot.redis_manager._pool
         
         # Estrutura atômica da chave de interpolação sintática
-        redis_key = f'baphomet:cooldown:explore:{interaction.guild_id}:{interaction.user_id}'
+        redis_key = f'baphomet:cooldown:explore:{interaction.guild_id}:{interaction.user.id}'
         
         # Mecanismo de trava com implantação matemática assíncrona
         lock_acquired = await redis.set(redis_key, '1', ex=86400, nx=True)
@@ -118,7 +118,7 @@ class DungeonCrawlerCog(commands.Cog):
             
         except Exception as e:
             # Tratamento da catástrofe com restituição de estágio cronológico
-            LOGGER.error(f"Cataclismo infraestrutural na exploração do usuário {interaction.user_id}: {e}", exc_info=True)
+            LOGGER.error(f"Cataclismo infraestrutural na exploração do usuário {interaction.user.id}: {e}", exc_info=True)
             await redis.delete(redis_key)
             
             error_embed = discord.Embed(
