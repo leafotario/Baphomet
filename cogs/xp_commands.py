@@ -307,6 +307,68 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
             return
         await interaction.response.send_message(f"🚫 O Cargo Automático Do **Nível {level}** Foi Desfeito.", ephemeral=True)
 
+    @app_commands.command(name="add", description="Adiciona XP Manualmente A Uma Alma ✨")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(member="Membro Que Receberá O XP", amount="Quantidade De XP", reason="Motivo Da Concessão")
+    async def add_xp(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 10000000], reason: str | None = None) -> None:
+        result = await self.service.give_xp(interaction.guild, member, amount, interaction.user.id, reason)
+        embed = discord.Embed(
+            title="✨ Ritual De Concessão",
+            description=f"{member.mention} Recebeu **{amount} XP**.\n"
+                        f"**Nível:** {result.new_level} | **XP Total:** {result.new_total_xp}",
+            color=discord.Color.from_rgb(120, 60, 240)
+        )
+        if reason:
+            embed.set_footer(text=f"Motivo: {reason}")
+        await interaction.response.send_message(embed=embed)
+        
+        if result.new_level > result.old_level:
+            await self.service.grant_level_rewards(member, result.new_level)
+            config = await self.service.get_guild_config(interaction.guild.id)
+            channel = interaction.guild.get_channel(config.levelup_channel_id) if config.levelup_channel_id else interaction.channel
+            if channel and hasattr(channel, "send"):
+                message_template = secrets.SystemRandom().choice(LEVEL_UP_MESSAGES)
+                levelup_embed = discord.Embed(
+                    description=message_template.format(mention=member.mention, level=result.new_level),
+                    color=discord.Color.from_rgb(120, 60, 240),
+                )
+                try:
+                    await channel.send(embed=levelup_embed)
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+
+    @app_commands.command(name="remove", description="Remove XP De Uma Alma 💀")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(member="Membro Que Perderá O XP", amount="Quantidade De XP", reason="Motivo Da Punição")
+    async def remove_xp(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 10000000], reason: str | None = None) -> None:
+        result = await self.service.remove_xp(interaction.guild, member, amount, interaction.user.id, reason)
+        embed = discord.Embed(
+            title="💀 Ritual De Punição",
+            description=f"{member.mention} Perdeu **{amount} XP**.\n"
+                        f"**Nível:** {result.new_level} | **XP Total:** {result.new_total_xp}",
+            color=discord.Color.dark_red()
+        )
+        if reason:
+            embed.set_footer(text=f"Motivo: {reason}")
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="reset", description="Zera O XP De Uma Alma 🔥")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    @app_commands.describe(member="Membro Que Terá O XP Zerado", reason="Motivo Do Reset")
+    async def reset_xp(self, interaction: discord.Interaction, member: discord.Member, reason: str | None = None) -> None:
+        result = await self.service.reset_xp(interaction.guild, member, interaction.user.id, reason)
+        embed = discord.Embed(
+            title="🔥 Purificação De XP",
+            description=f"O XP de {member.mention} foi **Completamente Zerado**.",
+            color=discord.Color.dark_red()
+        )
+        if reason:
+            embed.set_footer(text=f"Motivo: {reason}")
+        await interaction.response.send_message(embed=embed)
+
 
 
 
