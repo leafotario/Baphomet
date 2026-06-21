@@ -115,3 +115,18 @@ class TCGRepository:
                 await db.rollback()
                 logger.error(f"Falha no trade, transação revertida (ROLLBACK). Erro: {e}")
                 raise
+
+    async def save_card_instance(self, card: "CardInstance"):
+        """
+        Salva uma nova instância de carta gerada (mint) no banco de dados.
+        """
+        from modules.tcg.db.tcg_models import CardInstance
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO card_instances (uuid, dono_id, modelo_id, atk, defesa, spd, passiva)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (card.uuid, card.dono_id, card.modelo_id, card.atk, card.defesa, card.spd, card.passiva)
+            )
+            await db.commit()
