@@ -14,7 +14,7 @@ try:
 except ImportError:  # pragma: no cover - depende do ambiente de deploy/teste
     aiohttp = None  # type: ignore[assignment]
 
-from modules.tierlists.exceptions import AssetDownloadError, UnsupportedImageTypeError
+from modules.media_assets.exceptions import AssetDownloadError, UnsupportedImageTypeError
 
 
 LOGGER = logging.getLogger("baphomet.tierlist_templates.downloads")

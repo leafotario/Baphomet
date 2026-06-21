@@ -3,9 +3,9 @@
 import logging
 from typing import Any
 
-from modules.tierlists.database import DatabaseManager
-from modules.tierlists.models import TierAsset, utc_now_iso
-from modules.tierlists.repository_utils import (
+from modules.media_assets.database import DatabaseManager
+from modules.media_assets.models import TierAsset, utc_now_iso
+from modules.media_assets.repository_utils import (
     fetch_one,
     load_json_dict,
     metadata_to_json,

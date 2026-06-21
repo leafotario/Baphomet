@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import re
@@ -7,8 +7,10 @@ import uuid
 from pathlib import PurePosixPath
 from typing import Any, TypeVar
 
-from modules.tierlists.migrations import dumps_json
-from modules.tierlists.models import TemplateItemType, TemplateVisibility
+import json
+def dumps_json(obj: Any) -> str:
+    return json.dumps(obj, separators=(",", ":"))
+
 
 
 EnumValue = TypeVar("EnumValue", bound=str)
@@ -36,26 +38,6 @@ def normalize_slug(value: str) -> str:
     ascii_value = normalized.encode("ascii", "ignore").decode("ascii")
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", ascii_value.lower()).strip("-")
     return slug or "template"
-
-
-def coerce_visibility(value: TemplateVisibility | str) -> TemplateVisibility:
-    if isinstance(value, TemplateVisibility):
-        return value
-    try:
-        return TemplateVisibility(str(value).strip().upper())
-    except ValueError as exc:
-        valid = ", ".join(item.value for item in TemplateVisibility)
-        raise ValueError(f"visibility inválida: use {valid}.") from exc
-
-
-def coerce_item_type(value: TemplateItemType | str) -> TemplateItemType:
-    if isinstance(value, TemplateItemType):
-        return value
-    try:
-        return TemplateItemType(str(value).strip().upper())
-    except ValueError as exc:
-        valid = ", ".join(item.value for item in TemplateItemType)
-        raise ValueError(f"item_type inválido: use {valid}.") from exc
 
 
 def normalize_optional_text(value: str | None) -> str | None:

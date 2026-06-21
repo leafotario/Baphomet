@@ -8,10 +8,10 @@ from urllib.parse import unquote, urlparse
 
 import discord
 
-from modules.tierlists.assets import TierTemplateAssetStore
-from modules.tierlists.downloads import DownloadedImage, SafeImageDownloader
-from modules.tierlists.exceptions import AssetDownloadError, AssetValidationError, TemplateItemResolveError
-from modules.tierlists.integrations.wikipedia import WikipediaImageService, WikipediaUserError
+from modules.media_assets.assets import TierTemplateAssetStore
+from modules.media_assets.downloads import DownloadedImage, SafeImageDownloader
+from modules.media_assets.exceptions import AssetDownloadError, AssetValidationError, TemplateItemResolveError
+from modules.integrations.wikipedia import WikipediaImageService, WikipediaUserError
 
 from ..models import ItemSource, ItemSourceType, MAX_ITEM_TITLE_LENGTH, normalize_text
 

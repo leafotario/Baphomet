@@ -6,8 +6,8 @@ import logging
 
 import discord
 
-from modules.tierlists.asset_repository import TierAssetRepository
-from modules.tierlists.assets import TierTemplateAssetStore
+from modules.media_assets.asset_repository import TierAssetRepository
+from modules.media_assets.assets import TierTemplateAssetStore
 
 from modules.iceberg.constants import (
     ICEBERG_DEFAULT_LAYERS,

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import logging
@@ -8,7 +8,7 @@ from typing import AsyncIterator
 
 import aiosqlite
 
-from modules.tierlists.migrations import run_tier_template_migrations
+
 from core.logger import log_exception
 
 
@@ -44,7 +44,23 @@ class DatabaseManager:
         await self.conn.execute("PRAGMA busy_timeout=5000")
 
     async def run_migrations(self) -> None:
-        await run_tier_template_migrations(self.conn)
+        await self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS tier_assets (
+            id TEXT PRIMARY KEY,
+            asset_hash TEXT NOT NULL UNIQUE,
+            storage_path TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            width INTEGER NOT NULL,
+            height INTEGER NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            source_type TEXT NULL,
+            metadata_json TEXT NULL,
+            created_at TEXT NOT NULL,
+            marked_orphan_at TEXT NULL,
+            deleted_at TEXT NULL
+        );
+        """)
+        await self.conn.commit()
 
     async def close(self) -> None:
         if self._conn is not None:

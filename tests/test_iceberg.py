@@ -711,7 +711,7 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_image_url_invalid(self) -> None:
         from modules.iceberg.sources.providers import ImageUrlProvider
-        from modules.tierlists.exceptions import AssetDownloadError
+        from modules.media_assets.exceptions import AssetDownloadError
 
         class FakeDownloader:
             async def download(self, url: str) -> None:
@@ -735,7 +735,7 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_wikipedia_without_thumbnail(self) -> None:
         from modules.iceberg.sources.providers import WikipediaImageProvider
-        from modules.tierlists.integrations.wikipedia import WikipediaUserError
+        from modules.integrations.wikipedia import WikipediaUserError
 
         class FakeWikipediaService:
             async def resolve(self, query: str, **kwargs):
@@ -771,7 +771,7 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_attachment_invalid_truncated_image(self) -> None:
         from modules.iceberg.sources.providers import AttachmentImageProvider
-        from modules.tierlists.exceptions import AssetValidationError
+        from modules.media_assets.exceptions import AssetValidationError
 
         class FakeAssetStore:
             async def store_image_bytes(self, raw_bytes: bytes, **kwargs):

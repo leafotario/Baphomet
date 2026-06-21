@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import logging
@@ -7,18 +7,18 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from modules.tierlists.asset_repository import TierAssetRepository
-from modules.tierlists.assets import TierTemplateAssetStore
-from modules.tierlists.database import DatabaseManager as TierAssetDatabaseManager
-from modules.tierlists.downloads import SafeImageDownloader
-from modules.tierlists.integrations.wikipedia import WikipediaImageService
+from modules.media_assets.asset_repository import TierAssetRepository
+from modules.media_assets.assets import TierTemplateAssetStore
+from modules.media_assets.database import DatabaseManager as TierAssetDatabaseManager
+from modules.media_assets.downloads import SafeImageDownloader
+from modules.integrations.wikipedia import WikipediaImageService
 
 from modules.iceberg.constants import ICEBERG_DEFAULT_LAYERS, ICEBERG_MAX_LAYERS, ICEBERG_MIN_LAYERS, ICEBERG_TITLE_MAX_LENGTH
 from modules.iceberg.models import IcebergProject, ItemSourceType
 from modules.iceberg.repository import IcebergDatabaseManager, IcebergRepository
 from modules.iceberg.renderer import IcebergRenderer
 from modules.iceberg.service import IcebergService
-from .sources.providers import IcebergSourceProviderRegistry, IcebergUserError
+from modules.iceberg.sources.providers import IcebergSourceProviderRegistry, IcebergUserError
 from modules.iceberg.themes import DEFAULT_THEME_ID, default_layer_name
 from core.logger import log_exception
 

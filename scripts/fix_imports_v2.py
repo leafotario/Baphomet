@@ -2,16 +2,16 @@ import os
 import re
 
 replacements = [
-    (r'from cogs\.tierlist_templates\.asset_repository import', r'from modules.tierlists.asset_repository import'),
-    (r'from cogs\.tierlist_templates\.assets import', r'from modules.tierlists.assets import'),
-    (r'from cogs\.tierlist_templates\.database import', r'from modules.tierlists.database import'),
-    (r'from cogs\.tierlist_templates\.downloads import', r'from modules.tierlists.downloads import'),
-    (r'from cogs\.tierlist_templates\.exceptions import', r'from modules.tierlists.exceptions import'),
+    (r'from cogs\.tierlist_templates\.asset_repository import', r'from modules.media_assets.asset_repository import'),
+    (r'from cogs\.tierlist_templates\.assets import', r'from modules.media_assets.assets import'),
+    (r'from cogs\.tierlist_templates\.database import', r'from modules.media_assets.database import'),
+    (r'from cogs\.tierlist_templates\.downloads import', r'from modules.media_assets.downloads import'),
+    (r'from cogs\.tierlist_templates\.exceptions import', r'from modules.media_assets.exceptions import'),
     (r'from cogs\.tierlist_templates\.repository import', r'from modules.tierlists.repository import'),
-    (r'from cogs\.tierlist_templates\.repository_utils import', r'from modules.tierlists.repository_utils import'),
+    (r'from cogs\.tierlist_templates\.repository_utils import', r'from modules.media_assets.repository_utils import'),
     
-    (r'from cogs\.tierlist_wikipedia\.wikipedia import', r'from modules.tierlists.integrations.wikipedia import'),
-    (r'from cogs\.tierlist_spotify\.spotify import', r'from modules.tierlists.integrations.spotify import'),
+    (r'from cogs\.tierlist_wikipedia\.wikipedia import', r'from modules.integrations.wikipedia import'),
+    (r'from cogs\.tierlist_spotify\.spotify import', r'from modules.integrations.spotify import'),
     
     (r'from cogs\.vinculos_rendering\.renderer import', r'from modules.vinculos.rendering.renderer import'),
     (r'from cogs\.vinculos_rendering\.drawing import', r'from modules.vinculos.rendering.drawing import'),

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 """Regra De Negócio Do Sistema De XP Do Baphomet."""
 
@@ -13,7 +13,7 @@ from typing import Protocol
 
 import discord
 
-from .utils import (
+from ..utils import (
     GuildXpConfig,
     LeaderboardEntry,
     LevelRoleSyncResult,
@@ -28,7 +28,7 @@ from .utils import (
     normalize_message_content,
     utc_now,
 )
-from .db import XpRepository
+from ..db.xp_repository import XpRepository
 from core.logger import log_exception
 
 

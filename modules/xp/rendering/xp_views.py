@@ -1,12 +1,12 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import math
 
 import discord
 
-from ..xp_service import XpService
+from ..services.xp_service import XpService
 from ..utils import LeaderboardEntry
-from ..rank_badges import RankBadgeService
+from .rank_badges import RankBadgeService
 from .xp_card_renderer import XpCardRenderer
 from core.logger import log_exception
 

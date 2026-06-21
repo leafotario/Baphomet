@@ -20,7 +20,7 @@ from discord import app_commands
 from discord.ext import commands
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 
-from modules.tierlists.integrations.wikipedia import (
+from modules.integrations.wikipedia import (
     WIKIPEDIA_SOURCE_TYPE,
     WikipediaImageService,
     WikipediaPageImageCandidate,
@@ -28,7 +28,7 @@ from modules.tierlists.integrations.wikipedia import (
     WikipediaResolvedImage,
     WikipediaUserError,
 )
-from modules.tierlists.integrations.spotify import (    SpotifyImageDownloader,
+from modules.integrations.spotify import (    SpotifyImageDownloader,
     SpotifyImageError,
     SpotifyImageProcessor,
     SpotifyInputResolver,
