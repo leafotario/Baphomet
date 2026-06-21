@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 """Comandos Públicos Do Sistema De XP."""
 
@@ -6,8 +6,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from ..rendering import LeaderboardView, RankCardView, build_leaderboard_embed
-from ..xp_runtime import XpRuntime
+from modules.xp.rendering.xp_views import LeaderboardView, RankCardView, build_leaderboard_embed
+from modules.xp.services.xp_runtime import XpRuntime
 from core.logger import log_exception
 
 

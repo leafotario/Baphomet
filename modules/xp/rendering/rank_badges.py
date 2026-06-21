@@ -9,8 +9,8 @@ import aiohttp
 import discord
 from PIL import Image, UnidentifiedImageError
 
-from .db import XpRepository
-from .utils import RankBadge
+from ..db.xp_repository import XpRepository
+from ..utils import RankBadge
 
 
 BADGE_SIZE = 64

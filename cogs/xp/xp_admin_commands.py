@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 """Comandos Administrativos Do Sistema De XP."""
 
@@ -6,9 +6,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from ..xp_constants import DIFFICULTY_CHOICES, GuildChannelParam
-from ..xp_runtime import XpRuntime
-from ..utils import XpDifficulty
+from modules.xp.services.xp_constants import DIFFICULTY_CHOICES, GuildChannelParam
+from modules.xp.services.xp_runtime import XpRuntime
+from modules.xp.utils import XpDifficulty
 from core.logger import log_exception
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import discord
 from discord import app_commands
 
-from .utils import XpDifficulty
+from ..utils import XpDifficulty
 
 GuildChannelParam = discord.TextChannel | discord.VoiceChannel | discord.StageChannel | discord.ForumChannel
 

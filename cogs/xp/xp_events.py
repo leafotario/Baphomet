@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 """Eventos do Sistema de XP."""
 
@@ -9,8 +9,8 @@ import traceback
 import discord
 from discord.ext import commands, tasks
 
-from ..xp_constants import LEVEL_UP_MESSAGES
-from ..xp_runtime import XpRuntime
+from modules.xp.services.xp_constants import LEVEL_UP_MESSAGES
+from modules.xp.services.xp_runtime import XpRuntime
 from core.logger import log_exception
 
 
