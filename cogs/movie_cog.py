@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 import re
@@ -13,7 +13,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from core.database import DEFAULT_SCHEDULE_TIME, DatabaseManager
-from movie_logic import (
+from modules.movies.movie_logic import (
     DEFAULT_DISLIKE_EMOJI,
     DEFAULT_LIKE_EMOJI,
     DEFAULT_NEVER_WATCHED_EMOJI,
@@ -21,7 +21,7 @@ from movie_logic import (
     send_motd_recap,
     validate_reaction_emoji,
 )
-from tmdb_api import TMDBClient
+from modules.movies.tmdb_api import TMDBClient
 from core.logger import log_exception
 
 

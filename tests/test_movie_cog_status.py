@@ -8,7 +8,7 @@ import discord
 from discord.ext import commands
 
 from cogs.movie_cog import MovieCog, MovieGuildConfig
-from movie_logic import DEFAULT_DISLIKE_EMOJI, DEFAULT_NEVER_WATCHED_EMOJI
+from modules.movies.movie_logic import DEFAULT_DISLIKE_EMOJI, DEFAULT_NEVER_WATCHED_EMOJI
 
 
 class MovieCogStatusTests(unittest.IsolatedAsyncioTestCase):

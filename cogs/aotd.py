@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import datetime as dt
@@ -1492,7 +1492,7 @@ class AlbumDoDia(commands.Cog):
                 await channel.send("Não há álbuns registrados nesta semana para o recap.")
             return False
 
-        from recap_logic import generate_recap_collage, build_recap_embed
+        from modules.movies.recap_logic import generate_recap_collage, build_recap_embed
         import discord
         
         urls = [item.get("imagem") for item in history if item.get("imagem")]

@@ -687,7 +687,7 @@ async def send_motd_recap(
                 await channel.send("Não há filmes registrados nesta semana para o recap.")
             return False
 
-        from recap_logic import generate_recap_collage, build_recap_embed
+        from modules.movies.recap_logic import generate_recap_collage, build_recap_embed
         
         urls = [getattr(item, "poster_url", None) for item in history if getattr(item, "poster_url", None)]
         buffer = await generate_recap_collage(urls)
