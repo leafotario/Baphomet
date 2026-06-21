@@ -93,32 +93,39 @@ class MyBot(commands.Bot):
         self.redis_manager = AbyssalRedisManager()
 
     async def load_all_extensions(self) -> tuple[int, int]:
-        """Varre o diretório /cogs recursivamente e carrega as extensões."""
+        """Varre o diretório /cogs para buscar extensões."""
         log_info("Iniciando o carregamento de extensões (Cogs)...")
         loaded, failed = 0, 0
 
         if not os.path.exists("./cogs"):
-            log_warn("Diretório './cogs' não encontrado. Pulando o carregamento de extensões.")
-            return loaded, failed
+            return 0, 0
 
-        for root, _, files in os.walk("./cogs"):
-            if "__pycache__" in root:
-                continue
-            for filename in files:
-                if filename.endswith(".py") and not filename.startswith("__"):
-                    filepath = os.path.join(root, filename)
-                    rel_path = os.path.relpath(filepath, ".")
-                    extension = rel_path.replace(os.sep, ".")[:-3]
-                    try:
-                        await self.load_extension(extension)
-                        log_cog(f"{extension} carregado com sucesso.", success=True)
-                        loaded += 1
-                    except commands.NoEntryPointError:
-                        # Ignora arquivos que não são cogs (ex: módulos auxiliares que ficaram na pasta cogs)
-                        pass
-                    except Exception as exc:
-                        log_cog(f"{extension} falhou: {type(exc).__name__}: {exc}", success=False)
-                        failed += 1
+        # Regra 1: Arquivos .py soltos em cogs/ (ex: cogs/aotd.py)
+        # Regra 2: Arquivos chamados commands.py dentro de subdiretórios imediatos (ex: cogs/iceberg/commands.py)
+        extensions_to_load = []
+        
+        for item in os.listdir("./cogs"):
+            item_path = os.path.join("./cogs", item)
+            
+            if os.path.isfile(item_path):
+                if item.endswith(".py") and not item.startswith("__"):
+                    extensions_to_load.append(f"cogs.{item[:-3]}")
+                    
+            elif os.path.isdir(item_path) and not item.startswith("__"):
+                commands_file = os.path.join(item_path, "commands.py")
+                if os.path.isfile(commands_file):
+                    extensions_to_load.append(f"cogs.{item}.commands")
+
+        for extension in extensions_to_load:
+            try:
+                await self.load_extension(extension)
+                log_cog(f"{extension} carregado com sucesso.")
+                loaded += 1
+            except commands.NoEntryPointError:
+                pass
+            except Exception as exc:
+                log_cog(f"{extension} falhou: {type(exc).__name__}: {exc}", success=False)
+                failed += 1
 
         return loaded, failed
 
