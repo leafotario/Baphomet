@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import logging
+import traceback
 from typing import List
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,70 @@ class SecureView(discord.ui.View):
             ephemeral=True
         )
         return False
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item):
+        """
+        SRE Design: Interceptador ultra-descritivo de falhas de UI silenciosas.
+        Garante que exceções não fiquem presas/suprimidas dentro dos callbacks do discord.py.
+        """
+        view_name = self.__class__.__name__
+        item_type = item.__class__.__name__
+        
+        # Coleta de estado interno dinamicamente
+        state = {}
+        if hasattr(self, 'current_page'):
+            state['current_page'] = self.current_page
+        if hasattr(item, 'values'):
+            state['selected_values'] = item.values
+            
+        tb = traceback.format_exc()
+        
+        # Delimitadores visuais para isolar a falha catastrófica no console
+        logger.error(
+            f"\n❌ =================== [ TCG UI ERROR ] =================== ❌\n"
+            f"View: {view_name} | Component: {item_type}\n"
+            f"User: {interaction.user} (ID: {interaction.user.id})\n"
+            f"Internal State: {state}\n"
+            f"Exception Dump:\n{tb}\n"
+            f"==========================================================\n"
+        )
+        
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "Ocorreu uma falha interna na renderização do componente. Nossa equipe de SRE foi notificada.", 
+                ephemeral=True
+            )
+        else:
+            await interaction.followup.send("Uma falha de sistema impediu a conclusão da ação.", ephemeral=True)
+
+class SecureModal(discord.ui.Modal):
+    """
+    SRE Design: Modal base para captura de texto corrompido em falhas lógicas.
+    """
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        modal_name = self.__class__.__name__
+        
+        # Captura todos os inputs fornecidos antes do crash
+        inputs = {}
+        for child in self.children:
+            if isinstance(child, discord.ui.TextInput):
+                inputs[child.custom_id or child.label] = child.value
+                
+        tb = traceback.format_exc()
+        
+        logger.error(
+            f"\n❌ ================== [ TCG MODAL ERROR ] ================== ❌\n"
+            f"Modal: {modal_name}\n"
+            f"User: {interaction.user} (ID: {interaction.user.id})\n"
+            f"Captured Text Inputs: {inputs}\n"
+            f"Exception Dump:\n{tb}\n"
+            f"=========================================================\n"
+        )
+        
+        if not interaction.response.is_done():
+            await interaction.response.send_message("Um erro ocorreu ao processar o formulário. O log de debug foi gerado.", ephemeral=True)
+        else:
+            await interaction.followup.send("Erro interno ao ler dados submetidos.", ephemeral=True)
 
 
 class InventoryPaginationView(SecureView):
@@ -134,14 +199,6 @@ class TCGCommands(app_commands.Group):
         super().__init__(name="tcg", description="Comandos do ecossistema de Trading Card Game")
         self.bot = bot
 
-    async def on_error(self, interaction: discord.Interaction, error: Exception):
-        logger.error(f"TCGCommands Error: {error}")
-        msg = "Ocorreu um erro ao processar o ecossistema TCG. Operação cancelada."
-        if not interaction.response.is_done():
-            await interaction.response.send_message(msg, ephemeral=True)
-        else:
-            await interaction.followup.send(msg, ephemeral=True)
-
     @app_commands.command(name="perfil", description="Exibe os atributos gerados, experiência TCG e saldo do jogador.")
     async def perfil(self, interaction: discord.Interaction):
         service = getattr(self.bot, "tcg_service", None)
@@ -223,11 +280,6 @@ class TCGAdminCommands(app_commands.Group):
         super().__init__(name="tcg_config", description="Configurações administrativas do sistema de TCG")
         self.bot = bot
 
-    async def on_error(self, interaction: discord.Interaction, error: Exception):
-        logger.error(f"Erro no Kernel Administrativo (TCGAdminCommands): {error}")
-        if not interaction.response.is_done():
-            await interaction.response.send_message("Falha crônica na rotina de administrador.", ephemeral=True)
-
     @app_commands.command(name="dar_carta", description="Força a geração (mint) de uma carta específica para fins de eventos.")
     @app_commands.describe(usuario="Membro receptor", template_id="ID de catálogo do template")
     async def dar_carta(self, interaction: discord.Interaction, usuario: discord.Member, template_id: int):
@@ -266,15 +318,54 @@ class TCGCog(commands.Cog):
         self.bot.tree.remove_command(self.tcg_group.name)
         self.bot.tree.remove_command(self.admin_group.name)
 
-    def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         """
-        Gerenciador de fallback global da extensão.
-        Intercepta trapaças antes do sistema reagir.
+        SRE Design: Gerenciador de fallback global da extensão.
+        Intercepta, categoriza as falhas do bot e extrai telemetria estruturada.
         """
-        if isinstance(error, app_commands.MissingPermissions):
-            # Fallback redundante extra-camada
-            pass
-        logger.error(f"Erro não tratado na infra do TCG: {error}")
+        # Desembrulha a exceção invocada nativa do framework para chegar à falha raiz
+        if isinstance(error, app_commands.CommandInvokeError):
+            actual_error = error.original
+        else:
+            actual_error = error
+
+        # Categorização: Erros operacionais/negócio recebem WARNING limpo
+        if isinstance(error, (app_commands.CheckFailure, app_commands.CommandOnCooldown)):
+            logger.warning(f"Operação barrada (Negócio/Cooldown) para {interaction.user.id}: {error}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"Operação cancelada: {error}", ephemeral=True)
+            return
+
+        # Falhas catastróficas imprevistas recebem CRITICAL/ERROR block com tracing
+        cmd_name = interaction.command.name if interaction.command else "Unknown"
+        if interaction.command and interaction.command.parent:
+            cmd_name = f"{interaction.command.parent.name} {cmd_name}"
+            
+        args_dict = interaction.namespace.__dict__ if hasattr(interaction, 'namespace') else {}
+        tb = "".join(traceback.format_exception(type(actual_error), actual_error, actual_error.__traceback__))
+
+        logger.error(
+            f"\n❗ ================== [ TCG SYSTEM CRITICAL ] ================== ❗\n"
+            f"Command Executed: /{cmd_name}\n"
+            f"User: {interaction.user} (ID: {interaction.user.id})\n"
+            f"Guild ID: {interaction.guild_id} | Channel ID: {interaction.channel_id}\n"
+            f"Invocation Args: {args_dict}\n"
+            f"Exception Traceback:\n{tb}\n"
+            f"===============================================================\n"
+        )
+
+        if not interaction.response.is_done():
+            await interaction.response.send_message("Houve uma falha crítica na infraestrutura TCG. A telemetria foi gravada e enviada ao SRE.", ephemeral=True)
+        else:
+            await interaction.followup.send("Houve uma falha crítica na infraestrutura TCG.", ephemeral=True)
+
 
 async def setup(bot):
-    await bot.add_cog(TCGCog(bot))
+    cog = TCGCog(bot)
+    
+    # Injetando o error handler central em todos os grupos manualmente
+    # Para garantir que erros dentro de subcomandos borbulhem e recebam o tracing exaustivo
+    cog.tcg_group.on_error = cog.cog_app_command_error
+    cog.admin_group.on_error = cog.cog_app_command_error
+    
+    await bot.add_cog(cog)
