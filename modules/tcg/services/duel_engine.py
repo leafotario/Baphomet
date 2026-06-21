@@ -1,8 +1,10 @@
 import time
 import logging
 import json
+import asyncio
+import random
 import redis.asyncio as redis
-from redis.exceptions import LockError
+from redis.exceptions import LockError, ConnectionError, TimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -66,11 +68,25 @@ class DuelEngine:
         # O timeout do Lock atua como failsafe caso um Worker morra com a trava
         lock = self.redis.lock(lock_name, timeout=5)
 
-        # A trava tenta bloquear, falha na hora (blocking=False) se alguém já pegou
-        acquired = await lock.acquire(blocking=False)
+        # SRE Design: Exponential Backoff para tolerância a Split-Brain/Network Jitter do Redis
+        retries = 0
+        base_delay = 0.1
+        max_retries = 3
+        acquired = False
+        
+        while retries < max_retries:
+            try:
+                # A trava tenta bloquear, falha na hora (blocking=False) se alguém já pegou
+                acquired = await lock.acquire(blocking=False)
+                break
+            except (ConnectionError, TimeoutError) as e:
+                delay = (base_delay * (2 ** retries)) + random.uniform(0, 0.1)
+                logger.warning(f"Falha de I/O no Redis ao adquirir trava: {e}. Retrying in {delay:.2f}s...")
+                await asyncio.sleep(delay)
+                retries += 1
         
         if not acquired:
-            logger.warning(f"Trava falhou. Abortando coroutine de ataque do autor {author_id} no duelo {duel_id}. Prevenção de spam de botões.")
+            logger.warning(f"Trava rejeitada ou indisponível. Abortando ataque do autor {author_id} no duelo {duel_id}.")
             return False
 
         try:
@@ -113,9 +129,12 @@ class DuelEngine:
             return True
 
         finally:
-            # Em qualquer cenário (Sucesso, erro de código, turno errado), libera o Mutex
+            # SRE Design: Tolerância a falhas no Release da Trava
             try:
                 await lock.release()
             except LockError:
                 # Silencioso, significa que expirou pelo timeout failsafe 
                 pass
+            except (ConnectionError, TimeoutError) as e:
+                logger.error(f"CRITICAL: Não foi possível liberar a trava do duelo {duel_id} no Redis por falha de rede: {e}")
+                # Em cenários distribuídos pesados, enviaríamos isso para uma DLQ (Dead Letter Queue) ou sistema de reaprovisionamento

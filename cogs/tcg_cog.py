@@ -341,6 +341,21 @@ class TCGCog(commands.Cog):
         if interaction.command and interaction.command.parent:
             cmd_name = f"{interaction.command.parent.name} {cmd_name}"
             
+        # SRE Design: Self-Healing & Graceful Degradation
+        # Se o Pillow estourou OOM ou a CDN falhou, mudamos dinamicamente para Embed Textual sem crachar a UX.
+        if type(actual_error).__name__ == "GracefulDegradationException":
+            logger.warning(f"Self-Healing Acionado: Redirecionando payload visual para texto (User: {interaction.user.id}).")
+            fallback_embed = discord.Embed(
+                title="⚠️ Baphomet TCG - Modo Textual",
+                description="A rede ou o renderizador gráfico estão lentos no momento. Aqui está o fallback puro da sua requisição.",
+                color=discord.Color.orange()
+            )
+            if not interaction.response.is_done():
+                await interaction.response.send_message(embed=fallback_embed, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=fallback_embed, ephemeral=True)
+            return
+            
         args_dict = interaction.namespace.__dict__ if hasattr(interaction, 'namespace') else {}
         tb = "".join(traceback.format_exception(type(actual_error), actual_error, actual_error.__traceback__))
 

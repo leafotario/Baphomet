@@ -1,6 +1,13 @@
 import io
 import aiohttp
+import logging
 from PIL import Image, ImageEnhance, ImageDraw, ImageFont
+
+logger = logging.getLogger(__name__)
+
+class GracefulDegradationException(Exception):
+    """Sinaliza fallback para renderização em texto puro."""
+    pass
 
 class CardRenderer:
     def __init__(self, assets_path: str = "assets/tcg/"):
@@ -11,12 +18,21 @@ class CardRenderer:
         Busca o avatar do usuário de forma assíncrona na CDN do Discord.
         O objeto viaja do HTTP diretamente para a memória via io.BytesIO.
         """
-        async with aiohttp.ClientSession() as session:
-            async with session.get(avatar_url) as resp:
-                if resp.status == 200:
-                    data = await resp.read()
-                    return Image.open(io.BytesIO(data)).convert("RGBA")
-        # Retorno de segurança
+        # SRE Design: Timeout explícito para evitar engarrafamento do Event Loop Assíncrono
+        timeout = aiohttp.ClientTimeout(total=3.0)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(avatar_url) as resp:
+                    if resp.status == 200:
+                        data = await resp.read()
+                        # Uso de context manager libera os fds (File Descriptors) da memória logo após uso
+                        with Image.open(io.BytesIO(data)) as img:
+                            return img.convert("RGBA")
+        except Exception as e:
+            logger.error(f"Degradação no fetch do avatar: {e}")
+            raise GracefulDegradationException("Falha ao buscar avatar.")
+            
+        # Fallback de segurança na matriz em RAM
         return Image.new("RGBA", (512, 512), (0, 0, 0, 255))
 
     def apply_dark_streetwear(self, img: Image.Image) -> Image.Image:
@@ -41,6 +57,7 @@ class CardRenderer:
         if img.mode != "RGBA":
             img = img.convert("RGBA")
             
+        # O Split funciona melhor em RGB puro para evitar problemas com canal Alpha
         rgb_img = img.convert("RGB")
         r, g, b = rgb_img.split()
         
@@ -54,18 +71,31 @@ class CardRenderer:
         
         # Reconstrução via Image.merge()
         glitched = Image.merge("RGB", (r_shifted, g, b_shifted))
-        glitched = glitched.convert("RGBA")
+        glitched_rgba = glitched.convert("RGBA")
         
         # Restaura o alpha original do avatar
-        glitched.putalpha(img.getchannel("A"))
+        glitched_rgba.putalpha(img.getchannel("A"))
         
         # Adiciona Scanlines com opacidade controlada (~30 no canal Alpha equivale a ~12%)
-        scanlines = Image.new("RGBA", glitched.size, (0, 0, 0, 0))
+        scanlines = Image.new("RGBA", glitched_rgba.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(scanlines)
-        for y in range(0, glitched.height, 4):
-            draw.line([(0, y), (glitched.width, y)], fill=(0, 0, 0, 30), width=2)
+        for y in range(0, glitched_rgba.height, 4):
+            draw.line([(0, y), (glitched_rgba.width, y)], fill=(0, 0, 0, 30), width=2)
             
-        return Image.alpha_composite(glitched, scanlines)
+        final_img = Image.alpha_composite(glitched_rgba, scanlines)
+
+        # Explicit Teardown SRE: Fechar buffers pesados da memória RAM
+        rgb_img.close()
+        r.close()
+        g.close()
+        b.close()
+        r_shifted.close()
+        b_shifted.close()
+        glitched.close()
+        glitched_rgba.close()
+        scanlines.close()
+
+        return final_img
 
     def _wrap_text(self, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> str:
         """
@@ -115,44 +145,42 @@ class CardRenderer:
             
         # 3. Carregamento das Texturas
         try:
-            base_texture = Image.open(f"{self.assets_path}{template_name}.png").convert("RGBA")
-            # A máscara deve ser um mapa Luma (L) p/ transparência
-            mask = Image.open(f"{self.assets_path}{mask_name}.png").convert("L")
+            with Image.open(f"{self.assets_path}{template_name}.png") as bt:
+                base_texture = bt.convert("RGBA")
+            with Image.open(f"{self.assets_path}{mask_name}.png") as m:
+                mask = m.convert("L")
         except FileNotFoundError:
-            # Fallback Provisório para evitar crashes caso falte provisionamento em dev
             base_texture = Image.new("RGBA", (1000, 1400), (20, 20, 20, 255))
             mask = Image.new("L", (1000, 1400), 255)
 
-        # 4. Dimensionamento e Colagem (BICUBIC Interpolation)
-        avatar = avatar.resize(base_texture.size, resample=Image.Resampling.BICUBIC)
+        avatar_resized = avatar.resize(base_texture.size, resample=Image.Resampling.BICUBIC)
+        result_img = Image.composite(avatar_resized, base_texture, mask)
         
-        # Composição: a Máscara L dita o que será preservado da união entre avatar e template
-        result_img = Image.composite(avatar, base_texture, mask)
-        
-        # 5. Injeção de Tipografia
         draw = ImageDraw.Draw(result_img)
         try:
             font_title = ImageFont.truetype(f"{self.assets_path}fonts/Impact.ttf", 50)
             font_body = ImageFont.truetype(f"{self.assets_path}fonts/Roboto-Regular.ttf", 36)
         except OSError:
-            # Fallback para ausência do TTF
             font_title = ImageFont.load_default()
             font_body = ImageFont.load_default()
 
-        # Renderização dos Atributos
         draw.text((100, 1000), f"ATK: {atk}", font=font_title, fill=(255, 60, 60, 255))
         draw.text((450, 1000), f"DEF: {def_stat}", font=font_title, fill=(60, 180, 255, 255))
         draw.text((800, 1000), f"SPD: {spd}", font=font_title, fill=(255, 220, 60, 255))
         
-        # Wrapping Rigoroso de Linha na Passiva (Limite fictício de 800px no X)
         passive_text = f"Skill Passiva: {passive}"
         wrapped_passive = self._wrap_text(passive_text, font_body, max_width=800)
-        
         draw.multiline_text((100, 1150), wrapped_passive, font=font_body, fill=(200, 200, 200, 255), spacing=15)
 
-        # 6. Stream Seguro (Buffer)
         buffer = io.BytesIO()
         result_img.save(buffer, format="PNG")
         buffer.seek(0)
+        
+        # Explicit OOM Defense: Força coletas manuais de memória
+        avatar.close()
+        avatar_resized.close()
+        base_texture.close()
+        mask.close()
+        result_img.close()
         
         return buffer

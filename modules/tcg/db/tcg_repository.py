@@ -1,8 +1,29 @@
 import asyncio
 import aiosqlite
 import logging
+import random
 
 logger = logging.getLogger(__name__)
+
+async def with_backoff(coro_func, *args, max_retries=5, **kwargs):
+    """
+    SRE Design: Exponential Backoff com Jitter.
+    Força retentativas inteligentes antes de estourar a exceção de I/O bloqueado.
+    """
+    retries = 0
+    base_delay = 0.1
+    while True:
+        try:
+            return await coro_func(*args, **kwargs)
+        except aiosqlite.OperationalError as e:
+            if "database is locked" in str(e).lower() and retries < max_retries:
+                # Delay exponencial + Jitter (ruído aleatório) para evitar colisão sequencial de workers
+                delay = (base_delay * (2 ** retries)) + random.uniform(0, 0.1)
+                logger.warning(f"SQLite Locked. Retentativa acionada. Backoff: {delay:.2f}s (Tentativa {retries+1}/{max_retries})")
+                await asyncio.sleep(delay)
+                retries += 1
+            else:
+                raise
 
 class TCGRepository:
     def __init__(self, db_path: str = "data/baphomet_tcg.db"):
@@ -74,47 +95,44 @@ class TCGRepository:
             logger.error(f"Erro ao inicializar o banco de dados TCG: {e}")
             raise
 
-    async def trade_cards(self, player1_id: int, card1_uuid: str, player2_id: int, card2_uuid: str):
-        """
-        Orquestra a troca de cartas entre dois jogadores usando um contexto
-        transacional explícito. Garante a consistência e previne duplicação de itens.
-        """
+    async def _trade_cards_internal(self, player1_id: int, card1_uuid: str, player2_id: int, card2_uuid: str):
         async with aiosqlite.connect(self.db_path) as db:
-            # Inicia a transação com bloqueio lógico IMMEDIATE
             await db.execute("BEGIN IMMEDIATE;")
             
             try:
-                # Verificação paralela de posse para não confiar em cache
-                res1, res2 = await asyncio.gather(
-                    db.execute_fetchall("SELECT dono_id FROM card_instances WHERE uuid = ?", (card1_uuid,)),
-                    db.execute_fetchall("SELECT dono_id FROM card_instances WHERE uuid = ?", (card2_uuid,))
-                )
-
-                # Valida Jogador 1 (res1 é uma lista de tuplas: [(dono_id,)])
-                if not res1 or res1[0][0] != player1_id:
-                    raise ValueError(f"Jogador {player1_id} não é o dono atual da carta {card1_uuid}.")
+                # AppSec Design: Atomic UPDATEs.
+                # Não lemos e depois atualizamos. Injetamos a validação de posse rigorosamente 
+                # no momento microscópico do UPDATE via cláusula WHERE. Previne 'Double Spending'.
                 
-                # Valida Jogador 2
-                if not res2 or res2[0][0] != player2_id:
-                    raise ValueError(f"Jogador {player2_id} não é o dono atual da carta {card2_uuid}.")
-
-                # Despacha as instruções UPDATE trocando os IDs dos donos
-                await db.execute(
-                    "UPDATE card_instances SET dono_id = ? WHERE uuid = ?", (player2_id, card1_uuid)
+                cursor1 = await db.execute(
+                    "UPDATE card_instances SET dono_id = ? WHERE uuid = ? AND dono_id = ?", 
+                    (player2_id, card1_uuid, player1_id)
                 )
-                await db.execute(
-                    "UPDATE card_instances SET dono_id = ? WHERE uuid = ?", (player1_id, card2_uuid)
+                # O cursor aponta 0 rows alteradas se a query não bater com o verdadeiro dono
+                if cursor1.rowcount == 0:
+                    raise ValueError(f"Race Condition Vetada: Jogador {player1_id} não possui a carta {card1_uuid} ou não é mais dono.")
+                
+                cursor2 = await db.execute(
+                    "UPDATE card_instances SET dono_id = ? WHERE uuid = ? AND dono_id = ?", 
+                    (player1_id, card2_uuid, player2_id)
                 )
+                if cursor2.rowcount == 0:
+                    raise ValueError(f"Race Condition Vetada: Jogador {player2_id} não possui a carta {card2_uuid} ou não é mais dono.")
 
-                # O COMMIT só é executado se sucesso absoluto no fim do escopo
                 await db.commit()
-                logger.info(f"Trade concluído: {card1_uuid} (P1:{player1_id}) <-> {card2_uuid} (P2:{player2_id})")
+                logger.info(f"Trade atômico concluído: {card1_uuid} (P1:{player1_id}) <-> {card2_uuid} (P2:{player2_id})")
 
             except Exception as e:
-                # Em caso de qualquer anomalia ou validação falha, garante o ROLLBACK automático
                 await db.rollback()
-                logger.error(f"Falha no trade, transação revertida (ROLLBACK). Erro: {e}")
+                logger.error(f"Falha de transação no trade, ROLLBACK ativado. Erro: {e}")
                 raise
+
+    async def trade_cards(self, player1_id: int, card1_uuid: str, player2_id: int, card2_uuid: str):
+        """
+        Orquestra a troca de cartas entre dois jogadores usando contexto transacional
+        com proteção ativa via Exponential Backoff em caso de timeout de lock WAL.
+        """
+        return await with_backoff(self._trade_cards_internal, player1_id, card1_uuid, player2_id, card2_uuid)
 
     async def save_card_instance(self, card: "CardInstance"):
         """

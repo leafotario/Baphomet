@@ -19,7 +19,8 @@ class PackService:
         images = []
         for buffer in card_images:
             buffer.seek(0)
-            images.append(Image.open(buffer).convert("RGBA"))
+            with Image.open(buffer) as img:
+                images.append(img.convert("RGBA"))
         
         # Configurações de layout
         spacing = 40
@@ -48,5 +49,10 @@ class PackService:
         output_buffer = io.BytesIO()
         master_canvas.save(output_buffer, format="PNG")
         output_buffer.seek(0)
+        
+        # SRE Design: Explicit OOM Defense
+        for img in images:
+            img.close()
+        master_canvas.close()
         
         return output_buffer
