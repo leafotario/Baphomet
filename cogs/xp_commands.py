@@ -191,6 +191,18 @@ class XpPublicCommands(commands.Cog):
 
         view.message = await interaction.original_response()
 
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        original = getattr(error, "original", error)
+        cmd_name = interaction.command.name if interaction.command else "Desconhecido"
+        self.logger.error(f"[XP System] Erro detalhado no comando '/{cmd_name}' invocado por {interaction.user} (ID: {interaction.user.id}):", exc_info=original)
+        log_exception(original)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("⚠️ Ocorreu um erro interno no sistema de XP. Os detalhes foram enviados ao console.", ephemeral=True)
+            else:
+                await interaction.followup.send("⚠️ Ocorreu um erro interno no sistema de XP. Os detalhes foram enviados ao console.", ephemeral=True)
+        except discord.HTTPException:
+            pass
 
 @app_commands.default_permissions(administrator=True)
 class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Comandos De XP, Glória E Configuração ✨"):
@@ -369,7 +381,18 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
             embed.set_footer(text=f"Motivo: {reason}")
         await interaction.response.send_message(embed=embed)
 
-
+    async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        original = getattr(error, "original", error)
+        cmd_name = interaction.command.name if interaction.command else "Desconhecido"
+        LOGGER.error(f"[XP System] Erro detalhado no comando Admin '/xp {cmd_name}' invocado por {interaction.user} (ID: {interaction.user.id}):", exc_info=original)
+        log_exception(original)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message("⚠️ Ocorreu um erro crítico neste comando de XP administrativo. Veja o console para o stack trace detalhado.", ephemeral=True)
+            else:
+                await interaction.followup.send("⚠️ Ocorreu um erro crítico neste comando de XP administrativo. Veja o console para o stack trace detalhado.", ephemeral=True)
+        except discord.HTTPException:
+            pass
 
 
 
