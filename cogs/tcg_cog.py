@@ -199,6 +199,66 @@ class TCGCommands(app_commands.Group):
         super().__init__(name="tcg", description="Comandos do ecossistema de Trading Card Game")
         self.bot = bot
 
+    @app_commands.command(name="ajuda", description="Manual de iniciação ao ecossistema TCG do Baphomet.")
+    async def ajuda(self, interaction: discord.Interaction):
+        service = getattr(self.bot, "tcg_service", None)
+        # Respeitando Clean Architecture: o preço seria puxado do config do DB, caso não exista, temos um fallback orgânico
+        booster_price = "algumas moedas"
+        if service and hasattr(service, 'get_booster_price'):
+            try:
+                booster_price = f"{await service.get_booster_price()} moedas"
+            except:
+                pass
+
+        embed = discord.Embed(
+            title="💀 BAPHOMET TCG // MANUAL DE INICIAÇÃO",
+            description="Bem-vindo ao submundo do Trading Card Game. Prepare-se para colecionar, forjar e dominar o circuito.",
+            color=discord.Color.from_str("#1a1a1a")
+        )
+
+        embed.add_field(
+            name="1. FORJA PREDITIVA (SUAS CARTAS)",
+            value=(
+                "Nossas cartas não dependem de puro RNG. Seus atributos combatentes refletem o seu império no servidor:\n"
+                "**ATK:** Forjado a partir do seu volume de mensagens e XP.\n"
+                "**DEF:** Extraído diretamente dos seus dias de permanência e lealdade ao servidor.\n"
+                "**SPD:** Elevado pela sua ressonância e reações recebidas.\n"
+                "Cargos de moderador e engajamento massivo em voz liberam **habilidades passivas únicas**."
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="2. COLECIONAR & EXTRAIR",
+            value=(
+                f"Use `/tcg booster` para investir {booster_price} e rasgar pacotes, invocando "
+                "novas instâncias diretamente para a sua coleção permanente.\n"
+                "Use `/tcg inventario` para navegar pelas suas páginas de ativos."
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="3. CONFIGURAR O DECK",
+            value=(
+                "Para lutar na arena, preparação é lei. É obrigatório usar `/tcg deck` para "
+                "selecionar cirurgicamente entre **3 a 5 cartas** da sua coleção."
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="4. O CIRCUITO (AÇÃO)",
+            value=(
+                "Com o deck no gatilho, as portas se abrem para a interação direta:\n"
+                "🗡️ `/tcg duelo [@usuario]` - Desafie oponentes para o motor de turnos em tempo real rodando em memória.\n"
+                "🤝 `/tcg trocar [@usuario]` - Abra a interface segura e atômica de intercâmbio de cartas."
+            ),
+            inline=False
+        )
+
+        await interaction.response.send_message(embed=embed, ephemeral=False)
+
     @app_commands.command(name="perfil", description="Exibe os atributos gerados, experiência TCG e saldo do jogador.")
     async def perfil(self, interaction: discord.Interaction):
         service = getattr(self.bot, "tcg_service", None)
