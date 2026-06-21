@@ -422,7 +422,7 @@ class TierTemplateItemResolver:
 
     def _build_wikipedia_service(self) -> Any:
         try:
-            from cogs.tierlist_wikipedia.wikipedia import WikipediaImageService
+            from modules.tierlists.integrations.wikipedia import WikipediaImageService
         except Exception as exc:
             log_exception(exc)
             raise TemplateItemResolveError(
@@ -435,7 +435,7 @@ class TierTemplateItemResolver:
 
     def _build_spotify_resolver(self) -> Any:
         try:
-            from cogs.tierlist_spotify.spotify import SpotifyInputResolver, SpotifyService
+            from modules.tierlists.integrations.spotify import SpotifyInputResolver, SpotifyService
         except Exception as exc:
             log_exception(exc)
             raise TemplateItemResolveError(

@@ -12,12 +12,12 @@ from threading import Lock
 import discord
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
 
-from cogs.vinculos_rendering.drawing import (
+from modules.vinculos.rendering.drawing import (
     Rect,
     load_rgba_from_bytes,
     rounded_mask,
 )
-from cogs.vinculos_rendering.fonts import FontManager
+from modules.vinculos.rendering.fonts import FontManager
 from core.logger import log_exception
 
 

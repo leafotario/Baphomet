@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import io
@@ -14,7 +14,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from modules.tierlists.asset_repository import TierAssetRepository
-from .assets import TierTemplateAssetStore
+from modules.tierlists.assets import TierTemplateAssetStore
 from modules.tierlists.database import DatabaseManager
 from modules.tierlists.downloads import SafeImageDownloader
 from modules.tierlists.item_resolver import TierTemplateItemResolver

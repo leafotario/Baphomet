@@ -7,11 +7,11 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from cogs.tierlist_templates.asset_repository import TierAssetRepository
-from cogs.tierlist_templates.assets import TierTemplateAssetStore
-from cogs.tierlist_templates.database import DatabaseManager as TierAssetDatabaseManager
-from cogs.tierlist_templates.downloads import SafeImageDownloader
-from cogs.tierlist_wikipedia.wikipedia import WikipediaImageService
+from modules.tierlists.asset_repository import TierAssetRepository
+from modules.tierlists.assets import TierTemplateAssetStore
+from modules.tierlists.database import DatabaseManager as TierAssetDatabaseManager
+from modules.tierlists.downloads import SafeImageDownloader
+from modules.tierlists.integrations.wikipedia import WikipediaImageService
 
 from modules.iceberg.constants import ICEBERG_DEFAULT_LAYERS, ICEBERG_MAX_LAYERS, ICEBERG_MIN_LAYERS, ICEBERG_TITLE_MAX_LENGTH
 from modules.iceberg.models import IcebergProject, ItemSourceType

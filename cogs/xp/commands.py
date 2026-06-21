@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 """Comandos Públicos E Administrativos Do Sistema De XP Do Baphomet."""
 
@@ -10,11 +10,11 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from .xp_cards import XpCardRenderer
-from .xp_models import XpDifficulty
-from .xp_repository import XpRepository
-from .xp_service import XpService
-from .xp_views import (    LeaderboardImagePaginator,
+from modules.xp.rendering.xp_card_renderer import XpCardRenderer
+from modules.xp.db.xp_models import XpDifficulty
+from modules.xp.db.xp_repository import XpRepository
+from modules.xp.services.xp_service import XpService
+from modules.xp.rendering.xp_views import (    LeaderboardImagePaginator,
     LeaderboardView,
     RankCardView,
     _resolve_entries,

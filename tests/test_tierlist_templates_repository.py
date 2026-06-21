@@ -14,9 +14,9 @@ AIOSQLITE_AVAILABLE = importlib.util.find_spec("aiosqlite") is not None
 
 from PIL import Image
 
-from cogs.tierlist_templates.assets import TierTemplateAssetStore
-from cogs.tierlist_templates.downloads import DownloadedImage, SafeImageDownloader
-from cogs.tierlist_templates.exceptions import (
+from modules.tierlists.assets import TierTemplateAssetStore
+from modules.tierlists.downloads import DownloadedImage, SafeImageDownloader
+from modules.tierlists.exceptions import (
     AssetValidationError,
     ConflictingImageSourcesError,
     EmptyTemplateItemError,
@@ -37,7 +37,7 @@ from cogs.tierlist_templates.messages import (
     TEMPLATE_PRIVATE_MESSAGE,
     VERSION_LOCKED_MESSAGE,
 )
-from cogs.tierlist_wikipedia.wikipedia import WIKIPEDIA_SOURCE_TYPE
+from modules.tierlists.integrations.wikipedia import WIKIPEDIA_SOURCE_TYPE
 from cogs.tierlist_templates.models import (
     SessionStatus,
     TemplateItemType,
@@ -52,8 +52,8 @@ from cogs.tierlist_templates.session_renderer import SessionRenderSnapshot, Tier
 from cogs.tierlist_templates.cog import TierTemplateCog
 
 if AIOSQLITE_AVAILABLE:
-    from cogs.tierlist_templates.asset_repository import TierAssetRepository
-    from cogs.tierlist_templates.database import DatabaseManager
+    from modules.tierlists.asset_repository import TierAssetRepository
+    from modules.tierlists.database import DatabaseManager
     from cogs.tierlist_templates.session_repository import TierSessionRepository
     from cogs.tierlist_templates.template_repository import TierTemplateRepository
 

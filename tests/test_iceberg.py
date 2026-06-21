@@ -28,7 +28,7 @@ from cogs.iceberg.models import (
 from cogs.iceberg.renderer import IcebergRenderer, IcebergTemplateError, TEMPLATE_ITEM_SAFE_RIGHT_RATIO, crop_center_square
 from cogs.iceberg.repository import IcebergDatabaseManager, IcebergRepository
 from cogs.iceberg.service import IcebergService
-from cogs.iceberg.sources.providers import AttachmentImageProvider, IcebergUserError, TextItemProvider
+from modules.iceberg.sources.providers import AttachmentImageProvider, IcebergUserError, TextItemProvider
 from cogs.iceberg.themes import DEFAULT_LAYER_NAMES, default_layer_name, default_layers, get_theme
 from cogs.iceberg.constants import (
     ICEBERG_MAX_LAYERS,
@@ -710,8 +710,8 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_image_url_invalid(self) -> None:
-        from cogs.iceberg.sources.providers import ImageUrlProvider
-        from cogs.tierlist_templates.exceptions import AssetDownloadError
+        from modules.iceberg.sources.providers import ImageUrlProvider
+        from modules.tierlists.exceptions import AssetDownloadError
 
         class FakeDownloader:
             async def download(self, url: str) -> None:
@@ -722,7 +722,7 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
             await provider.resolve(value="http://127.0.0.1/image.png")
 
     async def test_discord_avatar_user_not_found(self) -> None:
-        from cogs.iceberg.sources.providers import DiscordAvatarProvider
+        from modules.iceberg.sources.providers import DiscordAvatarProvider
 
         class FakeClient:
             async def fetch_user(self, user_id: int):
@@ -734,8 +734,8 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cm.exception.code, "avatar_user_not_found")
 
     async def test_wikipedia_without_thumbnail(self) -> None:
-        from cogs.iceberg.sources.providers import WikipediaImageProvider
-        from cogs.tierlist_wikipedia.wikipedia import WikipediaUserError
+        from modules.iceberg.sources.providers import WikipediaImageProvider
+        from modules.tierlists.integrations.wikipedia import WikipediaUserError
 
         class FakeWikipediaService:
             async def resolve(self, query: str, **kwargs):
@@ -747,7 +747,7 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cm.exception.code, "wikipedia_no_image")
 
     async def test_attachment_too_large(self) -> None:
-        from cogs.iceberg.sources.providers import AttachmentImageProvider
+        from modules.iceberg.sources.providers import AttachmentImageProvider
 
         class FakeAttachment:
             size = 10 * 1024 * 1024 # 10MB
@@ -758,7 +758,7 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cm.exception.code, "attachment_too_large")
 
     async def test_attachment_fake_content_type(self) -> None:
-        from cogs.iceberg.sources.providers import AttachmentImageProvider
+        from modules.iceberg.sources.providers import AttachmentImageProvider
 
         class FakeAttachment:
             size = 1024
@@ -770,8 +770,8 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cm.exception.code, "attachment_not_image")
 
     async def test_attachment_invalid_truncated_image(self) -> None:
-        from cogs.iceberg.sources.providers import AttachmentImageProvider
-        from cogs.tierlist_templates.exceptions import AssetValidationError
+        from modules.iceberg.sources.providers import AttachmentImageProvider
+        from modules.tierlists.exceptions import AssetValidationError
 
         class FakeAssetStore:
             async def store_image_bytes(self, raw_bytes: bytes, **kwargs):
@@ -831,7 +831,7 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_wikipedia_search_candidates(self) -> None:
-        from cogs.iceberg.sources.providers import WikipediaImageProvider
+        from modules.iceberg.sources.providers import WikipediaImageProvider
 
         class FakeCandidate:
             def __init__(self, pageid, title, description, thumbnail_url):
@@ -997,7 +997,7 @@ class IcebergLayerItemLimitTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def _fake_resolve(self, source_type, **kwargs):
-        from cogs.iceberg.sources.providers import ResolvedIcebergSource
+        from modules.iceberg.sources.providers import ResolvedIcebergSource
         title = kwargs.get("title") or ""
         value = kwargs.get("value") or title
         return ResolvedIcebergSource(

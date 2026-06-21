@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 """Cards Visuais Do Sistema De XP Do Baphomet (Monalisa Edition)."""
 
@@ -10,7 +10,7 @@ from typing import Iterable
 import discord
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
-from ..utils import LeaderboardEntry, RankSnapshot
+from ..utils.xp_models import LeaderboardEntry, RankSnapshot
 from core.logger import log_exception
 
 

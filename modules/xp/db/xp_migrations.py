@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 """Migrações E Importação De Dados Legados Do Sistema De XP."""
 
@@ -7,9 +7,9 @@ import pathlib
 
 import aiosqlite
 
-from modules.xp.services.config import normalize_difficulty, utc_now_iso
+from ..utils import normalize_difficulty, utc_now_iso
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 5
 DATA_DIR = pathlib.Path("data")
 LEGACY_XP_JSON = DATA_DIR / "xp_data.json"
 LEGACY_CONFIG_JSON = DATA_DIR / "xp_config.json"
@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS xp_guild_config (
     ignore_bots INTEGER NOT NULL DEFAULT 1,
     ignore_webhooks INTEGER NOT NULL DEFAULT 1,
     levelup_channel_id INTEGER NULL,
+    log_channel_id INTEGER NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -51,7 +52,6 @@ CREATE TABLE IF NOT EXISTS xp_profiles (
     last_message_hash TEXT NULL,
     last_message_at TEXT NULL,
     last_known_name TEXT NULL,
-    curse_expires_at INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (guild_id, user_id)
@@ -82,6 +82,17 @@ CREATE TABLE IF NOT EXISTS xp_level_roles (
     PRIMARY KEY (guild_id, level)
 );
 
+CREATE TABLE IF NOT EXISTS rank_badges (
+    guild_id INTEGER NOT NULL,
+    role_id INTEGER NOT NULL,
+    image_path TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    label TEXT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (guild_id, role_id)
+);
+
 CREATE TABLE IF NOT EXISTS xp_adjustments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id INTEGER NOT NULL,
@@ -92,6 +103,30 @@ CREATE TABLE IF NOT EXISTS xp_adjustments (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS vinculo_xp_bonus_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    vinculo_id INTEGER NULL,
+    user_id INTEGER NOT NULL,
+    partner_id INTEGER NULL,
+    bond_type TEXT NOT NULL DEFAULT 'pacto_sangue',
+    base_xp INTEGER NOT NULL,
+    bonus_xp INTEGER NOT NULL,
+    multiplier REAL NOT NULL,
+    affinity_level INTEGER NOT NULL,
+    resonance_active INTEGER NOT NULL DEFAULT 0,
+    penalty_delta REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    message_hash TEXT NULL,
+    final_xp INTEGER NOT NULL DEFAULT 0,
+    positive_bonus_pool INTEGER NOT NULL DEFAULT 0,
+    penalty_pool INTEGER NOT NULL DEFAULT 0,
+    bonus_rate REAL NOT NULL DEFAULT 0,
+    partner_last_seen_at TEXT NULL,
+    resonance_window_seconds INTEGER NOT NULL DEFAULT 86400,
+    CHECK (resonance_active IN (0, 1))
+);
+
 CREATE INDEX IF NOT EXISTS idx_xp_profiles_guild_total_xp
     ON xp_profiles (guild_id, total_xp DESC, user_id ASC);
 
@@ -100,6 +135,15 @@ CREATE INDEX IF NOT EXISTS idx_xp_profiles_guild_updated_at
 
 CREATE INDEX IF NOT EXISTS idx_xp_adjustments_guild_target_created
     ON xp_adjustments (guild_id, target_user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_rank_badges_guild_priority
+    ON rank_badges (guild_id, priority DESC, role_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_vinculo_bonus_history_user
+    ON vinculo_xp_bonus_history(guild_id, user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_vinculo_bonus_history_vinculo
+    ON vinculo_xp_bonus_history(vinculo_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS achievements_def (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -242,9 +286,32 @@ async def _import_legacy_json(conn: aiosqlite.Connection) -> None:
 async def run_migrations(conn: aiosqlite.Connection) -> None:
     await conn.executescript(SCHEMA_SQL)
     await _ensure_column(conn, "xp_guild_config", "levelup_channel_id INTEGER NULL", "levelup_channel_id")
+    await _ensure_column(conn, "xp_guild_config", "log_channel_id INTEGER NULL", "log_channel_id")
     await _ensure_column(conn, "xp_profiles", "last_message_hash TEXT NULL", "last_message_hash")
     await _ensure_column(conn, "xp_profiles", "last_message_at TEXT NULL", "last_message_at")
     await _ensure_column(conn, "xp_profiles", "last_known_name TEXT NULL", "last_known_name")
+    await _ensure_column(conn, "vinculo_xp_bonus_history", "message_hash TEXT NULL", "message_hash")
+    await _ensure_column(conn, "vinculo_xp_bonus_history", "final_xp INTEGER NOT NULL DEFAULT 0", "final_xp")
+    await _ensure_column(
+        conn,
+        "vinculo_xp_bonus_history",
+        "positive_bonus_pool INTEGER NOT NULL DEFAULT 0",
+        "positive_bonus_pool",
+    )
+    await _ensure_column(conn, "vinculo_xp_bonus_history", "penalty_pool INTEGER NOT NULL DEFAULT 0", "penalty_pool")
+    await _ensure_column(conn, "vinculo_xp_bonus_history", "bonus_rate REAL NOT NULL DEFAULT 0", "bonus_rate")
+    await _ensure_column(
+        conn,
+        "vinculo_xp_bonus_history",
+        "partner_last_seen_at TEXT NULL",
+        "partner_last_seen_at",
+    )
+    await _ensure_column(
+        conn,
+        "vinculo_xp_bonus_history",
+        "resonance_window_seconds INTEGER NOT NULL DEFAULT 86400",
+        "resonance_window_seconds",
+    )
     await _ensure_column(conn, "xp_profiles", "curse_expires_at INTEGER NOT NULL DEFAULT 0", "curse_expires_at")
 
     applied_rows = await conn.execute_fetchall("SELECT version FROM xp_schema_migrations")

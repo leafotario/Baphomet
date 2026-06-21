@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import discord
 from cogs.vinculos import VinculosCog, ActiveVinculo
-from cogs.vinculos_rendering.renderer import VinculoCardRenderer
+from modules.vinculos.rendering.renderer import VinculoCardRenderer
 
 
 class MockAsset:

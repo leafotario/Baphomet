@@ -11,7 +11,7 @@ from typing import Any
 from typing import OrderedDict as OrderedDictType
 
 from cogs.tierlist import TierItem, TierListRenderer
-from cogs.tierlist_wikipedia.wikipedia import WIKIPEDIA_SOURCE_TYPE
+from modules.tierlists.integrations.wikipedia import WIKIPEDIA_SOURCE_TYPE
 
 from modules.tierlists.asset_repository import TierAssetRepository
 from .assets import TierTemplateAssetStore
