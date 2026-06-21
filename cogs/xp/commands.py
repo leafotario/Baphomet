@@ -14,7 +14,7 @@ from modules.xp.rendering.xp_card_renderer import XpCardRenderer
 from modules.xp.db.xp_models import XpDifficulty
 from modules.xp.db.xp_repository import XpRepository
 from modules.xp.services.xp_service import XpService
-from modules.xp.rendering.xp_views import (    LeaderboardImagePaginator,
+from modules.xp.rendering.xp_views import (    FullLeaderboardPaginator,
     LeaderboardView,
     RankCardView,
     _resolve_entries,
@@ -168,7 +168,7 @@ class XpPublicCommands(commands.Cog):
         total = await self.service.repository.count_ranked_profiles(interaction.guild.id)
 
         # Monta o paginador de imagens
-        view = LeaderboardImagePaginator(
+        view = FullLeaderboardPaginator(
             service=self.service,
             cards=self.cards,
             guild=interaction.guild,
