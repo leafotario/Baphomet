@@ -1,4 +1,4 @@
-"""
+﻿"""
 ╔══════════════════════════════════════════════════════════════╗
 ║                  WELCOME COG — Discord Bot                   ║
 ║  Boas-vindas automáticas com embed configurável via Modal    ║
@@ -35,7 +35,7 @@ import io
 from PIL import Image
 from datetime import datetime
 from typing import Optional
-from core_logger import log_exception
+from core.logger import log_exception
 
 
 # ─── Logger ────────────────────────────────────────────────────────────────────

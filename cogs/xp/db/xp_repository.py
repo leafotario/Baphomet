@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """Persistência Assíncrona Do Sistema De XP."""
 
@@ -22,7 +22,7 @@ from ..utils import (
     utc_now_iso,
 )
 from .xp_migrations import run_migrations
-from core_logger import log_exception
+from core.logger import log_exception
 
 
 

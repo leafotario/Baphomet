@@ -1,10 +1,10 @@
-import sys
+﻿import sys
 import os
 import math
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from occult_ui_framework import AbyssalRNG
+from utils.occult_ui import AbyssalRNG
 
 def simulate_game(name, sim_func, iterations=1000000, bet=100):
     rng = AbyssalRNG()

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """Regra De Negócio Do Sistema De XP Do Baphomet."""
 
@@ -29,7 +29,7 @@ from .utils import (
     utc_now,
 )
 from .db import XpRepository
-from core_logger import log_exception
+from core.logger import log_exception
 
 
 

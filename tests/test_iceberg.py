@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import importlib.util
@@ -256,7 +256,7 @@ class IcebergManageItemsViewTests(unittest.IsolatedAsyncioTestCase):
 class IcebergRendererSnapshotTests(unittest.TestCase):
     def render_with_template(self, project: IcebergProject, *, width: int = 100, height: int = 101) -> Image.Image:
         with tempfile.TemporaryDirectory() as tmp:
-            template_path = Path(tmp) / "icebergtemplate.png"
+            template_path = Path(tmp) / "assets/images/iceberg/icebergtemplate.png"
             write_test_template(template_path, width=width, height=height)
             buffer = IcebergRenderer(template_path=template_path).render_project(
                 project,
@@ -349,7 +349,7 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
 
     def test_renderer_rejects_layer_counts_outside_template_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            template_path = Path(tmp) / "icebergtemplate.png"
+            template_path = Path(tmp) / "assets/images/iceberg/icebergtemplate.png"
             write_test_template(template_path)
             renderer = IcebergRenderer(template_path=template_path)
 
@@ -362,7 +362,7 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
         project = make_project(layer_count=8)
         project.items = []
         with tempfile.TemporaryDirectory() as tmp:
-            template_path = Path(tmp) / "icebergtemplate.png"
+            template_path = Path(tmp) / "assets/images/iceberg/icebergtemplate.png"
             write_test_template(template_path, width=1000, height=1001)
             renderer = IcebergRenderer(template_path=template_path)
             full = Image.open(renderer.render_project(project)).convert("RGBA")
@@ -410,7 +410,7 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
             )
         ]
         with tempfile.TemporaryDirectory() as tmp:
-            template_path = Path(tmp) / "icebergtemplate.png"
+            template_path = Path(tmp) / "assets/images/iceberg/icebergtemplate.png"
             write_test_template(template_path, width=1600, height=2000)
             renderer = CapturingRenderer(template_path=template_path)
             renderer.render_project(project)
@@ -419,8 +419,8 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
     def test_renderer_errors_when_template_is_missing(self) -> None:
         project = make_project(layer_count=7)
         with tempfile.TemporaryDirectory() as tmp:
-            missing_path = Path(tmp) / "icebergtemplate.png"
-            with self.assertRaisesRegex(IcebergTemplateError, "icebergtemplate.png"):
+            missing_path = Path(tmp) / "assets/images/iceberg/icebergtemplate.png"
+            with self.assertRaisesRegex(IcebergTemplateError, "assets/images/iceberg/icebergtemplate.png"):
                 IcebergRenderer(template_path=missing_path).render_project(project)
 
     def test_project_json_roundtrip_keeps_domain_types(self) -> None:
@@ -438,7 +438,7 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
         project = make_project()
 
         with tempfile.TemporaryDirectory() as tmp:
-            template_path = Path(tmp) / "icebergtemplate.png"
+            template_path = Path(tmp) / "assets/images/iceberg/icebergtemplate.png"
             write_test_template(template_path, width=1200, height=2000)
             renderer = IcebergRenderer(template_path=template_path)
 
@@ -490,7 +490,7 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
             ),
         ]
         with tempfile.TemporaryDirectory() as tmp:
-            template_path = Path(tmp) / "icebergtemplate.png"
+            template_path = Path(tmp) / "assets/images/iceberg/icebergtemplate.png"
             write_test_template(template_path, width=1600, height=2200)
             buffer = IcebergRenderer(template_path=template_path).render_project(
                 project,
@@ -549,7 +549,7 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
             ),
         ]
         with tempfile.TemporaryDirectory() as tmp:
-            template_path = Path(tmp) / "icebergtemplate.png"
+            template_path = Path(tmp) / "assets/images/iceberg/icebergtemplate.png"
             write_test_template(template_path, width=1600, height=2200)
             renderer = OrderingRenderer(template_path=template_path)
             renderer.render_project(project)
@@ -578,7 +578,7 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
         project.items = items
 
         with tempfile.TemporaryDirectory() as tmp:
-            template_path = Path(tmp) / "icebergtemplate.png"
+            template_path = Path(tmp) / "assets/images/iceberg/icebergtemplate.png"
             write_test_template(template_path, width=1200, height=2000)
             renderer = IcebergRenderer(template_path=template_path)
             with self.assertRaisesRegex(ValueError, "A camada não comporta os itens"):
@@ -647,7 +647,7 @@ class IcebergServiceValidationTests(unittest.IsolatedAsyncioTestCase):
     async def test_render_converts_template_error_to_user_error_without_sqlite(self) -> None:
         class BrokenRenderer:
             def render_project(self, *args, **kwargs):
-                raise IcebergTemplateError("❌ Não encontrei a template local `icebergtemplate.png`.")
+                raise IcebergTemplateError("❌ Não encontrei a template local `assets/images/iceberg/icebergtemplate.png`.")
 
         async def inline_to_thread(func, /, *args, **kwargs):
             return func(*args, **kwargs)
@@ -661,7 +661,7 @@ class IcebergServiceValidationTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(IcebergUserError) as cm:
                 await service.render_project("project-1", owner_id=42)
         self.assertEqual(cm.exception.code, "template_unavailable")
-        self.assertIn("icebergtemplate.png", cm.exception.user_message)
+        self.assertIn("assets/images/iceberg/icebergtemplate.png", cm.exception.user_message)
 
 
 class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
@@ -945,7 +945,7 @@ class IcebergRepositoryServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_service_converts_template_error_to_user_error(self) -> None:
         class BrokenRenderer:
             def render_project(self, *args, **kwargs):
-                raise IcebergTemplateError("❌ Não encontrei a template local `icebergtemplate.png`.")
+                raise IcebergTemplateError("❌ Não encontrei a template local `assets/images/iceberg/icebergtemplate.png`.")
 
         service = IcebergService(
             repository=self.repository,
@@ -961,7 +961,7 @@ class IcebergRepositoryServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(IcebergUserError) as cm:
             await service.render_project("project-1", owner_id=42)
         self.assertEqual(cm.exception.code, "template_unavailable")
-        self.assertIn("icebergtemplate.png", cm.exception.user_message)
+        self.assertIn("assets/images/iceberg/icebergtemplate.png", cm.exception.user_message)
 
 
 class IcebergCommandRegistrationTests(unittest.IsolatedAsyncioTestCase):
@@ -1135,7 +1135,7 @@ class IcebergImageCaptionTests(unittest.TestCase):
 
     def render_with_template(self, project: IcebergProject, asset_bytes: dict[str, bytes] | None = None, *, width: int = 1600, height: int = 2200) -> Image.Image:
         with tempfile.TemporaryDirectory() as tmp:
-            template_path = Path(tmp) / "icebergtemplate.png"
+            template_path = Path(tmp) / "assets/images/iceberg/icebergtemplate.png"
             write_test_template(template_path, width=width, height=height)
             buffer = IcebergRenderer(template_path=template_path).render_project(
                 project,
@@ -1214,7 +1214,7 @@ class IcebergDefaultLayerNameTests(unittest.TestCase):
         project = make_project(layer_count=10)
         project.items = []
         with tempfile.TemporaryDirectory() as tmp:
-            template_path = Path(tmp) / "icebergtemplate.png"
+            template_path = Path(tmp) / "assets/images/iceberg/icebergtemplate.png"
             write_test_template(template_path, width=1580, height=1200)
             image = Image.open(
                 IcebergRenderer(template_path=template_path).render_project(project)
@@ -1267,7 +1267,7 @@ class IcebergBackwardCompatibilityTests(unittest.TestCase):
             )
         )
         with tempfile.TemporaryDirectory() as tmp:
-            template_path = Path(tmp) / "icebergtemplate.png"
+            template_path = Path(tmp) / "assets/images/iceberg/icebergtemplate.png"
             write_test_template(template_path, width=1000, height=1001)
             renderer = IcebergRenderer(template_path=template_path)
             buffer = renderer.render_project(

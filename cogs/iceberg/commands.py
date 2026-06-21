@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import logging
@@ -13,14 +13,14 @@ from cogs.tierlist_templates.database import DatabaseManager as TierAssetDatabas
 from cogs.tierlist_templates.downloads import SafeImageDownloader
 from cogs.tierlist_wikipedia.wikipedia import WikipediaImageService
 
-from .constants import ICEBERG_DEFAULT_LAYERS, ICEBERG_MAX_LAYERS, ICEBERG_MIN_LAYERS, ICEBERG_TITLE_MAX_LENGTH
-from .models import IcebergProject, ItemSourceType
-from .repository import IcebergDatabaseManager, IcebergRepository
-from .renderer import IcebergRenderer
-from .service import IcebergService
+from modules.iceberg.constants import ICEBERG_DEFAULT_LAYERS, ICEBERG_MAX_LAYERS, ICEBERG_MIN_LAYERS, ICEBERG_TITLE_MAX_LENGTH
+from modules.iceberg.models import IcebergProject, ItemSourceType
+from modules.iceberg.repository import IcebergDatabaseManager, IcebergRepository
+from modules.iceberg.renderer import IcebergRenderer
+from modules.iceberg.service import IcebergService
 from .sources.providers import IcebergSourceProviderRegistry, IcebergUserError
-from .themes import DEFAULT_THEME_ID, default_layer_name
-from core_logger import log_exception
+from modules.iceberg.themes import DEFAULT_THEME_ID, default_layer_name
+from core.logger import log_exception
 
 
 
@@ -216,7 +216,7 @@ class IcebergCog(commands.Cog):
         project: IcebergProject,
         content: str | None = None,
     ) -> None:
-        from .views import IcebergEditorView
+        from modules.iceberg.discord_ui.views import IcebergEditorView
 
         await interaction.followup.send(
             content=content,
@@ -228,7 +228,7 @@ class IcebergCog(commands.Cog):
     async def refresh_panel_message(self, message: discord.Message | None, project: IcebergProject) -> None:
         if message is None:
             return
-        from .views import IcebergEditorView
+        from modules.iceberg.discord_ui.views import IcebergEditorView
 
         try:
             await message.edit(embed=self.build_project_embed(project), view=IcebergEditorView(cog=self, project=project))

@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import datetime
 import io
 import logging
@@ -9,7 +9,7 @@ import aiosqlite
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from core_logger import log_exception
+from core.logger import log_exception
 
 
 # Constantes do módulo

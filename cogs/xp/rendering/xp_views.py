@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import math
 
@@ -8,7 +8,7 @@ from ..xp_service import XpService
 from ..utils import LeaderboardEntry
 from ..rank_badges import RankBadgeService
 from .xp_card_renderer import XpCardRenderer
-from core_logger import log_exception
+from core.logger import log_exception
 
 
 

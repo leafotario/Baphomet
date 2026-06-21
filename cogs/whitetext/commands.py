@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import io
@@ -10,7 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from .errors import (
+from modules.media_processing.whitetext.errors import (
     FFmpegNotFoundError,
     FontNotFoundError,
     ImageTooLargeError,
@@ -26,10 +26,10 @@ from .errors import (
     VideoTooLongError,
     WhiteTextError,
 )
-from .layout import CaptionStyle
-from .processor import MediaKind, WhiteTextProcessorConfig, process_gif_bytes, process_static_image_bytes
-from .video import VideoProcessingConfig, process_video_bytes_to_captioned_gif
-from core_logger import log_exception
+from modules.media_processing.whitetext.layout import CaptionStyle
+from modules.media_processing.whitetext.processor import MediaKind, WhiteTextProcessorConfig, process_gif_bytes, process_static_image_bytes
+from modules.media_processing.whitetext.video import VideoProcessingConfig, process_video_bytes_to_captioned_gif
+from core.logger import log_exception
 
 
 
@@ -73,7 +73,7 @@ def classify_attachment(attachment: discord.Attachment, data: bytes) -> MediaKin
     if suffix in VIDEO_EXTENSIONS:
         return MediaKind.VIDEO
 
-    from .processor import detect_media_kind
+    from modules.media_processing.whitetext.processor import detect_media_kind
 
     return detect_media_kind(
         data,

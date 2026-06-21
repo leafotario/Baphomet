@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 import re
@@ -12,7 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 from discord import app_commands
 from discord.ext import commands
 
-from database import DEFAULT_SCHEDULE_TIME, DatabaseManager
+from core.database import DEFAULT_SCHEDULE_TIME, DatabaseManager
 from movie_logic import (
     DEFAULT_DISLIKE_EMOJI,
     DEFAULT_LIKE_EMOJI,
@@ -22,7 +22,7 @@ from movie_logic import (
     validate_reaction_emoji,
 )
 from tmdb_api import TMDBClient
-from core_logger import log_exception
+from core.logger import log_exception
 
 
 

@@ -1,4 +1,4 @@
-"""Sistema de Prune por Inatividade Textual — Seguro, Persistente e à Prova de Desastres."""
+﻿"""Sistema de Prune por Inatividade Textual — Seguro, Persistente e à Prova de Desastres."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import aiosqlite
 import discord
 from discord import app_commands
 from discord.ext import commands
-from core_logger import log_exception
+from core.logger import log_exception
 
 
 LOGGER = logging.getLogger("baphomet.prune")

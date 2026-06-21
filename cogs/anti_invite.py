@@ -1,10 +1,10 @@
-import discord
+﻿import discord
 from discord.ext import commands
 from discord import app_commands
 import json
 import os
 import re
-from core_logger import log_exception
+from core.logger import log_exception
 
 
 class AntiInviteCog(commands.Cog):

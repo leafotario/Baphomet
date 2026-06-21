@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """Cards Visuais Do Sistema De XP Do Baphomet (Monalisa Edition)."""
 
@@ -11,7 +11,7 @@ import discord
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from ..utils import LeaderboardEntry, RankSnapshot
-from core_logger import log_exception
+from core.logger import log_exception
 
 
 # Caminhos sugeridos para as fontes customizadas. 

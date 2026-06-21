@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import datetime as dt
@@ -15,7 +15,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
-from core_logger import log_exception
+from core.logger import log_exception
 
 
 
@@ -40,9 +40,9 @@ DATA_DIR.mkdir(exist_ok=True)
 DB_FILE = DATA_DIR / "aotd.sqlite3"
 
 OLD_QUEUE_FILES = [
-    DATA_DIR / "fila_albuns.json",
-    BASE_DIR / "fila_albuns.json",
-    Path.cwd() / "fila_albuns.json",
+    DATA_DIR / "data/fila_albuns.json",
+    BASE_DIR / "data/fila_albuns.json",
+    Path.cwd() / "data/fila_albuns.json",
 ]
 
 OLD_CONFIG_FILES = [

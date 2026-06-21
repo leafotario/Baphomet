@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import io
@@ -37,7 +37,7 @@ from cogs.tierlist_spotify.spotify import (    SpotifyImageDownloader,
     SpotifyService,
     SpotifyUserError,
 )
-from core_logger import log_exception
+from core.logger import log_exception
 LOGGER = logging.getLogger("baphomet.tierlist")
 
 

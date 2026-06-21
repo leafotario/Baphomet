@@ -11,9 +11,9 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from core_db_transaction import BaphometTransactionManager
-from core_redis_state import AbyssalRedisManager, RedisConnectionError
-from core_logger import log_exception
+from core.db_transaction import BaphometTransactionManager
+from core.redis_state import AbyssalRedisManager, RedisConnectionError
+from core.logger import log_exception
 
 # ==============================================================================
 # 1. CORES E ESTILOS PARA TERMINAL (ANSI)
@@ -93,7 +93,7 @@ class MyBot(commands.Bot):
         self.redis_manager = AbyssalRedisManager()
 
     async def load_all_extensions(self) -> tuple[int, int]:
-        """Varre o diretório /cogs e carrega as extensões."""
+        """Varre o diretório /cogs recursivamente e carrega as extensões."""
         log_info("Iniciando o carregamento de extensões (Cogs)...")
         loaded, failed = 0, 0
 
@@ -101,26 +101,24 @@ class MyBot(commands.Bot):
             log_warn("Diretório './cogs' não encontrado. Pulando o carregamento de extensões.")
             return loaded, failed
 
-        for filename in sorted(os.listdir("./cogs")):
-            if filename.startswith("__") or filename.startswith("xp_"):
+        for root, _, files in os.walk("./cogs"):
+            if "__pycache__" in root:
                 continue
-
-            extension = None
-            if filename.endswith(".py"):
-                extension = f"cogs.{filename[:-3]}"
-            elif os.path.isdir(f"./cogs/{filename}") and os.path.isfile(f"./cogs/{filename}/__init__.py"):
-                extension = f"cogs.{filename}"
-
-            if not extension:
-                continue
-
-            try:
-                await self.load_extension(extension)
-                log_cog(f"{extension} carregado com sucesso.", success=True)
-                loaded += 1
-            except Exception as exc:
-                log_cog(f"{extension} falhou: {type(exc).__name__}: {exc}", success=False)
-                failed += 1
+            for filename in files:
+                if filename.endswith(".py") and not filename.startswith("__"):
+                    filepath = os.path.join(root, filename)
+                    rel_path = os.path.relpath(filepath, ".")
+                    extension = rel_path.replace(os.sep, ".")[:-3]
+                    try:
+                        await self.load_extension(extension)
+                        log_cog(f"{extension} carregado com sucesso.", success=True)
+                        loaded += 1
+                    except commands.NoEntryPointError:
+                        # Ignora arquivos que não são cogs (ex: módulos auxiliares que ficaram na pasta cogs)
+                        pass
+                    except Exception as exc:
+                        log_cog(f"{extension} falhou: {type(exc).__name__}: {exc}", success=False)
+                        failed += 1
 
         return loaded, failed
 

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 """Sistema de vínculos do Baphomet.
 
@@ -23,7 +23,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from cogs.vinculos_rendering.renderer import VINCULO_CARD_FILENAME, VinculoCardRenderer
-from core_logger import log_exception
+from core.logger import log_exception
 
 
 

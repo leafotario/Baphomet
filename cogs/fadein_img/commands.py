@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import logging
@@ -9,7 +9,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from .errors import (
+from modules.media_processing.fadein_img.errors import (
     AnimatedImageNotSupportedError,
     FadeInImageError,
     ImageTooLargeError,
@@ -17,8 +17,8 @@ from .errors import (
     OutputTooLargeError,
     UnsupportedMediaError,
 )
-from .processor import FadeInImageConfig, process_fadein_image_bytes
-from core_logger import log_exception
+from modules.media_processing.fadein_img.processor import FadeInImageConfig, process_fadein_image_bytes
+from core.logger import log_exception
 
 
 
