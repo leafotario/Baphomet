@@ -1,3 +1,4 @@
+import asyncio
 import aiosqlite
 import logging
 
@@ -72,3 +73,45 @@ class TCGRepository:
         except Exception as e:
             logger.error(f"Erro ao inicializar o banco de dados TCG: {e}")
             raise
+
+    async def trade_cards(self, player1_id: int, card1_uuid: str, player2_id: int, card2_uuid: str):
+        """
+        Orquestra a troca de cartas entre dois jogadores usando um contexto
+        transacional explícito. Garante a consistência e previne duplicação de itens.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            # Inicia a transação com bloqueio lógico IMMEDIATE
+            await db.execute("BEGIN IMMEDIATE;")
+            
+            try:
+                # Verificação paralela de posse para não confiar em cache
+                res1, res2 = await asyncio.gather(
+                    db.execute_fetchall("SELECT dono_id FROM card_instances WHERE uuid = ?", (card1_uuid,)),
+                    db.execute_fetchall("SELECT dono_id FROM card_instances WHERE uuid = ?", (card2_uuid,))
+                )
+
+                # Valida Jogador 1 (res1 é uma lista de tuplas: [(dono_id,)])
+                if not res1 or res1[0][0] != player1_id:
+                    raise ValueError(f"Jogador {player1_id} não é o dono atual da carta {card1_uuid}.")
+                
+                # Valida Jogador 2
+                if not res2 or res2[0][0] != player2_id:
+                    raise ValueError(f"Jogador {player2_id} não é o dono atual da carta {card2_uuid}.")
+
+                # Despacha as instruções UPDATE trocando os IDs dos donos
+                await db.execute(
+                    "UPDATE card_instances SET dono_id = ? WHERE uuid = ?", (player2_id, card1_uuid)
+                )
+                await db.execute(
+                    "UPDATE card_instances SET dono_id = ? WHERE uuid = ?", (player1_id, card2_uuid)
+                )
+
+                # O COMMIT só é executado se sucesso absoluto no fim do escopo
+                await db.commit()
+                logger.info(f"Trade concluído: {card1_uuid} (P1:{player1_id}) <-> {card2_uuid} (P2:{player2_id})")
+
+            except Exception as e:
+                # Em caso de qualquer anomalia ou validação falha, garante o ROLLBACK automático
+                await db.rollback()
+                logger.error(f"Falha no trade, transação revertida (ROLLBACK). Erro: {e}")
+                raise
