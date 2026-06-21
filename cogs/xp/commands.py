@@ -14,10 +14,10 @@ from modules.xp.rendering.xp_card_renderer import XpCardRenderer
 from modules.xp.db.xp_models import XpDifficulty
 from modules.xp.db.xp_repository import XpRepository
 from modules.xp.services.xp_service import XpService
-from modules.xp.rendering.xp_views import (    FullLeaderboardPaginator,
+from modules.xp.rendering.xp_views import (
+    FullLeaderboardPaginator,
     LeaderboardView,
     RankCardView,
-    _resolve_entries,
     build_leaderboard_embed,
 )
 from core.logger import log_exception
