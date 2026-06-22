@@ -351,34 +351,58 @@ class TCGCommands(app_commands.Group):
         if not player:
             from modules.tcg.db.tcg_models import Player
             from datetime import datetime, timezone
-            # Criação de um jogador base caso não exista
             player = Player(id_usuario=interaction.user.id, saldo=1000, xp_global=100, total_mensagens=50, data_entrada=datetime.now(timezone.utc))
             await card_service.repository.save_player(player)
             
-        templates = await card_service.repository.get_all_templates()
-        if not templates:
-            return await interaction.followup.send("A loja não possui cartas cadastradas no momento.")
-            
         import random
-        # Compra simples: Sorteia 3 cartas usando os templates
-        drawn_templates = random.choices(templates, k=3)
+        # Mecânica Self-Insert: Puxa membros do servidor para transformar em cartas
+        valid_members = [m for m in interaction.guild.members if not m.bot]
         
-        # Simulando atividade do Discord para a forja
+        if not valid_members:
+            # Fallback se não tiver membros cacheados
+            valid_members = [interaction.user]
+            
+        # Sorteia 3 membros do servidor
+        drawn_members = random.choices(valid_members, k=3)
+        
+        classes = [
+            ("Comum", "mask_comum.png", 1.0),
+            ("Raro", "mask_raro.png", 1.5),
+            ("Épico", "mask_epico.png", 2.0),
+            ("Lendário", "mask_lendario.png", 2.5)
+        ]
+        weights = [60, 25, 10, 5]
+        
+        minted_cards = []
+        drawn_templates = []
+        
+        # Simulando dados operacionais do autor
         is_mod = interaction.user.guild_permissions.manage_messages if hasattr(interaction.user, 'guild_permissions') else False
         reactions_received = random.randint(10, 50)
         is_voice_active = random.choice([True, False])
         
-        minted_cards = []
-        for t in drawn_templates:
-            c = await card_service.mint_card(player, t, interaction.user, reactions_received, is_voice_active, is_mod)
-            minted_cards.append(c)
+        for member in drawn_members:
+            raridade, mascara, mult = random.choices(classes, weights=weights, k=1)[0]
+            
+            # Gera ou recupera o template desse membro (Self-insert)
+            template = await card_service.repository.get_or_create_member_template(
+                member_name=member.display_name,
+                raridade=raridade,
+                mascara=mascara,
+                multiplicador=mult
+            )
+            drawn_templates.append(template)
+            
+            # Minta a carta para o jogador (calcula atributos do autor + multi da carta sorteada)
+            c = await card_service.mint_card(player, template, interaction.user, reactions_received, is_voice_active, is_mod)
+            minted_cards.append((c, template, member.display_avatar.url))
             
         # Renderiza individualmente cada carta
         rendered_buffers = []
-        for c, t in zip(minted_cards, drawn_templates):
+        for c, t, avatar_url in minted_cards:
             try:
                 buf = await renderer.render_card(
-                    avatar_url=interaction.user.display_avatar.url,
+                    avatar_url=avatar_url,
                     template_name=t.nome_moldura,
                     rarity=t.raridade,
                     mask_name=t.mascara,
@@ -391,7 +415,6 @@ class TCGCommands(app_commands.Group):
             except Exception as e:
                 import logging
                 logging.getLogger(__name__).warning(f"Fallback visual acionado para carta {c.uuid}: {e}")
-                # Ignora a carta se falhar visualmente para não parar o booster todo
                 pass
                 
         if not rendered_buffers:
@@ -402,7 +425,7 @@ class TCGCommands(app_commands.Group):
             pack_image = await pack_service.render_booster_pack(rendered_buffers)
             file = discord.File(pack_image, filename="booster_pack.png")
             await interaction.followup.send(
-                f"🎉 {interaction.user.mention} rasgou um Booster Pack e encontrou **{len(rendered_buffers)}** cartas para sua coleção!",
+                f"🎉 {interaction.user.mention} rasgou um Booster Pack e invocou **{len(rendered_buffers)}** almas do servidor!",
                 file=file
             )
             pack_image.close()

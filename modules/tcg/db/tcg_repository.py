@@ -178,6 +178,27 @@ class TCGRepository:
             rows = await cursor.fetchall()
             return [CardTemplate(**dict(r)) for r in rows]
 
+    async def get_or_create_member_template(self, member_name: str, raridade: str, mascara: str, multiplicador: float):
+        from modules.tcg.db.tcg_models import CardTemplate
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            # Tenta buscar
+            cursor = await db.execute("SELECT * FROM card_templates WHERE nome_moldura = ?", (member_name,))
+            row = await cursor.fetchone()
+            if row:
+                return CardTemplate(**dict(row))
+            
+            # Se não existir, insere e retorna
+            await db.execute(
+                "INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador) VALUES (?, ?, ?, ?)",
+                (member_name, raridade, mascara, multiplicador)
+            )
+            await db.commit()
+            
+            cursor = await db.execute("SELECT * FROM card_templates WHERE nome_moldura = ?", (member_name,))
+            row = await cursor.fetchone()
+            return CardTemplate(**dict(row))
+
     async def ensure_default_templates(self):
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute("SELECT COUNT(*) FROM card_templates")
