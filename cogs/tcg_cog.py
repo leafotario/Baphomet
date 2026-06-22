@@ -61,11 +61,20 @@ class SecureView(discord.ui.View):
         
         if not interaction.response.is_done():
             await interaction.response.send_message(
-                "Ocorreu uma falha interna na renderização do componente. Nossa equipe de SRE foi notificada.", 
+                "❌ Ocorreu uma anomalia crítica no servidor. Os administradores foram notificados.", 
                 ephemeral=True
             )
         else:
-            await interaction.followup.send("Uma falha de sistema impediu a conclusão da ação.", ephemeral=True)
+            await interaction.followup.send("❌ Ocorreu uma anomalia crítica no servidor. Os administradores foram notificados.", ephemeral=True)
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        try:
+            if hasattr(self, "message") and self.message:
+                await self.message.edit(view=self)
+        except discord.HTTPException:
+            pass
 
 class SecureModal(discord.ui.Modal):
     """
@@ -139,18 +148,24 @@ class InventoryPaginationView(SecureView):
         else:
             embed.description = "Servidor TCG em manutenção."
             
-        await interaction.response.edit_message(embed=embed, view=self)
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.edit_message(embed=embed, view=self)
+            else:
+                await interaction.edit_original_response(embed=embed, view=self)
+        except Exception:
+            await interaction.edit_original_response(embed=embed, view=self)
 
     @discord.ui.button(label="⬅️ Anterior", style=discord.ButtonStyle.secondary, custom_id="inv_prev")
     async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
         if self.current_page > 0:
             self.current_page -= 1
             await self._update_embed(interaction)
-        else:
-            await interaction.response.defer()
 
     @discord.ui.button(label="Próximo ➡️", style=discord.ButtonStyle.primary, custom_id="inv_next")
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
         self.current_page += 1
         await self._update_embed(interaction)
 
@@ -166,12 +181,13 @@ class DeckSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         selected_uuids = self.values
         if self.service:
             # Envia a carga pro serviço tratar validações hard de sqlite/decks
             await self.service.set_main_deck(interaction.user.id, selected_uuids)
             
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"✅ Configuração salva. Você destacou {len(selected_uuids)} cartas para o front de batalha!", 
             ephemeral=True
         )
@@ -261,16 +277,18 @@ class TCGCommands(app_commands.Group):
 
     @app_commands.command(name="perfil", description="Exibe os atributos gerados, experiência TCG e saldo do jogador.")
     async def perfil(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         service = getattr(self.bot, "tcg_service", None)
         if not service:
-            return await interaction.response.send_message("Servidor indisponível.", ephemeral=True)
+            return await interaction.followup.send("Servidor indisponível.", ephemeral=True)
             
         # Extração de contexto e delegação pura (Clean Architecture)
         profile_data = await service.get_profile(interaction.user.id)
-        await interaction.response.send_message(f"Perfil sincronizado: {profile_data}")
+        await interaction.followup.send(f"Perfil sincronizado: {profile_data}")
 
     @app_commands.command(name="inventario", description="Abre o painel interativo de paginação assíncrona da coleção de cartas.")
     async def inventario(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         service = getattr(self.bot, "tcg_service", None)
         view = InventoryPaginationView(author_id=interaction.user.id, service=service)
         
@@ -291,17 +309,18 @@ class TCGCommands(app_commands.Group):
                     inline=False
                 )
                 
-        await interaction.response.send_message(embed=embed, view=view)
+        view.message = await interaction.followup.send(embed=embed, view=view)
 
     @app_commands.command(name="deck", description="Abre a interface de gerenciamento das cartas ativas via dropdowns.")
     async def deck(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         service = getattr(self.bot, "tcg_service", None)
         available_cards = []
         if service:
             available_cards = await service.get_available_deck_cards(interaction.user.id)
             
         view = DeckBuilderView(author_id=interaction.user.id, available_cards=available_cards, service=service)
-        await interaction.response.send_message("Escolha sabiamente as cartas para forjar seu Deck Primário:", view=view, ephemeral=True)
+        view.message = await interaction.followup.send("Escolha sabiamente as cartas para forjar seu Deck Primário:", view=view, ephemeral=True)
 
     @app_commands.command(name="booster", description="Executa a compra e a renderização de um pacote de expansão.")
     async def booster(self, interaction: discord.Interaction):
@@ -316,18 +335,20 @@ class TCGCommands(app_commands.Group):
     @app_commands.command(name="trocar", description="Inicia o fluxo transacional atômico de troca de ativos.")
     @app_commands.describe(usuario="Membro com quem deseja trocar")
     async def trocar(self, interaction: discord.Interaction, usuario: discord.Member):
+        await interaction.response.defer(ephemeral=True)
         if usuario.id == interaction.user.id:
-            return await interaction.response.send_message("Mercado negado: Transação consigo mesmo evadida.", ephemeral=True)
+            return await interaction.followup.send("Mercado negado: Transação consigo mesmo evadida.", ephemeral=True)
             
-        await interaction.response.send_message(f"Disparando negociação P2P segura com {usuario.display_name}...", ephemeral=True)
+        await interaction.followup.send(f"Disparando negociação P2P segura com {usuario.display_name}...", ephemeral=True)
 
     @app_commands.command(name="duelo", description="Dispara o desafio de combate assíncrono controlado pelo motor Redis.")
     @app_commands.describe(usuario="Membro que será desafiado")
     async def duelo(self, interaction: discord.Interaction, usuario: discord.Member):
+        await interaction.response.defer()
         if usuario.id == interaction.user.id:
-            return await interaction.response.send_message("Anomalia detectada: Duelo solitário vetado.", ephemeral=True)
+            return await interaction.followup.send("Anomalia detectada: Duelo solitário vetado.", ephemeral=True)
             
-        await interaction.response.send_message(f"{interaction.user.mention} invocou {usuario.mention} para a Arena! Aquecendo motor Redis...")
+        await interaction.followup.send(f"{interaction.user.mention} invocou {usuario.mention} para a Arena! Aquecendo motor Redis...")
 
 
 # ==========================================
@@ -343,20 +364,23 @@ class TCGAdminCommands(app_commands.Group):
     @app_commands.command(name="dar_carta", description="Força a geração (mint) de uma carta específica para fins de eventos.")
     @app_commands.describe(usuario="Membro receptor", template_id="ID de catálogo do template")
     async def dar_carta(self, interaction: discord.Interaction, usuario: discord.Member, template_id: int):
+        await interaction.response.defer(ephemeral=True)
         service = getattr(self.bot, "tcg_service", None)
-        await interaction.response.send_message(f"⚙️ Overwrite: Template {template_id} injetado no inventário de {usuario.display_name}.", ephemeral=True)
+        await interaction.followup.send(f"⚙️ Overwrite: Template {template_id} injetado no inventário de {usuario.display_name}.", ephemeral=True)
 
     @app_commands.command(name="reset", description="Purga os dados de inventário ou buffs efêmeros de uma identidade.")
     @app_commands.describe(usuario="Membro que sofrerá wipe")
     async def reset(self, interaction: discord.Interaction, usuario: discord.Member):
+        await interaction.response.defer(ephemeral=True)
         service = getattr(self.bot, "tcg_service", None)
-        await interaction.response.send_message(f"⚙️ Purge Concluído: {usuario.display_name} retornou à estaca zero.", ephemeral=True)
+        await interaction.followup.send(f"⚙️ Wipe: Inventário de {usuario.display_name} pulverizado.", ephemeral=True)
 
     @app_commands.command(name="economia", description="Ajusta as variáveis econômicas globais persistidas no SQLite.")
     @app_commands.describe(booster_price="Preço base do booster", taxa_troca="Taxa de comissão em trocas (%)")
     async def economia(self, interaction: discord.Interaction, booster_price: int, taxa_troca: float):
+        await interaction.response.defer(ephemeral=True)
         service = getattr(self.bot, "tcg_service", None)
-        await interaction.response.send_message(f"⚙️ Mercado Inflacionado: Booster ({booster_price}), Taxa Trade ({taxa_troca}%).", ephemeral=True)
+        await interaction.followup.send(f"⚙️ Mercado Inflacionado: Booster ({booster_price}), Taxa Trade ({taxa_troca}%).", ephemeral=True)
 
 
 # ==========================================
