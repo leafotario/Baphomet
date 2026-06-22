@@ -241,38 +241,37 @@ class TCGCommands(app_commands.Group):
                 pass
 
         embed = discord.Embed(
-            title="💀 BAPHOMET TCG // MANUAL DE INICIAÇÃO",
-            description="Bem-vindo ao submundo do Trading Card Game. Prepare-se para colecionar, forjar e dominar o circuito.",
+            title="Trading Card Game",
+            description="Bem-vindo ao guia definitivo de Trading Card Game. Prepare-se para colecionar, forjar e dominar a arena.",
             color=discord.Color.from_str("#1a1a1a")
         )
 
         embed.add_field(
-            name="1. FORJA PREDITIVA (SUAS CARTAS)",
+            name="1. FORJA HISTÓRICA (SUAS CARTAS)",
             value=(
-                "Nossas cartas não dependem de puro RNG. Seus atributos combatentes refletem o seu império no servidor:\n"
-                "**ATK:** Forjado a partir do seu volume de mensagens e XP.\n"
-                "**DEF:** Extraído diretamente dos seus dias de permanência e lealdade ao servidor.\n"
-                "**SPD:** Elevado pela sua ressonância e reações recebidas.\n"
-                "Cargos de moderador e engajamento massivo em voz liberam **habilidades passivas únicas**."
+                "Aqui não há RNG puro. Os atributos das suas cartas refletem diretamente o seu legado no servidor:\n"
+                "* **ATK:** Forjado pelo seu volume de mensagens e XP acumulado.\n"
+                "* **DEF:** Extraído do seu tempo de casa e lealdade ao servidor.\n"
+                "* **SPD:** Elevado pela sua relevância e reações recebidas.\n"
+                "*Cargos de moderação e engajamento em voz liberam habilidades passivas exclusivas.*"
             ),
             inline=False
         )
 
         embed.add_field(
-            name="2. COLECIONAR & EXTRAIR",
+            name="2. COLECIONAR & AMPLIAR",
             value=(
-                f"Use `/tcg booster` para investir {booster_price} e rasgar pacotes, invocando "
-                "novas instâncias diretamente para a sua coleção permanente.\n"
-                "Use `/tcg inventario` para navegar pelas suas páginas de ativos."
+                "* `/tcg booster` – Invista suas moedas para abrir pacotes e invocar novas cartas para sua coleção permanente.\n"
+                "* `/tcg inventario` – Acesse e navegue pelas páginas do seu acervo completo de ativos."
             ),
             inline=False
         )
 
         embed.add_field(
-            name="3. CONFIGURAR O DECK",
+            name="3. MONTAGEM DE DECK",
             value=(
-                "Para lutar na arena, preparação é lei. É obrigatório usar `/tcg deck` para "
-                "selecionar cirurgicamente entre **3 a 5 cartas** da sua coleção."
+                "Estratégia antes do combate. É obrigatório usar o comando `/tcg deck` para "
+                "selecionar cirurgicamente entre 3 a 5 cartas da sua coleção antes de desafiar alguém."
             ),
             inline=False
         )
@@ -280,9 +279,9 @@ class TCGCommands(app_commands.Group):
         embed.add_field(
             name="4. O CIRCUITO (AÇÃO)",
             value=(
-                "Com o deck no gatilho, as portas se abrem para a interação direta:\n"
-                "🗡️ `/tcg duelo [@usuario]` - Desafie oponentes para o motor de turnos em tempo real rodando em memória.\n"
-                "🤝 `/tcg trocar [@usuario]` - Abra a interface segura e atômica de intercâmbio de cartas."
+                "Com o deck pronto, parta para a interação direta no chat:\n"
+                "* `/tcg duelo [@usuario]` – Desafie oponentes para combates em tempo real e por turnos direto na memória.\n"
+                "* `/tcg trocar [@usuario]` – Abra uma interface segura e instantânea para o intercâmbio de cartas."
             ),
             inline=False
         )
