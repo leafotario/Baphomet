@@ -190,3 +190,54 @@ class TCGRepository:
                 """)
                 await db.commit()
 
+    async def get_profile_data(self, player_id: int):
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM players WHERE id_usuario = ?", (player_id,))
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            
+            cursor2 = await db.execute("SELECT COUNT(*) as total_cartas FROM card_instances WHERE dono_id = ?", (player_id,))
+            cartas = (await cursor2.fetchone())['total_cartas']
+            
+            data = dict(row)
+            data['total_cartas'] = cartas
+            return data
+
+    async def get_inventory_page(self, player_id: int, limit: int, offset: int):
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("""
+                SELECT i.uuid, i.atk, i.defesa, i.spd, i.passiva, t.nome_moldura as nome, t.raridade
+                FROM card_instances i
+                JOIN card_templates t ON i.modelo_id = t.id_serial
+                WHERE i.dono_id = ?
+                LIMIT ? OFFSET ?
+            """, (player_id, limit, offset))
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_available_deck_cards(self, player_id: int):
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("""
+                SELECT i.uuid, t.nome_moldura as nome, t.raridade
+                FROM card_instances i
+                JOIN card_templates t ON i.modelo_id = t.id_serial
+                WHERE i.dono_id = ?
+            """, (player_id,))
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def set_main_deck(self, player_id: int, uuids: list):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("BEGIN IMMEDIATE;")
+            try:
+                await db.execute("DELETE FROM decks WHERE player_id = ?", (player_id,))
+                for uuid in uuids:
+                    await db.execute("INSERT INTO decks (player_id, carta_uuid) VALUES (?, ?)", (player_id, uuid))
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise

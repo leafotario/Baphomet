@@ -67,3 +67,23 @@ class CardService:
         await self.repository.save_card_instance(nova_carta)
 
         return nova_carta
+
+    async def get_profile(self, player_id: int):
+        data = await self.repository.get_profile_data(player_id)
+        if not data:
+            return "Nenhum perfil TCG encontrado. Você precisa interagir primeiro."
+        
+        # Formata o output bruto do dicionário para visualização limpa
+        saldo = data.get('saldo', 0)
+        xp = data.get('xp_global', 0)
+        cartas = data.get('total_cartas', 0)
+        return f"XP: {xp} | Moedas: {saldo} | Cartas: {cartas}"
+
+    async def get_inventory_page(self, player_id: int, limit: int, offset: int):
+        return await self.repository.get_inventory_page(player_id, limit, offset)
+
+    async def get_available_deck_cards(self, player_id: int):
+        return await self.repository.get_available_deck_cards(player_id)
+
+    async def set_main_deck(self, player_id: int, uuids: list):
+        await self.repository.set_main_deck(player_id, uuids)
