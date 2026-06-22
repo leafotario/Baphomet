@@ -223,41 +223,6 @@ class BoosterGraphicEngine:
             outline=(255, 255, 255, 50), width=2 * s,
         )
 
-    def _draw_header(self, canvas: Image.Image, draw: ImageDraw.ImageDraw, s: int) -> None:
-        """Aba branca descendo do topo com 'BAPHOMET' + 'TCG'."""
-        w = canvas.size[0]
-
-        tab_w = 200 * s
-        tab_h = 65 * s
-        tab_x = (w - tab_w) // 2
-        tab_y = -15 * s  # Começa acima da borda para "descer"
-        tab_box = (tab_x, tab_y, tab_x + tab_w, tab_y + tab_h)
-        tab_radius = 18 * s
-
-        # Drop shadow da aba
-        self._drop_shadow(
-            canvas, tab_box, tab_radius,
-            offset=(0, 6 * s), blur=10 * s,
-            color=(0, 0, 0, 140),
-        )
-
-        # Aba branca sólida
-        draw.rounded_rectangle(tab_box, radius=tab_radius, fill=COLOR_WHITE)
-
-        # Texto "BAPHOMET" (linha principal) — centralizado
-        cx = tab_x + tab_w // 2
-        main_y = tab_y + tab_h // 2 - 4 * s
-        draw.text(
-            (cx, main_y), "BAPHOMET",
-            font=self.font_header_main, fill=COLOR_HEADER_TEXT, anchor="mm",
-        )
-
-        # Texto "TCG" (sublinha) — menor, logo abaixo
-        sub_y = main_y + 16 * s
-        draw.text(
-            (cx, sub_y), "TCG",
-            font=self.font_header_sub, fill=COLOR_HEADER_SUB, anchor="mm",
-        )
 
     def _draw_avatar(
         self,
@@ -423,19 +388,6 @@ class BoosterGraphicEngine:
         bbox = self.font_name.getbbox(text)
         return ny + (bbox[3] - bbox[1]) // 2
 
-    def _draw_serial_right(
-        self,
-        draw: ImageDraw.ImageDraw,
-        serial: str,
-        s: int,
-        y: int,
-        right_x: int,
-    ) -> None:
-        """Serial decorativo alinhado à direita."""
-        draw.text(
-            (right_x, y), serial,
-            font=self.font_serial, fill=COLOR_SERIAL, anchor="rm",
-        )
 
     def _draw_attributes_panel(
         self,
@@ -555,25 +507,7 @@ class BoosterGraphicEngine:
                 font=self.font_stat, fill=COLOR_STAT_VALUE, anchor="mm",
             )
 
-        # --- Seriais decorativos ---
-        serial_y_top = panel_y - 4 * s
-        serial_y_bottom = panel_y + panel_h + 4 * s
 
-        # Serial no canto superior direito do painel
-        draw.text(
-            (panel_x + panel_w - 8 * s, serial_y_top), serial,
-            font=self.font_serial, fill=COLOR_SERIAL, anchor="rb",
-        )
-
-        # Seriais nos cantos inferiores do painel
-        draw.text(
-            (panel_x + 8 * s, serial_y_bottom), serial,
-            font=self.font_serial, fill=COLOR_SERIAL, anchor="lt",
-        )
-        draw.text(
-            (panel_x + panel_w - 8 * s, serial_y_bottom), serial,
-            font=self.font_serial, fill=COLOR_SERIAL, anchor="rt",
-        )
 
     # ------------------------------------------------------------------
     # Ponto de Entrada Principal
@@ -623,8 +557,6 @@ class BoosterGraphicEngine:
         # 1. Base da carta (fundo roxo com gradiente e inner glow)
         self._draw_card_base(canvas, draw, s)
 
-        # 2. Header (aba branca "BAPHOMET TCG")
-        self._draw_header(canvas, draw, s)
 
         # 3. Avatar do membro
         self._draw_avatar(canvas, draw, pfp_bytes, s)
@@ -637,12 +569,6 @@ class BoosterGraphicEngine:
         name_y = rarity_bottom + 38 * s
         name_bottom = self._draw_member_name(canvas, draw, user_name, s, name_y)
 
-        # 6. Serial decorativo à direita do nome
-        serial_name_y = name_y - 5 * s
-        self._draw_serial_right(
-            draw, serial, s,
-            y=serial_name_y, right_x=width - 40 * s,
-        )
 
         # 7. Painel de atributos (ATK/DEF/SPD)
         self._draw_attributes_panel(canvas, draw, atk, def_stat, spd, serial, s)
