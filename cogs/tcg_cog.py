@@ -72,7 +72,15 @@ class SecureView(discord.ui.View):
             child.disabled = True
         try:
             if hasattr(self, "message") and self.message:
-                await self.message.edit(view=self)
+                if self.message.embeds:
+                    embed = self.message.embeds[0]
+                    embed.color = discord.Color.dark_grey()
+                    embed.set_footer(text="⏳ Sessão Expirada. Use o comando novamente para interagir.")
+                    await self.message.edit(embed=embed, view=self)
+                else:
+                    content = self.message.content or ""
+                    content += "\n\n**⏳ Sessão Expirada.**"
+                    await self.message.edit(content=content, view=self)
         except discord.HTTPException:
             pass
 
