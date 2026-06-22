@@ -579,9 +579,9 @@ async def setup(bot):
     if not hasattr(bot, "tcg_service"):
         bot.tcg_service = CardService(bot.tcg_repository)
         
-    if not hasattr(bot, "tcg_renderer"):
-        bot.tcg_renderer = BoosterGraphicEngine()
-        
+    # SRE Fix: Sempre forçar a recriação do renderizador ao recarregar a cog para aplicar hotfixes visuais
+    bot.tcg_renderer = BoosterGraphicEngine(scale=3)
+    
     if not hasattr(bot, "tcg_pack_service"):
         bot.tcg_pack_service = PackService()
 
