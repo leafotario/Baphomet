@@ -181,10 +181,16 @@ class InventoryPaginationView(SecureView):
 class DeckSelect(discord.ui.Select):
     def __init__(self, options: List[discord.SelectOption], service):
         self.service = service
+        
+        # Discord API constraints: max_values cannot exceed len(options)
+        available = len(options)
+        max_v = min(5, available)
+        min_v = min(3, max_v)
+        
         super().__init__(
             placeholder="Selecione seu esquadrão tático...",
-            min_values=3,  
-            max_values=5,  
+            min_values=min_v,  
+            max_values=max_v,  
             options=options
         )
 
