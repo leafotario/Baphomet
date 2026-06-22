@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 """Sistema de vínculos do Baphomet.
 
@@ -411,7 +411,22 @@ class VinculoRepository:
         if self._conn is not None:
             return
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = await aiosqlite.connect(str(self.db_path))
+        
+        bot = getattr(self, "bot", None)
+        if bot is not None:
+            if not hasattr(bot, "_db_init_lock"):
+                bot._db_init_lock = asyncio.Lock()
+            async with bot._db_init_lock:
+                await self._do_connect()
+        else:
+            await self._do_connect()
+
+    async def _do_connect(self) -> None:
+        if self.db_path.exists() and self.db_path.stat().st_size == 0:
+            LOGGER.critical("ALERTA DE SOBRESCRITA VAZIA: O arquivo %s possui 0 bytes. Interrompendo boot para evitar data loss!", self.db_path)
+            raise RuntimeError(f"Database file {self.db_path} is empty (0 bytes)! Corrupção evitada.")
+            
+        self._conn = await aiosqlite.connect(str(self.db_path), timeout=20.0)
         self._conn.row_factory = aiosqlite.Row
         await self._apply_pragmas()
         await self.run_migrations()
