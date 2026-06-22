@@ -136,3 +136,42 @@ class LeaderboardView(discord.ui.View):
         paginator = FullLeaderboardPaginator(self.service, interaction.guild, interaction.user.id)
         embed = await paginator._embed()
         await interaction.response.send_message(embed=embed, view=paginator, ephemeral=True)
+
+
+class LeaderboardVisualView(discord.ui.View):
+    def __init__(self, service: XpService, *, timeout: float = 180) -> None:
+        super().__init__(timeout=timeout)
+        self.service = service
+        self.message: discord.Message | None = None
+
+    async def on_timeout(self) -> None:
+        for child in self.children:
+            child.disabled = True
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item[discord.ui.View]) -> None:
+        log_exception(error)
+        import logging
+        logging.getLogger("baphomet.xp").error("Erro em LeaderboardVisualView no clique do botão: %s", error, exc_info=True)
+        if not interaction.response.is_done():
+            await interaction.response.send_message("❌ Houve um colapso no multiverso tentando buscar os dados.", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ Houve um colapso no multiverso tentando buscar os dados.", ephemeral=True)
+
+    @discord.ui.button(label="Lista completa", style=discord.ButtonStyle.primary, emoji="📜")
+    async def full_list_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("🕯️ Este comando só pode ser usado dentro de um servidor.", ephemeral=True)
+            return
+            
+        paginator = FullLeaderboardPaginator(
+            service=self.service,
+            guild=interaction.guild,
+            author_id=interaction.user.id
+        )
+        embed = await paginator._embed()
+        await interaction.response.send_message(embed=embed, view=paginator, ephemeral=True)

@@ -19,6 +19,7 @@ from modules.xp.rendering.xp_views import (
     FullLeaderboardPaginator,
     LeaderboardView,
     RankCardView,
+    LeaderboardVisualView,
     build_leaderboard_embed,
 )
 from core.logger import log_exception
@@ -167,19 +168,31 @@ class XpPublicCommands(commands.Cog):
             return
         await interaction.response.defer(thinking=True)
 
-        # Busca o total de usuários no BD para calcular páginas
-        total = await self.service.repository.count_ranked_profiles(interaction.guild.id)
-
-        # Monta o paginador em texto (arquitetura ajustada para não injetar 'cards')
-        view = FullLeaderboardPaginator(
-            service=self.service,
-            guild=interaction.guild,
-            author_id=interaction.user.id
-        )
-
         try:
-            embed = await view._embed()
-            await interaction.edit_original_response(embed=embed, view=view)
+            entries = await self.service.get_leaderboard_entries(interaction.guild, 5)
+            resolved = []
+            for entry in entries:
+                member = interaction.guild.get_member(entry.user_id)
+                if member is None:
+                    try:
+                        member = await interaction.guild.fetch_member(entry.user_id)
+                    except discord.HTTPException:
+                        member = None
+                
+                badge_image_bytes = None
+                if isinstance(member, discord.Member):
+                    _badge, badge_image_bytes = await self.badges.resolve_member_badge_image(member)
+                
+                resolved.append((entry, member, badge_image_bytes))
+                
+            image = await self.cards.render_leaderboard_card(guild=interaction.guild, entries=resolved)
+            
+            view = LeaderboardVisualView(service=self.service)
+            
+            await interaction.edit_original_response(attachments=[discord.File(image, filename="leaderboard.png")], view=view)
+            view.message = await interaction.original_response()
+            image.close()
+            
         except Exception as exc:
             log_exception(exc)
             # Fallback para embed de texto caso o Pillow falhe
@@ -189,8 +202,6 @@ class XpPublicCommands(commands.Cog):
             await interaction.edit_original_response(embed=embed, view=fallback)
             fallback.message = await interaction.original_response()
             return
-
-        view.message = await interaction.original_response()
 
     async def cog_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
         original = getattr(error, "original", error)
