@@ -31,25 +31,27 @@ class BoosterGraphicEngine:
             self.font_stat = ImageFont.load_default()
             self.font_serial = ImageFont.load_default()
 
-    def _draw_drop_shadow(self, bg_image, shape_mask, offset=(0, 10), blur=10, color=(0, 0, 0, 150)):
-        """Cria uma sombra projetada (drop shadow) real usando GaussianBlur."""
+    def _draw_drop_shadow(self, bg_image, box, radius, offset=(0, 10), blur=10, color=(0, 0, 0, 150)):
+        """Cria uma sombra projetada (drop shadow) real desenhando a forma e aplicando blur."""
         shadow = Image.new("RGBA", bg_image.size, (0, 0, 0, 0))
-        # Cole a cor da sombra usando a forma como máscara na posição deslocada
-        shadow.paste(color, offset, shape_mask)
+        shadow_draw = ImageDraw.Draw(shadow)
+        shadow_box = [box[0]+offset[0], box[1]+offset[1], box[2]+offset[0], box[3]+offset[1]]
+        shadow_draw.rounded_rectangle(shadow_box, radius=radius, fill=color)
         shadow = shadow.filter(ImageFilter.GaussianBlur(radius=blur))
-        # Composição em cima do bg_image
         bg_image.alpha_composite(shadow)
 
     def _draw_recessed_box(self, bg_image, box, radius, fill_color, dark_color=(0,0,0,150), bright_color=(255,255,255,200), blur=5, offset=5):
         """Simula um buraco (baixo-relevo) usando inner shadows reais de duas direções."""
         w, h = bg_image.size
+        draw = ImageDraw.Draw(bg_image)
+        
+        # Fundo da caixa desenhado diretamente (evita bug do paste de cor)
+        if fill_color:
+            draw.rounded_rectangle(box, radius=radius, fill=fill_color)
+            
         # Máscara exata da caixa
         box_mask = Image.new("L", (w, h), 0)
         ImageDraw.Draw(box_mask).rounded_rectangle(box, radius=radius, fill=255)
-        
-        # Fundo da caixa
-        if fill_color:
-            bg_image.paste(fill_color, (0,0), box_mask)
         
         # Sombra interna (Top-Left)
         shadow_layer = Image.new("RGBA", (w, h), (0,0,0,0))
@@ -78,11 +80,8 @@ class BoosterGraphicEngine:
         bg_color = (68, 33, 133, 255)
         card_radius = 40 * s
         
-        card_mask = Image.new("L", (width, height), 0)
-        ImageDraw.Draw(card_mask).rounded_rectangle((0, 0, width, height), radius=card_radius, fill=255)
-        
-        # Preenche a base
-        canvas.paste(bg_color, (0,0), card_mask)
+        # Preenche a base desenhando diretamente
+        draw.rounded_rectangle((0, 0, width, height), radius=card_radius, fill=bg_color)
         
         # Pseudo Inner Glow na carta toda
         self._draw_recessed_box(canvas, (0, 0, width, height), card_radius, fill_color=None, dark_color=(0,0,0,80), bright_color=(255,255,255,60), blur=15*s, offset=10*s)
@@ -91,19 +90,13 @@ class BoosterGraphicEngine:
         header_w, header_h = 240 * s, 60 * s
         header_x = (width - header_w) // 2
         header_y = 0
-        
-        header_mask = Image.new("L", (width, height), 0)
-        h_draw = ImageDraw.Draw(header_mask)
-        # Aba descendo do topo (retângulo mais alto pra esconder as quinas superiores)
-        h_draw.rounded_rectangle((header_x, header_y - 20*s, header_x + header_w, header_y + header_h), radius=20*s, fill=255)
+        header_box = [header_x, header_y - 20*s, header_x + header_w, header_y + header_h]
         
         # Drop shadow da aba
-        self._draw_drop_shadow(canvas, header_mask, offset=(0, 8*s), blur=10*s, color=(0, 0, 0, 160))
+        self._draw_drop_shadow(canvas, header_box, radius=20*s, offset=(0, 8*s), blur=10*s, color=(0, 0, 0, 160))
         
-        # Desenha a aba
-        header_shape = Image.new("RGBA", (width, height), (0,0,0,0))
-        ImageDraw.Draw(header_shape).rounded_rectangle((header_x, header_y - 20*s, header_x + header_w, header_y + header_h), radius=20*s, fill=(255,255,255,255))
-        canvas.alpha_composite(header_shape)
+        # Desenha a aba diretamente
+        draw.rounded_rectangle(header_box, radius=20*s, fill=(255,255,255,255))
         
         # Texto Header (Centralização Perfeita com anchor="mm")
         head_cx = header_x + header_w // 2
@@ -121,14 +114,13 @@ class BoosterGraphicEngine:
             with Image.open(io.BytesIO(pfp_bytes)) as pfp:
                 pfp_img = pfp.convert("RGBA").resize((pfp_size, pfp_size), Image.Resampling.LANCZOS)
                 
-                # Criar máscara exata do Avatar
+                # Criar máscara exata do Avatar no tamanho da PFP
                 pfp_mask = Image.new("L", (pfp_size, pfp_size), 0)
                 ImageDraw.Draw(pfp_mask).rounded_rectangle((0, 0, pfp_size, pfp_size), radius=pfp_radius, fill=255)
                 
-                # Colar usando alpha composite na máscara
-                pfp_canvas = Image.new("RGBA", (width, height), (0,0,0,0))
-                pfp_canvas.paste(pfp_img, (pfp_x, pfp_y), pfp_mask)
-                canvas.alpha_composite(pfp_canvas)
+                # Aplica a máscara no canal alpha
+                pfp_img.putalpha(pfp_mask)
+                canvas.alpha_composite(pfp_img, (pfp_x, pfp_y))
         except Exception as e:
             logger.error(f"Erro render avatar: {e}")
             draw.rounded_rectangle((pfp_x, pfp_y, pfp_x+pfp_size, pfp_y+pfp_size), radius=pfp_radius, fill=(30,30,30,255))
@@ -137,7 +129,6 @@ class BoosterGraphicEngine:
         avatar_box_mask = Image.new("L", (width, height), 0)
         ImageDraw.Draw(avatar_box_mask).rounded_rectangle((pfp_x, pfp_y, pfp_x+pfp_size, pfp_y+pfp_size), radius=pfp_radius, fill=255)
         
-        # Para evitar apagar a foto, fazemos a magia de sombreado manualmente na mascara
         avatar_shadow = Image.new("RGBA", (width, height), (0,0,0,0))
         ImageDraw.Draw(avatar_shadow).rounded_rectangle([pfp_x-6*s, pfp_y-6*s, pfp_x+pfp_size-6*s, pfp_y+pfp_size-6*s], radius=pfp_radius, outline=(0,0,0,180), width=8*s)
         avatar_shadow = avatar_shadow.filter(ImageFilter.GaussianBlur(8*s))
@@ -150,15 +141,13 @@ class BoosterGraphicEngine:
         rh = 30 * s
         rx = (width - rw) // 2
         ry = pfp_y + pfp_size + 40 * s
-        
-        badge_mask = Image.new("L", (width, height), 0)
-        ImageDraw.Draw(badge_mask).rounded_rectangle((rx, ry, rx+rw, ry+rh), radius=rh//2, fill=255)
+        badge_box = [rx, ry, rx+rw, ry+rh]
         
         # Real Drop Shadow da Badge
-        self._draw_drop_shadow(canvas, badge_mask, offset=(0, 6*s), blur=8*s, color=(0, 0, 0, 160))
+        self._draw_drop_shadow(canvas, badge_box, radius=rh//2, offset=(0, 6*s), blur=8*s, color=(0, 0, 0, 160))
         
         # Pílula Esqueumórfica (Relevo bolha)
-        self._draw_recessed_box(canvas, (rx, ry, rx+rw, ry+rh), rh//2, fill_color=(194, 34, 34, 255), dark_color=(0,0,0,100), bright_color=(255,255,255,140), blur=4*s, offset=3*s)
+        self._draw_recessed_box(canvas, badge_box, rh//2, fill_color=(194, 34, 34, 255), dark_color=(0,0,0,100), bright_color=(255,255,255,140), blur=4*s, offset=3*s)
         
         # Texto Raridade
         draw.text((rx + rw//2, ry + rh//2), rarity_text, font=self.font_rarity, fill=(255,255,255,255), anchor="mm")
@@ -181,18 +170,20 @@ class BoosterGraphicEngine:
         panel_x = 20 * s
         panel_y = height - panel_h - 20 * s
         panel_radius = 30 * s
-        
-        panel_mask = Image.new("L", (width, height), 0)
-        ImageDraw.Draw(panel_mask).rounded_rectangle((panel_x, panel_y, panel_x+panel_w, panel_y+panel_h), radius=panel_radius, fill=255)
+        panel_box = [panel_x, panel_y, panel_x+panel_w, panel_y+panel_h]
         
         # Real Drop Shadow do Painel sobre o fundo roxo
-        self._draw_drop_shadow(canvas, panel_mask, offset=(0, -8*s), blur=12*s, color=(0, 0, 0, 120))
+        self._draw_drop_shadow(canvas, panel_box, radius=panel_radius, offset=(0, -8*s), blur=12*s, color=(0, 0, 0, 120))
         
-        # Painel preenchido
-        canvas.paste((240, 240, 240, 255), (0,0), panel_mask)
+        # Painel preenchido diretamente
+        draw.rounded_rectangle(panel_box, radius=panel_radius, fill=(240, 240, 240, 255))
+        
         # Borda de luz leve no topo
+        panel_mask = Image.new("L", (width, height), 0)
+        ImageDraw.Draw(panel_mask).rounded_rectangle(panel_box, radius=panel_radius, fill=255)
+        
         panel_glow = Image.new("RGBA", (width, height), (0,0,0,0))
-        ImageDraw.Draw(panel_glow).rounded_rectangle((panel_x, panel_y, panel_x+panel_w, panel_y+panel_h), radius=panel_radius, outline=(255,255,255,255), width=2*s)
+        ImageDraw.Draw(panel_glow).rounded_rectangle(panel_box, radius=panel_radius, outline=(255,255,255,255), width=2*s)
         canvas.paste(panel_glow, (0,0), panel_mask)
 
         # --- 7. Caixas de Status Embutidas (Recessed Boxes Realistas) ---
@@ -214,10 +205,12 @@ class BoosterGraphicEngine:
             ab_h = 30 * s
             aba_final_mask = Image.new("L", (width, height), 0)
             ImageDraw.Draw(aba_final_mask).rounded_rectangle((bx, by, bx+box_w, by+box_h), radius=b_radius, fill=255)
-            # Erase bottom part to keep rounded corners only at the top
-            ImageDraw.Draw(aba_final_mask).rectangle((bx, by+ab_h, bx+box_w, by+box_h), fill=0)
+            ImageDraw.Draw(aba_final_mask).rectangle((bx, by+ab_h, bx+box_w, by+box_h), fill=0) # Corta parte de baixo
             
-            canvas.paste((210, 210, 210, 255), (0,0), aba_final_mask)
+            # Preenche a aba superior de cinza diretamente
+            aba_layer = Image.new("RGBA", (width, height), (0,0,0,0))
+            ImageDraw.Draw(aba_layer).rounded_rectangle((bx, by, bx+box_w, by+box_h), radius=b_radius, fill=(210, 210, 210, 255))
+            canvas.paste(aba_layer, (0,0), aba_final_mask)
             
             # Label
             draw.text((bx + box_w//2, by + ab_h//2), label, font=self.font_label, fill=(80,80,80,255), anchor="mm")
