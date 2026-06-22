@@ -127,42 +127,28 @@ class InventoryPaginationView(SecureView):
         self.items_per_page = 5
 
     async def _update_embed(self, interaction: discord.Interaction):
-        offset = self.current_page * self.items_per_page
-        
-        embed = discord.Embed(title="Inventário Baphomet TCG", color=discord.Color.dark_theme())
-        embed.set_footer(text=f"Página {self.current_page + 1}")
-
-        if self.service:
-            try:
-                # O Controlador exige os dados brutos da regra de negócios em vez de rodar SQL
-                cards = await self.service.get_inventory_page(self.author_id, limit=self.items_per_page, offset=offset)
-                
-                if not cards and self.current_page > 0:
-                    self.current_page -= 1
-                    return await interaction.response.defer()
-                
-                if not cards:
-                    embed.description = "Seu inventário está vazio."
-                else:
-                    for card in cards:
-                        embed.add_field(
-                            name=f"[{card.get('raridade', '?')}] {card.get('nome', '?')}",
-                            value=f"**UUID:** `{card.get('uuid', '00')[:8]}` | **ATK:** {card.get('atk', 0)} | **DEF:** {card.get('defesa', 0)} | **SPD:** {card.get('spd', 0)}",
-                            inline=False
-                        )
-            except Exception as e:
-                logger.error(f"Erro UI - Inventário: {e}")
-                embed.description = "Houve uma anomalia interna ao sincronizar suas cartas."
-        else:
-            embed.description = "Servidor TCG em manutenção."
+        # O novo renderer busca dados e lida com a lógica da página (offset) internamente
+        db_path = "data/baphomet_tcg.db"
+        if self.service and hasattr(self.service, "repository"):
+            db_path = self.service.repository.db_path
             
+        from modules.tcg.rendering.inventory_renderer import gerar_imagem_inventario
+        
         try:
+            buf = await gerar_imagem_inventario(db_path, str(self.author_id), self.current_page)
+            file = discord.File(fp=buf, filename="inventario.png")
+            
             if not interaction.response.is_done():
-                await interaction.response.edit_message(embed=embed, view=self)
+                await interaction.response.edit_message(embed=None, attachments=[file], view=self)
             else:
-                await interaction.edit_original_response(embed=embed, view=self)
-        except Exception:
-            await interaction.edit_original_response(embed=embed, view=self)
+                await interaction.edit_original_response(embed=None, attachments=[file], view=self)
+        except Exception as e:
+            logger.error(f"Erro UI - Inventário Visual: {e}")
+            embed = discord.Embed(description="Houve uma anomalia interna ao sincronizar suas cartas.", color=discord.Color.red())
+            if not interaction.response.is_done():
+                await interaction.response.edit_message(embed=embed, attachments=[], view=self)
+            else:
+                await interaction.edit_original_response(embed=embed, attachments=[], view=self)
 
     @discord.ui.button(label="⬅️ Anterior", style=discord.ButtonStyle.secondary, custom_id="inv_prev")
     async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -305,24 +291,19 @@ class TCGCommands(app_commands.Group):
         service = getattr(self.bot, "tcg_service", None)
         view = InventoryPaginationView(author_id=interaction.user.id, service=service)
         
-        cards = []
-        if service:
-            cards = await service.get_inventory_page(interaction.user.id, limit=view.items_per_page, offset=0)
+        db_path = "data/baphomet_tcg.db"
+        if service and hasattr(service, "repository"):
+            db_path = service.repository.db_path
             
-        embed = discord.Embed(title="Inventário Baphomet TCG", color=discord.Color.dark_theme())
-        embed.set_footer(text="Página 1")
+        from modules.tcg.rendering.inventory_renderer import gerar_imagem_inventario
         
-        if not cards:
-            embed.description = "Seu inventário está vazio."
-        else:
-            for card in cards:
-                embed.add_field(
-                    name=f"[{card.get('raridade', '?')}] {card.get('nome', '?')}",
-                    value=f"**UUID:** `{card.get('uuid', '00')[:8]}` | **ATK:** {card.get('atk', 0)} | **DEF:** {card.get('defesa', 0)} | **SPD:** {card.get('spd', 0)}",
-                    inline=False
-                )
-                
-        view.message = await interaction.followup.send(embed=embed, view=view)
+        try:
+            buf = await gerar_imagem_inventario(db_path, str(interaction.user.id), 0)
+            file = discord.File(fp=buf, filename="inventario.png")
+            view.message = await interaction.followup.send(file=file, view=view)
+        except Exception as e:
+            logger.error(f"Erro ao renderizar o inventario visual: {e}")
+            await interaction.followup.send("Ocorreu um erro crítico ao forjar seu painel visual.")
 
     @app_commands.command(name="deck", description="Abre a interface de gerenciamento das cartas ativas via dropdowns.")
     async def deck(self, interaction: discord.Interaction):
