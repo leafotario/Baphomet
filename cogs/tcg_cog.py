@@ -247,41 +247,41 @@ class TCGCommands(app_commands.Group):
         )
 
         embed.add_field(
-            name="1. FORJA HISTÓRICA (SUAS CARTAS)",
+            name="🔨 1. FORJA HISTÓRICA (SUAS CARTAS)",
             value=(
                 "Aqui não há RNG puro. Os atributos das suas cartas refletem diretamente o seu legado no servidor:\n"
-                "* **ATK:** Forjado pelo seu volume de mensagens e XP acumulado.\n"
-                "* **DEF:** Extraído do seu tempo de casa e lealdade ao servidor.\n"
-                "* **SPD:** Elevado pela sua relevância e reações recebidas.\n"
-                "*Cargos de moderação e engajamento em voz liberam habilidades passivas exclusivas.*"
+                "⚔️ **ATK:** Forjado pelo seu volume de mensagens e XP acumulado.\n"
+                "🛡️ **DEF:** Extraído do seu tempo de casa e lealdade ao servidor.\n"
+                "⚡ **SPD:** Elevado pela sua relevância e reações recebidas.\n"
+                "✨ *Cargos de moderação e engajamento em voz liberam habilidades passivas exclusivas.*"
             ),
             inline=False
         )
 
         embed.add_field(
-            name="2. COLECIONAR & AMPLIAR",
+            name="🃏 2. COLECIONAR & AMPLIAR",
             value=(
-                "* `/tcg booster` – Invista suas moedas para abrir pacotes e invocar novas cartas para sua coleção permanente.\n"
-                "* `/tcg inventario` – Acesse e navegue pelas páginas do seu acervo completo de ativos."
+                "📦 `/tcg booster` – Invista suas moedas para abrir pacotes e invocar novas cartas para sua coleção permanente.\n"
+                "📚 `/tcg inventario` – Acesse e navegue pelas páginas do seu acervo completo de ativos."
             ),
             inline=False
         )
 
         embed.add_field(
-            name="3. MONTAGEM DE DECK",
+            name="⚙️ 3. MONTAGEM DE DECK",
             value=(
-                "Estratégia antes do combate. É obrigatório usar o comando `/tcg deck` para "
+                "Estratégia antes do combate. É obrigatório usar o comando 🎴 `/tcg deck` para "
                 "selecionar cirurgicamente entre 3 a 5 cartas da sua coleção antes de desafiar alguém."
             ),
             inline=False
         )
 
         embed.add_field(
-            name="4. O CIRCUITO (AÇÃO)",
+            name="🔥 4. O CIRCUITO (AÇÃO)",
             value=(
                 "Com o deck pronto, parta para a interação direta no chat:\n"
-                "* `/tcg duelo [@usuario]` – Desafie oponentes para combates em tempo real e por turnos direto na memória.\n"
-                "* `/tcg trocar [@usuario]` – Abra uma interface segura e instantânea para o intercâmbio de cartas."
+                "🗡️ `/tcg duelo [@usuario]` – Desafie oponentes para combates em tempo real e por turnos direto na memória.\n"
+                "🤝 `/tcg trocar [@usuario]` – Abra uma interface segura e instantânea para o intercâmbio de cartas."
             ),
             inline=False
         )
