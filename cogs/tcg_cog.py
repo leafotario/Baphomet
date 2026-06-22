@@ -344,10 +344,9 @@ class TCGCommands(app_commands.Group):
         player = await card_service.repository.get_player(interaction.user.id)
         if not player:
             from modules.tcg.db.tcg_models import Player
-            from datetime import datetime
-            import timezone
+            from datetime import datetime, timezone
             # Criação de um jogador base caso não exista
-            player = Player(id_usuario=interaction.user.id, saldo=1000, xp_global=100, total_mensagens=50, data_entrada=datetime.now())
+            player = Player(id_usuario=interaction.user.id, saldo=1000, xp_global=100, total_mensagens=50, data_entrada=datetime.now(timezone.utc))
             await card_service.repository.save_player(player)
             
         templates = await card_service.repository.get_all_templates()
