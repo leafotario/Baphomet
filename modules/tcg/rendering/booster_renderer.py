@@ -8,19 +8,20 @@ logger = logging.getLogger(__name__)
 
 class BoosterGraphicEngine:
     """
-    SRE Design: Motor Gráfico In-Memory para renderização Flat Minimalista com Esqueumorfismo.
-    Otimizado para operações assíncronas e renderizações múltiplas no TCG.
+    SRE Design: Motor Gráfico In-Memory para renderização Flat Minimalista com Esqueumorfismo Avançado.
+    Otimizado com Supersampling (Anti-Aliasing de alta fidelidade) e Sombras Projetadas Reais.
     """
-    def __init__(self, fonts_path: str = "assets/fonts/"):
+    def __init__(self, fonts_path: str = "assets/fonts/", scale: int = 2):
         self.fonts_path = fonts_path
+        self.scale = scale
         
         try:
-            self.font_header = ImageFont.truetype(os.path.join(fonts_path, "Montserrat-Black.ttf"), 18)
-            self.font_name = ImageFont.truetype(os.path.join(fonts_path, "Montserrat-Black.ttf"), 42)
-            self.font_rarity = ImageFont.truetype(os.path.join(fonts_path, "Poppins-Bold.ttf"), 16)
-            self.font_label = ImageFont.truetype(os.path.join(fonts_path, "Poppins-Regular.ttf"), 14)
-            self.font_stat = ImageFont.truetype(os.path.join(fonts_path, "Montserrat-Black.ttf"), 48)
-            self.font_serial = ImageFont.truetype(os.path.join(fonts_path, "Poppins-Regular.ttf"), 10)
+            self.font_header = ImageFont.truetype(os.path.join(fonts_path, "Montserrat-Black.ttf"), 18 * scale)
+            self.font_name = ImageFont.truetype(os.path.join(fonts_path, "Montserrat-Black.ttf"), 42 * scale)
+            self.font_rarity = ImageFont.truetype(os.path.join(fonts_path, "Poppins-Bold.ttf"), 16 * scale)
+            self.font_label = ImageFont.truetype(os.path.join(fonts_path, "Poppins-Regular.ttf"), 14 * scale)
+            self.font_stat = ImageFont.truetype(os.path.join(fonts_path, "Montserrat-Black.ttf"), 48 * scale)
+            self.font_serial = ImageFont.truetype(os.path.join(fonts_path, "Poppins-Regular.ttf"), 10 * scale)
         except OSError as e:
             logger.error(f"Erro ao carregar fontes: {e}. Usando fallback.")
             self.font_header = ImageFont.load_default()
@@ -30,172 +31,173 @@ class BoosterGraphicEngine:
             self.font_stat = ImageFont.load_default()
             self.font_serial = ImageFont.load_default()
 
-    def _draw_drop_shadow(self, bg_image, shape_mask, offset=(0, 5), blur=10, opacity=120):
-        """Cria uma sombra projetada (drop shadow) a partir de uma máscara."""
+    def _draw_drop_shadow(self, bg_image, shape_mask, offset=(0, 10), blur=10, color=(0, 0, 0, 150)):
+        """Cria uma sombra projetada (drop shadow) real usando GaussianBlur."""
         shadow = Image.new("RGBA", bg_image.size, (0, 0, 0, 0))
-        shadow_draw = ImageDraw.Draw(shadow)
-        shadow.paste((0, 0, 0, opacity), offset, shape_mask)
-        shadow = shadow.filter(ImageFilter.GaussianBlur(blur))
+        # Cole a cor da sombra usando a forma como máscara na posição deslocada
+        shadow.paste(color, offset, shape_mask)
+        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=blur))
+        # Composição em cima do bg_image
         bg_image.alpha_composite(shadow)
 
-    def _create_rounded_rect_mask(self, size, radius):
-        """Cria uma máscara em formato de retângulo arredondado."""
-        mask = Image.new("L", size, 0)
-        draw = ImageDraw.Draw(mask)
-        draw.rounded_rectangle((0, 0, size[0], size[1]), radius=radius, fill=255)
-        return mask
-
-    def _draw_inner_shadow(self, image, box, radius, color=(0,0,0,100), blur=5, offset=(5,5)):
-        """Simula sombra interna desenhando uma versão maior deslocada com blur e cortando com a máscara original."""
-        w, h = image.size
-        # Máscara original do elemento
-        orig_mask = Image.new("L", (w, h), 0)
-        ImageDraw.Draw(orig_mask).rounded_rectangle(box, radius=radius, fill=255)
+    def _draw_recessed_box(self, bg_image, box, radius, fill_color, dark_color=(0,0,0,150), bright_color=(255,255,255,200), blur=5, offset=5):
+        """Simula um buraco (baixo-relevo) usando inner shadows reais de duas direções."""
+        w, h = bg_image.size
+        # Máscara exata da caixa
+        box_mask = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(box_mask).rounded_rectangle(box, radius=radius, fill=255)
         
-        # Sombra deslocada
-        shadow = Image.new("RGBA", (w, h), (0,0,0,0))
-        shadow_draw = ImageDraw.Draw(shadow)
-        # Para inner shadow forte no top-left, desenhamos o inverso ou um stroke grosso
-        shadow_draw.rounded_rectangle([box[0]-offset[0], box[1]-offset[1], box[2]-offset[0], box[3]-offset[1]], radius=radius, outline=color, width=blur*2)
-        shadow = shadow.filter(ImageFilter.GaussianBlur(blur))
+        # Fundo da caixa
+        if fill_color:
+            bg_image.paste(fill_color, (0,0), box_mask)
         
-        # Aplica shadow apenas DENTRO do box original
-        image.paste(shadow, (0,0), orig_mask)
-
-    def _draw_inner_glow(self, image, box, radius, color=(255,255,255,100), blur=5, offset=(0,0)):
-        """Simula brilho interno."""
-        w, h = image.size
-        orig_mask = Image.new("L", (w, h), 0)
-        ImageDraw.Draw(orig_mask).rounded_rectangle(box, radius=radius, fill=255)
+        # Sombra interna (Top-Left)
+        shadow_layer = Image.new("RGBA", (w, h), (0,0,0,0))
+        ImageDraw.Draw(shadow_layer).rounded_rectangle([box[0]-offset, box[1]-offset, box[2]-offset, box[3]-offset], radius=radius, outline=dark_color, width=blur*2)
+        shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(blur))
+        bg_image.paste(shadow_layer, (0,0), box_mask)
         
-        glow = Image.new("RGBA", (w, h), (0,0,0,0))
-        glow_draw = ImageDraw.Draw(glow)
-        glow_draw.rounded_rectangle([box[0]+offset[0], box[1]+offset[1], box[2]+offset[0], box[3]+offset[1]], radius=radius, outline=color, width=blur*2)
-        glow = glow.filter(ImageFilter.GaussianBlur(blur))
-        
-        image.paste(glow, (0,0), orig_mask)
+        # Brilho interno (Bottom-Right)
+        glow_layer = Image.new("RGBA", (w, h), (0,0,0,0))
+        ImageDraw.Draw(glow_layer).rounded_rectangle([box[0]+offset, box[1]+offset, box[2]+offset, box[3]+offset], radius=radius, outline=bright_color, width=blur*2)
+        glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(blur))
+        bg_image.paste(glow_layer, (0,0), box_mask)
 
     async def render_card(self, user_name: str, pfp_bytes: bytes, atk: int, def_stat: int, spd: int, rarity_label: str) -> io.BytesIO:
         """
-        Constrói a carta na nova estética Flat Esqueumórfica.
-        Buffer 100% In-Memory.
+        Constrói a carta usando Supersampling, Letterpress, Drop Shadows e Inner Shadows.
         """
-        width, height = 600, 840
+        s = self.scale
+        
+        # Canvas Oversized para Supersampling (ex: 1200x1680)
+        width, height = 600 * s, 840 * s
         canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(canvas)
         
         # --- 1. Base Roxo Profundo com Cantos Arredondados ---
-        bg_color = (68, 33, 133, 255) # Roxo vibrante profundo
-        card_radius = 40
+        bg_color = (68, 33, 133, 255)
+        card_radius = 40 * s
         
-        card_base = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        draw_base = ImageDraw.Draw(card_base)
-        draw_base.rounded_rectangle((0, 0, width, height), radius=card_radius, fill=bg_color)
+        card_mask = Image.new("L", (width, height), 0)
+        ImageDraw.Draw(card_mask).rounded_rectangle((0, 0, width, height), radius=card_radius, fill=255)
         
-        # Inner Glow (topo) e Inner Shadow (base) para volume do papel
-        self._draw_inner_glow(card_base, (0, 0, width, height), card_radius, color=(255,255,255,60), blur=8, offset=(0, -5))
-        self._draw_inner_shadow(card_base, (0, 0, width, height), card_radius, color=(0,0,0,120), blur=15, offset=(0, -10))
+        # Preenche a base
+        canvas.paste(bg_color, (0,0), card_mask)
         
-        canvas.alpha_composite(card_base)
-        draw = ImageDraw.Draw(canvas)
+        # Pseudo Inner Glow na carta toda
+        self._draw_recessed_box(canvas, (0, 0, width, height), card_radius, fill_color=None, dark_color=(0,0,0,80), bright_color=(255,255,255,60), blur=15*s, offset=10*s)
 
         # --- 2. Header (Aba Branca Topo) ---
-        header_w, header_h = 240, 60
+        header_w, header_h = 240 * s, 60 * s
         header_x = (width - header_w) // 2
         header_y = 0
         
         header_mask = Image.new("L", (width, height), 0)
         h_draw = ImageDraw.Draw(header_mask)
-        # Aba descendo do topo com cantos inferiores redondos (desenhamos um rect maior pra cima)
-        h_draw.rounded_rectangle((header_x, header_y - 20, header_x + header_w, header_y + header_h), radius=20, fill=255)
+        # Aba descendo do topo (retângulo mais alto pra esconder as quinas superiores)
+        h_draw.rounded_rectangle((header_x, header_y - 20*s, header_x + header_w, header_y + header_h), radius=20*s, fill=255)
         
-        self._draw_drop_shadow(canvas, header_mask, offset=(0, 6), blur=8, opacity=100)
+        # Drop shadow da aba
+        self._draw_drop_shadow(canvas, header_mask, offset=(0, 8*s), blur=10*s, color=(0, 0, 0, 160))
         
+        # Desenha a aba
         header_shape = Image.new("RGBA", (width, height), (0,0,0,0))
-        ImageDraw.Draw(header_shape).rounded_rectangle((header_x, header_y - 20, header_x + header_w, header_y + header_h), radius=20, fill=(255,255,255,255))
+        ImageDraw.Draw(header_shape).rounded_rectangle((header_x, header_y - 20*s, header_x + header_w, header_y + header_h), radius=20*s, fill=(255,255,255,255))
         canvas.alpha_composite(header_shape)
         
-        # Texto Header
-        head_text = "BAPHOMET\nTCG"
-        # BAPHOMET emcima, TCG embaixo, mas a referência mostra tudo em uma linha ou estilizado. Vamos colocar BAPHOMET TCG centralizado
-        bbox_h = self.font_header.getbbox("BAPHOMET TCG")
-        draw.text((header_x + (header_w - (bbox_h[2]-bbox_h[0]))//2, header_y + 15), "BAPHOMET TCG", font=self.font_header, fill=(0,0,0,255))
-        draw.line((header_x + 50, header_y + 40, header_x + header_w - 50, header_y + 40), fill=(0,0,0,255), width=2)
+        # Texto Header (Centralização Perfeita com anchor="mm")
+        head_cx = header_x + header_w // 2
+        head_cy = header_y + header_h // 2 + 5*s
+        draw.text((head_cx, head_cy), "BAPHOMET TCG", font=self.font_header, fill=(30,30,30,255), anchor="mm")
 
-        # --- 3. Avatar (Baixo-Relevo) ---
-        pfp_size = 280
+        # --- 3. Avatar (Relevo / Squircles Máscara Perfeita) ---
+        pfp_size = 280 * s
         pfp_x = (width - pfp_size) // 2
-        pfp_y = 120
-        pfp_radius = 30
+        pfp_y = 120 * s
+        pfp_radius = 30 * s
         
-        # Moldura Esqueumórfica (Relevo recesso)
-        # Desenhamos o shape da máscara do avatar
-        pfp_mask = self._create_rounded_rect_mask((pfp_size, pfp_size), pfp_radius)
-        
+        # Carregar e redimensionar avatar
         try:
             with Image.open(io.BytesIO(pfp_bytes)) as pfp:
-                pfp = pfp.convert("RGBA").resize((pfp_size, pfp_size), Image.Resampling.LANCZOS)
-                canvas.paste(pfp, (pfp_x, pfp_y), pfp_mask)
+                pfp_img = pfp.convert("RGBA").resize((pfp_size, pfp_size), Image.Resampling.LANCZOS)
+                
+                # Criar máscara exata do Avatar
+                pfp_mask = Image.new("L", (pfp_size, pfp_size), 0)
+                ImageDraw.Draw(pfp_mask).rounded_rectangle((0, 0, pfp_size, pfp_size), radius=pfp_radius, fill=255)
+                
+                # Colar usando alpha composite na máscara
+                pfp_canvas = Image.new("RGBA", (width, height), (0,0,0,0))
+                pfp_canvas.paste(pfp_img, (pfp_x, pfp_y), pfp_mask)
+                canvas.alpha_composite(pfp_canvas)
         except Exception as e:
             logger.error(f"Erro render avatar: {e}")
             draw.rounded_rectangle((pfp_x, pfp_y, pfp_x+pfp_size, pfp_y+pfp_size), radius=pfp_radius, fill=(30,30,30,255))
             
-        # Inner shadow simulando buraco
-        self._draw_inner_shadow(canvas, (pfp_x, pfp_y, pfp_x+pfp_size, pfp_y+pfp_size), pfp_radius, color=(0,0,0,180), blur=8, offset=(4,4))
-        # Inner glow topo simulando luz pegando na borda interna
-        self._draw_inner_glow(canvas, (pfp_x, pfp_y, pfp_x+pfp_size, pfp_y+pfp_size), pfp_radius, color=(255,255,255,80), blur=3, offset=(0,-2))
+        # Inner shadow do buraco do avatar (simula que a foto ta encaixada)
+        avatar_box_mask = Image.new("L", (width, height), 0)
+        ImageDraw.Draw(avatar_box_mask).rounded_rectangle((pfp_x, pfp_y, pfp_x+pfp_size, pfp_y+pfp_size), radius=pfp_radius, fill=255)
+        
+        # Para evitar apagar a foto, fazemos a magia de sombreado manualmente na mascara
+        avatar_shadow = Image.new("RGBA", (width, height), (0,0,0,0))
+        ImageDraw.Draw(avatar_shadow).rounded_rectangle([pfp_x-6*s, pfp_y-6*s, pfp_x+pfp_size-6*s, pfp_y+pfp_size-6*s], radius=pfp_radius, outline=(0,0,0,180), width=8*s)
+        avatar_shadow = avatar_shadow.filter(ImageFilter.GaussianBlur(8*s))
+        canvas.paste(avatar_shadow, (0,0), avatar_box_mask)
 
         # --- 4. Badge de Raridade ---
         rarity_text = rarity_label.upper()
         bbox_r = self.font_rarity.getbbox(rarity_text)
-        rw = bbox_r[2] - bbox_r[0] + 40
-        rh = 30
+        rw = (bbox_r[2] - bbox_r[0]) + 40 * s
+        rh = 30 * s
         rx = (width - rw) // 2
-        ry = pfp_y + pfp_size + 40
+        ry = pfp_y + pfp_size + 40 * s
         
         badge_mask = Image.new("L", (width, height), 0)
         ImageDraw.Draw(badge_mask).rounded_rectangle((rx, ry, rx+rw, ry+rh), radius=rh//2, fill=255)
-        self._draw_drop_shadow(canvas, badge_mask, offset=(0, 4), blur=6, opacity=90)
         
-        # Pílula base
-        draw.rounded_rectangle((rx, ry, rx+rw, ry+rh), radius=rh//2, fill=(194, 34, 34, 255)) # Vermelho vivo
-        # Esqueumorfismo na badge
-        self._draw_inner_shadow(canvas, (rx, ry, rx+rw, ry+rh), rh//2, color=(0,0,0,80), blur=4, offset=(0,-3))
-        self._draw_inner_glow(canvas, (rx, ry, rx+rw, ry+rh), rh//2, color=(255,255,255,100), blur=3, offset=(0,2))
+        # Real Drop Shadow da Badge
+        self._draw_drop_shadow(canvas, badge_mask, offset=(0, 6*s), blur=8*s, color=(0, 0, 0, 160))
         
-        draw.text((rx + (rw - (bbox_r[2]-bbox_r[0]))//2, ry + 3), rarity_text, font=self.font_rarity, fill=(255,255,255,255))
+        # Pílula Esqueumórfica (Relevo bolha)
+        self._draw_recessed_box(canvas, (rx, ry, rx+rw, ry+rh), rh//2, fill_color=(194, 34, 34, 255), dark_color=(0,0,0,100), bright_color=(255,255,255,140), blur=4*s, offset=3*s)
+        
+        # Texto Raridade
+        draw.text((rx + rw//2, ry + rh//2), rarity_text, font=self.font_rarity, fill=(255,255,255,255), anchor="mm")
 
-        # --- 5. Nome da Carta (Letterpress Effect) ---
+        # --- 5. Nome da Carta (Letterpress Effect real) ---
         name_text = user_name.upper()
         if len(name_text) > 13:
             name_text = name_text[:11] + ".."
             
-        bbox_n = self.font_name.getbbox(name_text)
-        nx = (width - (bbox_n[2]-bbox_n[0])) // 2
-        ny = ry + 40
+        nx = width // 2
+        ny = ry + 50 * s
         
-        # Drop shadow duro / Relevo
-        draw.text((nx + 2, ny + 3), name_text, font=self.font_name, fill=(0,0,0,150)) # Sombra
-        draw.text((nx, ny), name_text, font=self.font_name, fill=(255,255,255,255)) # Texto principal
+        # Letterpress: Sombra escura levemente deslocada para baixo simulando entalhe
+        draw.text((nx, ny + 4*s), name_text, font=self.font_name, fill=(0,0,0,160), anchor="mm") # Shadow/Drop
+        draw.text((nx, ny), name_text, font=self.font_name, fill=(255,255,255,255), anchor="mm") # Principal
 
-        # --- 6. Painel de Atributos (Rodapé Off-white) ---
-        panel_w = width - 40
-        panel_h = 160
-        panel_x = 20
-        panel_y = height - panel_h - 20
-        panel_radius = 30
+        # --- 6. Painel de Atributos (Off-white) ---
+        panel_w = width - 40 * s
+        panel_h = 160 * s
+        panel_x = 20 * s
+        panel_y = height - panel_h - 20 * s
+        panel_radius = 30 * s
         
-        # Painel base
         panel_mask = Image.new("L", (width, height), 0)
         ImageDraw.Draw(panel_mask).rounded_rectangle((panel_x, panel_y, panel_x+panel_w, panel_y+panel_h), radius=panel_radius, fill=255)
-        self._draw_drop_shadow(canvas, panel_mask, offset=(0, -5), blur=10, opacity=60) # Sombra sutil projetada no fundo roxo
         
-        draw.rounded_rectangle((panel_x, panel_y, panel_x+panel_w, panel_y+panel_h), radius=panel_radius, fill=(240, 240, 240, 255))
-        # Inner glow no topo do painel
-        self._draw_inner_glow(canvas, (panel_x, panel_y, panel_x+panel_w, panel_y+panel_h), panel_radius, color=(255,255,255,255), blur=5, offset=(0, 2))
+        # Real Drop Shadow do Painel sobre o fundo roxo
+        self._draw_drop_shadow(canvas, panel_mask, offset=(0, -8*s), blur=12*s, color=(0, 0, 0, 120))
+        
+        # Painel preenchido
+        canvas.paste((240, 240, 240, 255), (0,0), panel_mask)
+        # Borda de luz leve no topo
+        panel_glow = Image.new("RGBA", (width, height), (0,0,0,0))
+        ImageDraw.Draw(panel_glow).rounded_rectangle((panel_x, panel_y, panel_x+panel_w, panel_y+panel_h), radius=panel_radius, outline=(255,255,255,255), width=2*s)
+        canvas.paste(panel_glow, (0,0), panel_mask)
 
-        # Caixas de Status Embutidas (Recessed)
-        box_w = 160
-        box_h = 100
+        # --- 7. Caixas de Status Embutidas (Recessed Boxes Realistas) ---
+        box_w = 160 * s
+        box_h = 100 * s
         spacing = (panel_w - (3 * box_w)) // 4
         
         stats = [("ATK", str(atk)), ("DEF", str(def_stat)), ("SPD", str(spd))]
@@ -203,47 +205,40 @@ class BoosterGraphicEngine:
         for i, (label, val) in enumerate(stats):
             bx = panel_x + spacing + i * (box_w + spacing)
             by = panel_y + (panel_h - box_h) // 2
-            b_radius = 20
+            b_radius = 20 * s
             
-            # Fundo da caixa (cinza base para imitar o fundo da carta ou roxo escuro)
-            draw.rounded_rectangle((bx, by, bx+box_w, by+box_h), radius=b_radius, fill=(68, 33, 133, 255)) # Fundo roxo dentro da caixa em relevo
+            # Caixa afundada (Inner shadow na borda top-left, Inner glow na borda bottom-right)
+            self._draw_recessed_box(canvas, (bx, by, bx+box_w, by+box_h), b_radius, fill_color=(50, 24, 100, 255), dark_color=(0,0,0,200), bright_color=(255,255,255,160), blur=6*s, offset=5*s)
             
-            # Sombra interna para afundar (canto superior esquerdo escuro, inferior direito claro)
-            self._draw_inner_shadow(canvas, (bx, by, bx+box_w, by+box_h), b_radius, color=(0,0,0,180), blur=8, offset=(5,5))
-            self._draw_inner_glow(canvas, (bx, by, bx+box_w, by+box_h), b_radius, color=(255,255,255,100), blur=4, offset=(-2,-2))
+            # Header cinza da caixa (Aba superior dentro do buraco)
+            ab_h = 30 * s
+            aba_final_mask = Image.new("L", (width, height), 0)
+            ImageDraw.Draw(aba_final_mask).rounded_rectangle((bx, by, bx+box_w, by+box_h), radius=b_radius, fill=255)
+            # Erase bottom part to keep rounded corners only at the top
+            ImageDraw.Draw(aba_final_mask).rectangle((bx, by+ab_h, bx+box_w, by+box_h), fill=0)
             
-            # Top header do slot (A área cinza onde fica o label)
-            # Desenhando uma abazinha cinza por cima dentro do box afundado
-            ab_h = 30
-            aba_mask = Image.new("L", (width, height), 0)
-            ImageDraw.Draw(aba_mask).rounded_rectangle((bx, by, bx+box_w, by+box_h), radius=b_radius, fill=255)
-            # Shape cinza
-            aba_shape = Image.new("RGBA", (width, height), (0,0,0,0))
-            ImageDraw.Draw(aba_shape).rectangle((bx, by, bx+box_w, by+ab_h), fill=(200,200,200,255))
-            canvas.paste(aba_shape, (0,0), aba_mask)
+            canvas.paste((210, 210, 210, 255), (0,0), aba_final_mask)
             
             # Label
-            bbox_lbl = self.font_label.getbbox(label)
-            draw.text((bx + (box_w - (bbox_lbl[2]-bbox_lbl[0]))//2, by + 5), label, font=self.font_label, fill=(80,80,80,255))
+            draw.text((bx + box_w//2, by + ab_h//2), label, font=self.font_label, fill=(80,80,80,255), anchor="mm")
             
-            # Valor
-            bbox_val = self.font_stat.getbbox(val)
-            val_x = bx + (box_w - (bbox_val[2]-bbox_val[0]))//2
-            val_y = by + ab_h + 5
-            # Texto Branco com leve shadow dura
-            draw.text((val_x+2, val_y+3), val, font=self.font_stat, fill=(0,0,0,100))
-            draw.text((val_x, val_y), val, font=self.font_stat, fill=(255,255,255,255))
+            # Valor Numérico (Letterpress no buraco roxo)
+            val_y = by + ab_h + (box_h - ab_h)//2
+            draw.text((bx + box_w//2 + 2*s, val_y + 2*s), val, font=self.font_stat, fill=(0,0,0,150), anchor="mm") # Sombra interna (afunda o número)
+            draw.text((bx + box_w//2, val_y), val, font=self.font_stat, fill=(255,255,255,255), anchor="mm")
 
-        # --- 7. Decorações e Seriais ---
+        # --- 8. Decorações e Seriais ---
         serial = f"BPH-GTO-{random.randint(1000, 9999)}-01"
-        # Canto inferior esquerdo e direito fora das caixas, na borda do painel branco
-        draw.text((panel_x + 20, panel_y + panel_h - 20), serial, font=self.font_serial, fill=(120,120,120,255))
-        draw.text((panel_x + panel_w - 90, panel_y - 15), serial, font=self.font_serial, fill=(180,180,180,255))
+        draw.text((panel_x + 20*s, panel_y + panel_h - 15*s), serial, font=self.font_serial, fill=(150,150,150,255), anchor="lm")
+        draw.text((panel_x + panel_w - 20*s, panel_y - 10*s), serial, font=self.font_serial, fill=(150,150,150,255), anchor="rm")
 
-        # Exportação Otimizada
+        # --- 9. Downsampling (Anti-Aliasing final) ---
+        final_canvas = canvas.resize((600, 840), Image.Resampling.LANCZOS)
+        
         buffer = io.BytesIO()
-        canvas.save(buffer, format='PNG', compress_level=6)
+        final_canvas.save(buffer, format='PNG', compress_level=6)
         buffer.seek(0)
         
         canvas.close()
+        final_canvas.close()
         return buffer
