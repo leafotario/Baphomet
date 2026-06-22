@@ -11,6 +11,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from modules.xp.rendering.xp_card_renderer import XpCardRenderer
+from modules.xp.rendering.rank_badges import RankBadgeService
 from modules.xp.db.xp_models import XpDifficulty
 from modules.xp.db.xp_repository import XpRepository
 from modules.xp.services.xp_service import XpService
@@ -58,6 +59,7 @@ async def ensure_xp_runtime(bot: commands.Bot) -> None:
     bot.xp_repository = repository
     bot.xp_service = XpService(repository, logger=LOGGER)
     bot.xp_cards = XpCardRenderer()
+    bot.xp_badges = RankBadgeService(repository)
 
 
 class XpPublicCommands(commands.Cog):
@@ -65,6 +67,7 @@ class XpPublicCommands(commands.Cog):
         self.bot = bot
         self.service: XpService = bot.xp_service
         self.cards: XpCardRenderer = bot.xp_cards
+        self.badges: RankBadgeService = bot.xp_badges
         self.logger = LOGGER
 
     async def cog_unload(self) -> None:
@@ -139,7 +142,7 @@ class XpPublicCommands(commands.Cog):
 
         await interaction.response.defer(thinking=True)
         snapshot = await self.service.get_rank_snapshot(interaction.guild, target)
-        view = RankCardView(self.service, self.cards)
+        view = RankCardView(service=self.service, cards=self.cards, badges=self.badges)
         try:
             image = await self.cards.render_rank_card(guild=interaction.guild, member=target, snapshot=snapshot)
             await interaction.edit_original_response(attachments=[discord.File(image, filename="rank.png")], view=view)
@@ -167,18 +170,16 @@ class XpPublicCommands(commands.Cog):
         # Busca o total de usuários no BD para calcular páginas
         total = await self.service.repository.count_ranked_profiles(interaction.guild.id)
 
-        # Monta o paginador de imagens
+        # Monta o paginador em texto (arquitetura ajustada para não injetar 'cards')
         view = FullLeaderboardPaginator(
             service=self.service,
-            cards=self.cards,
             guild=interaction.guild,
-            author_id=interaction.user.id,
-            total_entries=total,
+            author_id=interaction.user.id
         )
 
         try:
-            file = await view._render_page()
-            await interaction.edit_original_response(attachments=[file], view=view)
+            embed = await view._embed()
+            await interaction.edit_original_response(embed=embed, view=view)
         except Exception as exc:
             log_exception(exc)
             # Fallback para embed de texto caso o Pillow falhe
