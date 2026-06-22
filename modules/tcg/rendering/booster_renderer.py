@@ -2,201 +2,245 @@ import io
 import os
 import random
 import logging
-from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageEnhance, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 logger = logging.getLogger(__name__)
 
 class BoosterGraphicEngine:
     """
-    SRE Design: Motor Gráfico In-Memory para renderização Vibrante, Minimalista e Esqueumórfica.
+    SRE Design: Motor Gráfico In-Memory para renderização Flat Minimalista com Esqueumorfismo.
     Otimizado para operações assíncronas e renderizações múltiplas no TCG.
     """
     def __init__(self, fonts_path: str = "assets/fonts/"):
         self.fonts_path = fonts_path
         
         try:
-            self.font_name = ImageFont.truetype(os.path.join(fonts_path, "Montserrat-Black.ttf"), 65)
-            self.font_rarity = ImageFont.truetype(os.path.join(fonts_path, "Poppins-Bold.ttf"), 30)
-            self.font_label = ImageFont.truetype(os.path.join(fonts_path, "Poppins-Regular.ttf"), 22)
-            self.font_stat = ImageFont.truetype(os.path.join(fonts_path, "Montserrat-Black.ttf"), 65)
+            self.font_header = ImageFont.truetype(os.path.join(fonts_path, "Montserrat-Black.ttf"), 18)
+            self.font_name = ImageFont.truetype(os.path.join(fonts_path, "Montserrat-Black.ttf"), 42)
+            self.font_rarity = ImageFont.truetype(os.path.join(fonts_path, "Poppins-Bold.ttf"), 16)
+            self.font_label = ImageFont.truetype(os.path.join(fonts_path, "Poppins-Regular.ttf"), 14)
+            self.font_stat = ImageFont.truetype(os.path.join(fonts_path, "Montserrat-Black.ttf"), 48)
+            self.font_serial = ImageFont.truetype(os.path.join(fonts_path, "Poppins-Regular.ttf"), 10)
         except OSError as e:
             logger.error(f"Erro ao carregar fontes: {e}. Usando fallback.")
+            self.font_header = ImageFont.load_default()
             self.font_name = ImageFont.load_default()
             self.font_rarity = ImageFont.load_default()
             self.font_label = ImageFont.load_default()
             self.font_stat = ImageFont.load_default()
+            self.font_serial = ImageFont.load_default()
 
-    def _draw_text_with_shadow(self, canvas: Image.Image, xy: tuple, text: str, font: ImageFont.FreeTypeFont, text_color: str, shadow_color=(0,0,0,120), shadow_offset=(5,5), blur=5):
-        """Helper para desenhar textos com soft shadow flutuante usando canais alpha e GaussianBlur."""
-        shadow_img = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-        shadow_draw = ImageDraw.Draw(shadow_img)
-        shadow_draw.text((xy[0] + shadow_offset[0], xy[1] + shadow_offset[1]), text, font=font, fill=shadow_color)
-        shadow_img = shadow_img.filter(ImageFilter.GaussianBlur(blur))
-        canvas.alpha_composite(shadow_img)
+    def _draw_drop_shadow(self, bg_image, shape_mask, offset=(0, 5), blur=10, opacity=120):
+        """Cria uma sombra projetada (drop shadow) a partir de uma máscara."""
+        shadow = Image.new("RGBA", bg_image.size, (0, 0, 0, 0))
+        shadow_draw = ImageDraw.Draw(shadow)
+        shadow.paste((0, 0, 0, opacity), offset, shape_mask)
+        shadow = shadow.filter(ImageFilter.GaussianBlur(blur))
+        bg_image.alpha_composite(shadow)
+
+    def _create_rounded_rect_mask(self, size, radius):
+        """Cria uma máscara em formato de retângulo arredondado."""
+        mask = Image.new("L", size, 0)
+        draw = ImageDraw.Draw(mask)
+        draw.rounded_rectangle((0, 0, size[0], size[1]), radius=radius, fill=255)
+        return mask
+
+    def _draw_inner_shadow(self, image, box, radius, color=(0,0,0,100), blur=5, offset=(5,5)):
+        """Simula sombra interna desenhando uma versão maior deslocada com blur e cortando com a máscara original."""
+        w, h = image.size
+        # Máscara original do elemento
+        orig_mask = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(orig_mask).rounded_rectangle(box, radius=radius, fill=255)
         
-        text_img = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-        text_draw = ImageDraw.Draw(text_img)
-        text_draw.text(xy, text, font=font, fill=text_color)
-        canvas.alpha_composite(text_img)
+        # Sombra deslocada
+        shadow = Image.new("RGBA", (w, h), (0,0,0,0))
+        shadow_draw = ImageDraw.Draw(shadow)
+        # Para inner shadow forte no top-left, desenhamos o inverso ou um stroke grosso
+        shadow_draw.rounded_rectangle([box[0]-offset[0], box[1]-offset[1], box[2]-offset[0], box[3]-offset[1]], radius=radius, outline=color, width=blur*2)
+        shadow = shadow.filter(ImageFilter.GaussianBlur(blur))
+        
+        # Aplica shadow apenas DENTRO do box original
+        image.paste(shadow, (0,0), orig_mask)
+
+    def _draw_inner_glow(self, image, box, radius, color=(255,255,255,100), blur=5, offset=(0,0)):
+        """Simula brilho interno."""
+        w, h = image.size
+        orig_mask = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(orig_mask).rounded_rectangle(box, radius=radius, fill=255)
+        
+        glow = Image.new("RGBA", (w, h), (0,0,0,0))
+        glow_draw = ImageDraw.Draw(glow)
+        glow_draw.rounded_rectangle([box[0]+offset[0], box[1]+offset[1], box[2]+offset[0], box[3]+offset[1]], radius=radius, outline=color, width=blur*2)
+        glow = glow.filter(ImageFilter.GaussianBlur(blur))
+        
+        image.paste(glow, (0,0), orig_mask)
 
     async def render_card(self, user_name: str, pfp_bytes: bytes, atk: int, def_stat: int, spd: int, rarity_label: str) -> io.BytesIO:
         """
-        Constrói a carta na nova estética Pop / Skeuomorphic.
+        Constrói a carta na nova estética Flat Esqueumórfica.
         Buffer 100% In-Memory.
         """
-        width, height = 800, 1200
-        # Canvas principal transparente para os cantos arredondados vazarem pro Discord
+        width, height = 600, 840
         canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         
-        # 1. Base Arredondada e Fundo Vibrante
-        colors = {
-            "COMUM": "#00d2ff",   # Ciano Neon
-            "RARO": "#8a2be2",    # Roxo Elétrico
-            "ÉPICO": "#ff007f",   # Magenta Vivo
-            "LENDÁRIO": "#ff8c00" # Laranja Solar
-        }
-        base_color = colors.get(rarity_label.upper(), "#00d2ff")
+        # --- 1. Base Roxo Profundo com Cantos Arredondados ---
+        bg_color = (68, 33, 133, 255) # Roxo vibrante profundo
+        card_radius = 40
         
-        # Criando o shape do card com radius altíssimo
-        card_shape = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        draw_shape = ImageDraw.Draw(card_shape)
-        draw_shape.rounded_rectangle([0, 0, width, height], radius=60, fill=base_color)
+        card_base = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        draw_base = ImageDraw.Draw(card_base)
+        draw_base.rounded_rectangle((0, 0, width, height), radius=card_radius, fill=bg_color)
         
-        # Textura abstrata / Glitch / Grid super suave (baixa opacidade)
-        pattern = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-        p_draw = ImageDraw.Draw(pattern)
-        for i in range(0, height, 40):
-            p_draw.line((0, i, width, i), fill=(255, 255, 255, 15), width=2)
-        for i in range(0, width, 40):
-            p_draw.line((i, 0, i, height), fill=(255, 255, 255, 15), width=2)
-            
-        # Composição da Base com o Pattern usando a máscara arredondada do card
-        canvas = Image.alpha_composite(canvas, card_shape)
-        pattern_clipped = Image.composite(pattern, Image.new("RGBA", (width, height), (0,0,0,0)), card_shape.split()[3])
-        canvas = Image.alpha_composite(canvas, pattern_clipped)
+        # Inner Glow (topo) e Inner Shadow (base) para volume do papel
+        self._draw_inner_glow(card_base, (0, 0, width, height), card_radius, color=(255,255,255,60), blur=8, offset=(0, -5))
+        self._draw_inner_shadow(card_base, (0, 0, width, height), card_radius, color=(0,0,0,120), blur=15, offset=(0, -10))
         
+        canvas.alpha_composite(card_base)
         draw = ImageDraw.Draw(canvas)
 
-        # Esqueumorfismo Frontal: Moldura Acrílica Brilhante
-        # Highlight superior/esquerdo (brilho)
-        draw.rounded_rectangle([4, 4, width-4, height-4], radius=56, outline=(255, 255, 255, 180), width=6)
-        # Drop shadow interno inferior/direito
-        draw.rounded_rectangle([10, 10, width-2, height-2], radius=56, outline=(0, 0, 0, 80), width=6)
+        # --- 2. Header (Aba Branca Topo) ---
+        header_w, header_h = 240, 60
+        header_x = (width - header_w) // 2
+        header_y = 0
+        
+        header_mask = Image.new("L", (width, height), 0)
+        h_draw = ImageDraw.Draw(header_mask)
+        # Aba descendo do topo com cantos inferiores redondos (desenhamos um rect maior pra cima)
+        h_draw.rounded_rectangle((header_x, header_y - 20, header_x + header_w, header_y + header_h), radius=20, fill=255)
+        
+        self._draw_drop_shadow(canvas, header_mask, offset=(0, 6), blur=8, opacity=100)
+        
+        header_shape = Image.new("RGBA", (width, height), (0,0,0,0))
+        ImageDraw.Draw(header_shape).rounded_rectangle((header_x, header_y - 20, header_x + header_w, header_y + header_h), radius=20, fill=(255,255,255,255))
+        canvas.alpha_composite(header_shape)
+        
+        # Texto Header
+        head_text = "BAPHOMET\nTCG"
+        # BAPHOMET emcima, TCG embaixo, mas a referência mostra tudo em uma linha ou estilizado. Vamos colocar BAPHOMET TCG centralizado
+        bbox_h = self.font_header.getbbox("BAPHOMET TCG")
+        draw.text((header_x + (header_w - (bbox_h[2]-bbox_h[0]))//2, header_y + 15), "BAPHOMET TCG", font=self.font_header, fill=(0,0,0,255))
+        draw.line((header_x + 50, header_y + 40, header_x + header_w - 50, header_y + 40), fill=(0,0,0,255), width=2)
 
-        # 2. Manipulação do Avatar Pop & Tátil
-        with Image.open(io.BytesIO(pfp_bytes)) as pfp:
-            pfp = pfp.convert("RGBA")
-            pfp = pfp.resize((420, 420), Image.Resampling.LANCZOS)
+        # --- 3. Avatar (Baixo-Relevo) ---
+        pfp_size = 280
+        pfp_x = (width - pfp_size) // 2
+        pfp_y = 120
+        pfp_radius = 30
+        
+        # Moldura Esqueumórfica (Relevo recesso)
+        # Desenhamos o shape da máscara do avatar
+        pfp_mask = self._create_rounded_rect_mask((pfp_size, pfp_size), pfp_radius)
+        
+        try:
+            with Image.open(io.BytesIO(pfp_bytes)) as pfp:
+                pfp = pfp.convert("RGBA").resize((pfp_size, pfp_size), Image.Resampling.LANCZOS)
+                canvas.paste(pfp, (pfp_x, pfp_y), pfp_mask)
+        except Exception as e:
+            logger.error(f"Erro render avatar: {e}")
+            draw.rounded_rectangle((pfp_x, pfp_y, pfp_x+pfp_size, pfp_y+pfp_size), radius=pfp_radius, fill=(30,30,30,255))
             
-            # Cores saturadas vibrantes em vez de cinza
-            pfp_color = ImageEnhance.Color(pfp).enhance(1.6)
-            pfp_contrast = ImageEnhance.Contrast(pfp_color).enhance(1.1)
+        # Inner shadow simulando buraco
+        self._draw_inner_shadow(canvas, (pfp_x, pfp_y, pfp_x+pfp_size, pfp_y+pfp_size), pfp_radius, color=(0,0,0,180), blur=8, offset=(4,4))
+        # Inner glow topo simulando luz pegando na borda interna
+        self._draw_inner_glow(canvas, (pfp_x, pfp_y, pfp_x+pfp_size, pfp_y+pfp_size), pfp_radius, color=(255,255,255,80), blur=3, offset=(0,-2))
 
-            # Squircle ou Círculo Perfeito
-            mask = Image.new("L", (420, 420), 0)
-            mask_draw = ImageDraw.Draw(mask)
-            mask_draw.ellipse((0, 0, 420, 420), fill=255)
-            
-            avatar_x = (width - 420) // 2
-            avatar_y = 150
-            
-            # Anel Cromado / Lente de Vidro ao redor do avatar
-            draw.ellipse([avatar_x - 16, avatar_y - 16, avatar_x + 420 + 16, avatar_y + 420 + 16], fill=(40, 40, 40, 255)) # Base shadow
-            draw.ellipse([avatar_x - 12, avatar_y - 12, avatar_x + 420 + 12, avatar_y + 420 + 12], fill=(240, 240, 240, 255)) # Chrome highlight
-            draw.ellipse([avatar_x - 6, avatar_y - 6, avatar_x + 420 + 6, avatar_y + 420 + 6], fill=(120, 120, 120, 255)) # Inner bevel
-            
-            # Posição do avatar
-            canvas.paste(pfp_contrast, (avatar_x, avatar_y), mask)
-            
-            # Lente Esqueumórfica frontal (Brilho especular curvado)
-            lens_highlight = Image.new("RGBA", (420, 420), (0, 0, 0, 0))
-            lens_draw = ImageDraw.Draw(lens_highlight)
-            lens_draw.ellipse([30, 20, 390, 160], fill=(255, 255, 255, 60))
-            canvas.paste(lens_highlight, (avatar_x, avatar_y), mask)
-
-        # 3. Tipografia Limpa e Flutuante
+        # --- 4. Badge de Raridade ---
         rarity_text = rarity_label.upper()
-        bbox = self.font_rarity.getbbox(rarity_text)
-        rw = bbox[2] - bbox[0]
-        rh = bbox[3] - bbox[1]
-        
+        bbox_r = self.font_rarity.getbbox(rarity_text)
+        rw = bbox_r[2] - bbox_r[0] + 40
+        rh = 30
         rx = (width - rw) // 2
-        ry = avatar_y + 420 + 40
+        ry = pfp_y + pfp_size + 40
         
-        # Etiqueta Plástica (Pill) para a raridade
-        pill_pad_x = 25
-        pill_pad_y = 10
-        # Sombra da Pill
-        draw.rounded_rectangle([rx - pill_pad_x + 5, ry - pill_pad_y + 5, rx + rw + pill_pad_x + 5, ry + rh + pill_pad_y + 5], radius=30, fill=(0, 0, 0, 60))
-        # Corpo da Pill Brilhante
-        draw.rounded_rectangle([rx - pill_pad_x, ry - pill_pad_y, rx + rw + pill_pad_x, ry + rh + pill_pad_y], radius=30, fill="#ffffff")
-        draw.text((rx, ry), rarity_text, font=self.font_rarity, fill=base_color)
+        badge_mask = Image.new("L", (width, height), 0)
+        ImageDraw.Draw(badge_mask).rounded_rectangle((rx, ry, rx+rw, ry+rh), radius=rh//2, fill=255)
+        self._draw_drop_shadow(canvas, badge_mask, offset=(0, 4), blur=6, opacity=90)
+        
+        # Pílula base
+        draw.rounded_rectangle((rx, ry, rx+rw, ry+rh), radius=rh//2, fill=(194, 34, 34, 255)) # Vermelho vivo
+        # Esqueumorfismo na badge
+        self._draw_inner_shadow(canvas, (rx, ry, rx+rw, ry+rh), rh//2, color=(0,0,0,80), blur=4, offset=(0,-3))
+        self._draw_inner_glow(canvas, (rx, ry, rx+rw, ry+rh), rh//2, color=(255,255,255,100), blur=3, offset=(0,2))
+        
+        draw.text((rx + (rw - (bbox_r[2]-bbox_r[0]))//2, ry + 3), rarity_text, font=self.font_rarity, fill=(255,255,255,255))
 
-        # Nome Flutuante da Carta (Soft Shadow via Helper)
+        # --- 5. Nome da Carta (Letterpress Effect) ---
         name_text = user_name.upper()
         if len(name_text) > 13:
             name_text = name_text[:11] + ".."
             
-        bbox = self.font_name.getbbox(name_text)
-        nw = bbox[2] - bbox[0]
+        bbox_n = self.font_name.getbbox(name_text)
+        nx = (width - (bbox_n[2]-bbox_n[0])) // 2
+        ny = ry + 40
         
-        self._draw_text_with_shadow(
-            canvas, 
-            xy=((width - nw) // 2, ry + 60), 
-            text=name_text, 
-            font=self.font_name, 
-            text_color="#ffffff",
-            shadow_color=(0, 0, 0, 160),
-            shadow_offset=(4, 6),
-            blur=6
-        )
+        # Drop shadow duro / Relevo
+        draw.text((nx + 2, ny + 3), name_text, font=self.font_name, fill=(0,0,0,150)) # Sombra
+        draw.text((nx, ny), name_text, font=self.font_name, fill=(255,255,255,255)) # Texto principal
 
-        # 4. Bloco de Atributos (Baixo Relevo)
-        stats_y = 820
-        box_w = 210
-        box_h = 160
-        spacing = 30
-        start_x = (width - (3 * box_w + 2 * spacing)) // 2
+        # --- 6. Painel de Atributos (Rodapé Off-white) ---
+        panel_w = width - 40
+        panel_h = 160
+        panel_x = 20
+        panel_y = height - panel_h - 20
+        panel_radius = 30
+        
+        # Painel base
+        panel_mask = Image.new("L", (width, height), 0)
+        ImageDraw.Draw(panel_mask).rounded_rectangle((panel_x, panel_y, panel_x+panel_w, panel_y+panel_h), radius=panel_radius, fill=255)
+        self._draw_drop_shadow(canvas, panel_mask, offset=(0, -5), blur=10, opacity=60) # Sombra sutil projetada no fundo roxo
+        
+        draw.rounded_rectangle((panel_x, panel_y, panel_x+panel_w, panel_y+panel_h), radius=panel_radius, fill=(240, 240, 240, 255))
+        # Inner glow no topo do painel
+        self._draw_inner_glow(canvas, (panel_x, panel_y, panel_x+panel_w, panel_y+panel_h), panel_radius, color=(255,255,255,255), blur=5, offset=(0, 2))
 
-        stats = [
-            ("ATK", str(atk)),
-            ("DEF", str(def_stat)),
-            ("SPD", str(spd))
-        ]
-
+        # Caixas de Status Embutidas (Recessed)
+        box_w = 160
+        box_h = 100
+        spacing = (panel_w - (3 * box_w)) // 4
+        
+        stats = [("ATK", str(atk)), ("DEF", str(def_stat)), ("SPD", str(spd))]
+        
         for i, (label, val) in enumerate(stats):
-            bx = start_x + i * (box_w + spacing)
+            bx = panel_x + spacing + i * (box_w + spacing)
+            by = panel_y + (panel_h - box_h) // 2
+            b_radius = 20
             
-            # Sombra Projetada Inversa (Bevel de Baixo Relevo)
-            # Base do slot entalhado
-            draw.rounded_rectangle([bx, stats_y, bx + box_w, stats_y + box_h], radius=40, fill=(0, 0, 0, 40))
-            # Contorno superior escuro
-            draw.rounded_rectangle([bx, stats_y, bx + box_w, stats_y + box_h], radius=40, outline=(0, 0, 0, 90), width=4)
-            # Brilho reflexivo inferior
-            draw.line([bx + 40, stats_y + box_h + 2, bx + box_w - 40, stats_y + box_h + 2], fill=(255, 255, 255, 120), width=3)
+            # Fundo da caixa (cinza base para imitar o fundo da carta ou roxo escuro)
+            draw.rounded_rectangle((bx, by, bx+box_w, by+box_h), radius=b_radius, fill=(68, 33, 133, 255)) # Fundo roxo dentro da caixa em relevo
+            
+            # Sombra interna para afundar (canto superior esquerdo escuro, inferior direito claro)
+            self._draw_inner_shadow(canvas, (bx, by, bx+box_w, by+box_h), b_radius, color=(0,0,0,180), blur=8, offset=(5,5))
+            self._draw_inner_glow(canvas, (bx, by, bx+box_w, by+box_h), b_radius, color=(255,255,255,100), blur=4, offset=(-2,-2))
+            
+            # Top header do slot (A área cinza onde fica o label)
+            # Desenhando uma abazinha cinza por cima dentro do box afundado
+            ab_h = 30
+            aba_mask = Image.new("L", (width, height), 0)
+            ImageDraw.Draw(aba_mask).rounded_rectangle((bx, by, bx+box_w, by+box_h), radius=b_radius, fill=255)
+            # Shape cinza
+            aba_shape = Image.new("RGBA", (width, height), (0,0,0,0))
+            ImageDraw.Draw(aba_shape).rectangle((bx, by, bx+box_w, by+ab_h), fill=(200,200,200,255))
+            canvas.paste(aba_shape, (0,0), aba_mask)
             
             # Label
             bbox_lbl = self.font_label.getbbox(label)
-            lbl_x = bx + (box_w - (bbox_lbl[2] - bbox_lbl[0])) // 2
-            draw.text((lbl_x, stats_y + 20), label, font=self.font_label, fill=(255, 255, 255, 180))
+            draw.text((bx + (box_w - (bbox_lbl[2]-bbox_lbl[0]))//2, by + 5), label, font=self.font_label, fill=(80,80,80,255))
             
-            # Valor Gigante
+            # Valor
             bbox_val = self.font_stat.getbbox(val)
-            val_x = bx + (box_w - (bbox_val[2] - bbox_val[0])) // 2
-            
-            # Adiciona soft shadow sutil para o número saltar do baixo-relevo
-            self._draw_text_with_shadow(
-                canvas,
-                xy=(val_x, stats_y + 55),
-                text=val,
-                font=self.font_stat,
-                text_color="#ffffff",
-                shadow_color=(0, 0, 0, 100),
-                shadow_offset=(3, 3),
-                blur=3
-            )
+            val_x = bx + (box_w - (bbox_val[2]-bbox_val[0]))//2
+            val_y = by + ab_h + 5
+            # Texto Branco com leve shadow dura
+            draw.text((val_x+2, val_y+3), val, font=self.font_stat, fill=(0,0,0,100))
+            draw.text((val_x, val_y), val, font=self.font_stat, fill=(255,255,255,255))
 
-        # 5. Exportação Otimizada em PNG Preservando o Alpha (Transparência nos Cantos)
+        # --- 7. Decorações e Seriais ---
+        serial = f"BPH-GTO-{random.randint(1000, 9999)}-01"
+        # Canto inferior esquerdo e direito fora das caixas, na borda do painel branco
+        draw.text((panel_x + 20, panel_y + panel_h - 20), serial, font=self.font_serial, fill=(120,120,120,255))
+        draw.text((panel_x + panel_w - 90, panel_y - 15), serial, font=self.font_serial, fill=(180,180,180,255))
+
+        # Exportação Otimizada
         buffer = io.BytesIO()
         canvas.save(buffer, format='PNG', compress_level=6)
         buffer.seek(0)
