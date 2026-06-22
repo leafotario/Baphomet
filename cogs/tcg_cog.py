@@ -334,11 +334,77 @@ class TCGCommands(app_commands.Group):
     async def booster(self, interaction: discord.Interaction):
         await interaction.response.defer()
         pack_service = getattr(self.bot, "tcg_pack_service", None)
-        if pack_service:
-            # O serviço reage rasgando o pacote e chamando as engines de renderização Pillow
-            await interaction.followup.send("Abrindo Booster Pack... (Serviço acionado)")
-        else:
-            await interaction.followup.send("Lojista TCG indisponível no momento.")
+        card_service = getattr(self.bot, "tcg_service", None)
+        renderer = getattr(self.bot, "tcg_renderer", None)
+        
+        if not pack_service or not card_service or not renderer:
+            return await interaction.followup.send("Lojista TCG indisponível no momento. Sistemas de UI desativados.")
+
+        # Obtém perfil do jogador
+        player = await card_service.repository.get_player(interaction.user.id)
+        if not player:
+            from modules.tcg.db.tcg_models import Player
+            from datetime import datetime
+            import timezone
+            # Criação de um jogador base caso não exista
+            player = Player(id_usuario=interaction.user.id, saldo=1000, xp_global=100, total_mensagens=50, data_entrada=datetime.now())
+            await card_service.repository.save_player(player)
+            
+        templates = await card_service.repository.get_all_templates()
+        if not templates:
+            return await interaction.followup.send("A loja não possui cartas cadastradas no momento.")
+            
+        import random
+        # Compra simples: Sorteia 3 cartas usando os templates
+        drawn_templates = random.choices(templates, k=3)
+        
+        # Simulando atividade do Discord para a forja
+        is_mod = interaction.user.guild_permissions.manage_messages if hasattr(interaction.user, 'guild_permissions') else False
+        reactions_received = random.randint(10, 50)
+        is_voice_active = random.choice([True, False])
+        
+        minted_cards = []
+        for t in drawn_templates:
+            c = await card_service.mint_card(player, t, interaction.user, reactions_received, is_voice_active, is_mod)
+            minted_cards.append(c)
+            
+        # Renderiza individualmente cada carta
+        rendered_buffers = []
+        for c, t in zip(minted_cards, drawn_templates):
+            try:
+                buf = await renderer.render_card(
+                    avatar_url=interaction.user.display_avatar.url,
+                    template_name=t.nome_moldura,
+                    rarity=t.raridade,
+                    mask_name=t.mascara,
+                    atk=c.atk,
+                    def_stat=c.defesa,
+                    spd=c.spd,
+                    passive=c.passiva
+                )
+                rendered_buffers.append(buf)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"Fallback visual acionado para carta {c.uuid}: {e}")
+                # Ignora a carta se falhar visualmente para não parar o booster todo
+                pass
+                
+        if not rendered_buffers:
+            return await interaction.followup.send("As máquinas da forja falharam miseravelmente. Seu pacote veio vazio.")
+            
+        # O Pack Service agrupa tudo em um Canvas
+        try:
+            pack_image = await pack_service.render_booster_pack(rendered_buffers)
+            file = discord.File(pack_image, filename="booster_pack.png")
+            await interaction.followup.send(
+                f"🎉 {interaction.user.mention} rasgou um Booster Pack e encontrou **{len(rendered_buffers)}** cartas para sua coleção!",
+                file=file
+            )
+            pack_image.close()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Erro ao renderizar booster_pack: {e}")
+            await interaction.followup.send("O pacote rasgou, mas a renderização colapsou. Verifique seu inventário.")
 
     @app_commands.command(name="trocar", description="Inicia o fluxo transacional atômico de troca de ativos.")
     @app_commands.describe(usuario="Membro com quem deseja trocar")
@@ -468,6 +534,25 @@ class TCGCog(commands.Cog):
 
 
 async def setup(bot):
+    from modules.tcg.db.tcg_repository import TCGRepository
+    from modules.tcg.services.card_service import CardService
+    from modules.tcg.rendering.card_renderer import CardRenderer
+    from modules.tcg.rendering.pack_service import PackService
+
+    if not hasattr(bot, "tcg_repository"):
+        bot.tcg_repository = TCGRepository()
+        await bot.tcg_repository.init_db()
+        await bot.tcg_repository.ensure_default_templates()
+        
+    if not hasattr(bot, "tcg_service"):
+        bot.tcg_service = CardService(bot.tcg_repository)
+        
+    if not hasattr(bot, "tcg_renderer"):
+        bot.tcg_renderer = CardRenderer()
+        
+    if not hasattr(bot, "tcg_pack_service"):
+        bot.tcg_pack_service = PackService()
+
     cog = TCGCog(bot)
     
     # Injetando o error handler central em todos os grupos manualmente
