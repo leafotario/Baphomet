@@ -399,17 +399,21 @@ class TCGCommands(app_commands.Group):
             
         # Renderiza individualmente cada carta
         rendered_buffers = []
+        import aiohttp
         for c, t, avatar_url in minted_cards:
             try:
+                # Baixa os bytes da PFP do Discord assincronamente
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(avatar_url) as resp:
+                        pfp_bytes = await resp.read()
+                        
                 buf = await renderer.render_card(
-                    avatar_url=avatar_url,
-                    template_name=t.nome_moldura,
-                    rarity=t.raridade,
-                    mask_name=t.mascara,
+                    user_name=t.nome_moldura,
+                    pfp_bytes=pfp_bytes,
                     atk=c.atk,
                     def_stat=c.defesa,
                     spd=c.spd,
-                    passive=c.passiva
+                    rarity_label=t.raridade
                 )
                 rendered_buffers.append(buf)
             except Exception as e:
@@ -564,7 +568,7 @@ class TCGCog(commands.Cog):
 async def setup(bot):
     from modules.tcg.db.tcg_repository import TCGRepository
     from modules.tcg.services.card_service import CardService
-    from modules.tcg.rendering.card_renderer import CardRenderer
+    from modules.tcg.rendering.booster_renderer import BoosterGraphicEngine
     from modules.tcg.rendering.pack_service import PackService
 
     if not hasattr(bot, "tcg_repository"):
@@ -576,7 +580,7 @@ async def setup(bot):
         bot.tcg_service = CardService(bot.tcg_repository)
         
     if not hasattr(bot, "tcg_renderer"):
-        bot.tcg_renderer = CardRenderer()
+        bot.tcg_renderer = BoosterGraphicEngine()
         
     if not hasattr(bot, "tcg_pack_service"):
         bot.tcg_pack_service = PackService()
