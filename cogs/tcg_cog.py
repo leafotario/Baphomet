@@ -119,10 +119,11 @@ class InventoryPaginationView(SecureView):
     Paginação Lógica dinâmica sem limites de Embed.
     Pede porções calculadas (Offset) ao Service para reescrever a tela via edit_message.
     """
-    def __init__(self, author_id: int, service, current_page: int = 0):
+    def __init__(self, author_id: int, service, avatar_bytes: bytes = None, current_page: int = 0):
         super().__init__(allowed_users=[author_id])
         self.author_id = author_id
         self.service = service
+        self.avatar_bytes = avatar_bytes
         self.current_page = current_page
         self.items_per_page = 5
 
@@ -135,7 +136,7 @@ class InventoryPaginationView(SecureView):
         from modules.tcg.rendering.inventory_renderer import gerar_imagem_inventario
         
         try:
-            buf = await gerar_imagem_inventario(db_path, str(self.author_id), self.current_page)
+            buf = await gerar_imagem_inventario(db_path, str(self.author_id), self.current_page, avatar_bytes=self.avatar_bytes)
             file = discord.File(fp=buf, filename="inventario.png")
             
             if not interaction.response.is_done():
@@ -289,7 +290,16 @@ class TCGCommands(app_commands.Group):
     async def inventario(self, interaction: discord.Interaction):
         await interaction.response.defer()
         service = getattr(self.bot, "tcg_service", None)
-        view = InventoryPaginationView(author_id=interaction.user.id, service=service)
+        
+        # 1. Busca Assíncrona Preemptiva do Avatar
+        avatar_bytes = None
+        if interaction.user.display_avatar:
+            try:
+                avatar_bytes = await interaction.user.display_avatar.with_format("png").with_size(256).read()
+            except Exception as e:
+                logger.warning(f"Falha ao obter avatar_bytes de {interaction.user.id}: {e}")
+
+        view = InventoryPaginationView(author_id=interaction.user.id, service=service, avatar_bytes=avatar_bytes)
         
         db_path = "data/baphomet_tcg.db"
         if service and hasattr(service, "repository"):
@@ -298,7 +308,7 @@ class TCGCommands(app_commands.Group):
         from modules.tcg.rendering.inventory_renderer import gerar_imagem_inventario
         
         try:
-            buf = await gerar_imagem_inventario(db_path, str(interaction.user.id), 0)
+            buf = await gerar_imagem_inventario(db_path, str(interaction.user.id), 0, avatar_bytes=avatar_bytes)
             file = discord.File(fp=buf, filename="inventario.png")
             view.message = await interaction.followup.send(file=file, view=view)
         except Exception as e:

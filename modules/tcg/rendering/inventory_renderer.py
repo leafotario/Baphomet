@@ -217,7 +217,7 @@ class InventoryRenderer:
                 """
                 SELECT
                     i.uuid, i.atk, i.defesa, i.spd, i.passiva,
-                    t.nome_moldura AS nome, t.raridade, t.avatar_url
+                    t.nome_moldura AS nome, t.raridade
                 FROM card_instances i
                 JOIN card_templates t ON i.modelo_id = t.id_serial
                 WHERE i.dono_id = ?
@@ -312,61 +312,56 @@ class InventoryRenderer:
         self,
         card_canvas: Image.Image,
         draw: ImageDraw.ImageDraw,
-        avatar_bytes: Optional[bytes] = None,
+        processed_avatar: Optional[Image.Image] = None,
     ) -> int:
         """
         Renderiza o avatar centralizado no topo do card. Retorna a coordenada Y inferior.
 
-        Se `avatar_bytes` for fornecido, renderiza a imagem real com máscara.
-        Caso contrário, gera um gradiente escuro elegante com ícone de silhueta como fallback.
+        Se `processed_avatar` for fornecido (já recortado e mascarado no escopo pai),
+        faz o paste direto. Caso contrário, gera um gradiente escuro elegante com
+        ícone de silhueta como fallback resiliente.
         """
         cw = card_canvas.size[0]
         ax = (cw - AVATAR_SIZE) // 2
         ay = AVATAR_TOP_MARGIN
 
-        avatar_img = None
-        if avatar_bytes:
-            try:
-                with Image.open(io.BytesIO(avatar_bytes)) as img:
-                    avatar_img = ImageOps.fit(img.convert("RGBA"), (AVATAR_SIZE, AVATAR_SIZE), method=Image.Resampling.LANCZOS)
-            except Exception as e:
-                logger.error(f"Erro ao abrir imagem do avatar: {e}")
-                avatar_img = None
+        if processed_avatar:
+            card_canvas.alpha_composite(processed_avatar, (ax, ay))
+            return ay + AVATAR_SIZE
 
-        if not avatar_img:
-            # Placeholder com gradiente
-            avatar_img = Image.new("RGBA", (AVATAR_SIZE, AVATAR_SIZE), (0, 0, 0, 0))
-            av_draw = ImageDraw.Draw(avatar_img)
+        # Fallback de Falha: Placeholder com gradiente e silhueta
+        avatar_img = Image.new("RGBA", (AVATAR_SIZE, AVATAR_SIZE), (0, 0, 0, 0))
+        av_draw = ImageDraw.Draw(avatar_img)
 
-            for y_line in range(AVATAR_SIZE):
-                t = y_line / max(AVATAR_SIZE - 1, 1)
-                r = int(COLOR_AVATAR_PLACEHOLDER_TOP[0] + (COLOR_AVATAR_PLACEHOLDER_BOT[0] - COLOR_AVATAR_PLACEHOLDER_TOP[0]) * t)
-                g = int(COLOR_AVATAR_PLACEHOLDER_TOP[1] + (COLOR_AVATAR_PLACEHOLDER_BOT[1] - COLOR_AVATAR_PLACEHOLDER_TOP[1]) * t)
-                b = int(COLOR_AVATAR_PLACEHOLDER_TOP[2] + (COLOR_AVATAR_PLACEHOLDER_BOT[2] - COLOR_AVATAR_PLACEHOLDER_TOP[2]) * t)
-                av_draw.line([(0, y_line), (AVATAR_SIZE, y_line)], fill=(r, g, b, 255))
+        for y_line in range(AVATAR_SIZE):
+            t = y_line / max(AVATAR_SIZE - 1, 1)
+            r = int(COLOR_AVATAR_PLACEHOLDER_TOP[0] + (COLOR_AVATAR_PLACEHOLDER_BOT[0] - COLOR_AVATAR_PLACEHOLDER_TOP[0]) * t)
+            g = int(COLOR_AVATAR_PLACEHOLDER_TOP[1] + (COLOR_AVATAR_PLACEHOLDER_BOT[1] - COLOR_AVATAR_PLACEHOLDER_TOP[1]) * t)
+            b = int(COLOR_AVATAR_PLACEHOLDER_TOP[2] + (COLOR_AVATAR_PLACEHOLDER_BOT[2] - COLOR_AVATAR_PLACEHOLDER_TOP[2]) * t)
+            av_draw.line([(0, y_line), (AVATAR_SIZE, y_line)], fill=(r, g, b, 255))
 
-            # Ícone silhueta minimalista
-            cx_s = AVATAR_SIZE // 2
-            cy_head = AVATAR_SIZE // 3
-            head_r = AVATAR_SIZE // 7
-            av_draw.ellipse(
-                (cx_s - head_r, cy_head - head_r, cx_s + head_r, cy_head + head_r),
-                fill=(80, 75, 95, 180),
-            )
-            body_top = cy_head + head_r + 4
-            body_w = AVATAR_SIZE // 3
-            av_draw.rounded_rectangle(
-                (cx_s - body_w, body_top, cx_s + body_w, AVATAR_SIZE - 4),
-                radius=body_w // 2,
-                fill=(80, 75, 95, 150),
-            )
+        # Ícone silhueta minimalista
+        cx_s = AVATAR_SIZE // 2
+        cy_head = AVATAR_SIZE // 3
+        head_r = AVATAR_SIZE // 7
+        av_draw.ellipse(
+            (cx_s - head_r, cy_head - head_r, cx_s + head_r, cy_head + head_r),
+            fill=(80, 75, 95, 180),
+        )
+        body_top = cy_head + head_r + 4
+        body_w = AVATAR_SIZE // 3
+        av_draw.rounded_rectangle(
+            (cx_s - body_w, body_top, cx_s + body_w, AVATAR_SIZE - 4),
+            radius=body_w // 2,
+            fill=(80, 75, 95, 150),
+        )
 
-        # Aplica máscara de cantos arredondados
+        # Aplica máscara de cantos arredondados no fallback
         avatar_mask = self._rounded_rect_mask((AVATAR_SIZE, AVATAR_SIZE), AVATAR_RADIUS)
         masked_avatar = Image.new("RGBA", (AVATAR_SIZE, AVATAR_SIZE), (0, 0, 0, 0))
         masked_avatar.paste(avatar_img, (0, 0), avatar_mask)
 
-        # Borda fina ao redor do avatar
+        # Borda fina
         av_border_draw = ImageDraw.Draw(masked_avatar)
         av_border_draw.rounded_rectangle(
             (0, 0, AVATAR_SIZE - 1, AVATAR_SIZE - 1),
@@ -377,9 +372,7 @@ class InventoryRenderer:
 
         card_canvas.alpha_composite(masked_avatar, (ax, ay))
 
-        # Cleanup
-        if avatar_img:
-            avatar_img.close()
+        avatar_img.close()
         masked_avatar.close()
 
         return ay + AVATAR_SIZE
