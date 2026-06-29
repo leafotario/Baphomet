@@ -325,6 +325,7 @@ class InventoryRenderer:
         ax = (cw - AVATAR_SIZE) // 2
         ay = AVATAR_TOP_MARGIN
 
+        # O(1) Paste operation se o avatar já tiver sido processado
         if processed_avatar:
             card_canvas.alpha_composite(processed_avatar, (ax, ay))
             return ay + AVATAR_SIZE
@@ -517,20 +518,10 @@ class InventoryRenderer:
     # Composição de Mini-Carta Individual
     # ──────────────────────────────────────────────────────────────────────
 
-    def _render_card(self, card: Dict[str, Any]) -> Image.Image:
+    def _render_card(self, card: Dict[str, Any], processed_avatar: Optional[Image.Image] = None) -> Image.Image:
         """
         Compõe uma carta completa em um canvas RGBA isolado, combinando
         todos os componentes (background, avatar, badge, nome, stats).
-
-        Parameters
-        ----------
-        card : dict
-            Dicionário com keys: nome, raridade, atk, defesa, spd, uuid, passiva.
-
-        Returns
-        -------
-        Image.Image
-            Canvas RGBA da carta com máscara arredondada aplicada.
         """
         nome = card.get("nome", "???")
         raridade = card.get("raridade", "Comum")
@@ -546,9 +537,8 @@ class InventoryRenderer:
         # 1. Background com gradiente e borda
         self._draw_card_background(canvas, draw, rarity_color)
 
-        # 2. Avatar (Imagem real ou placeholder)
-        avatar_bytes = card.get("avatar_bytes")
-        avatar_bottom = self._draw_card_avatar(canvas, draw, avatar_bytes)
+        # 2. Avatar (Imagem injetada processada ou placeholder)
+        avatar_bottom = self._draw_card_avatar(canvas, draw, processed_avatar)
 
         # 3. Pill badge de raridade
         badge_bottom = self._draw_rarity_badge(
@@ -579,6 +569,7 @@ class InventoryRenderer:
         usuario_id: str,
         current_page: int,
         total_pages: int,
+        processed_avatar: Optional[Image.Image] = None,
     ) -> Image.Image:
         """
         Compõe o canvas completo: header informativo + grade 3×3 de cartas.
@@ -643,8 +634,8 @@ class InventoryRenderer:
             cell_x = grid_origin_x + col * (CARD_W + GAP_X)
             cell_y = grid_origin_y + row * (CARD_H + GAP_Y)
 
-            # Renderiza a carta individual
-            card_img = self._render_card(card)
+            # Renderiza a carta individual injetando o avatar
+            card_img = self._render_card(card, processed_avatar)
 
             # Drop shadow sutil abaixo de cada carta
             shadow = Image.new("RGBA", (CARD_W + 16, CARD_H + 16), (0, 0, 0, 0))
@@ -706,63 +697,56 @@ class InventoryRenderer:
     # Ponto de Entrada Público
     # ──────────────────────────────────────────────────────────────────────
 
-    async def _fetch_avatar_bytes(self, session, card: Dict[str, Any]):
-        """Helper para baixar bytes do avatar e armazenar no dict da carta."""
-        url = card.get("avatar_url")
-        if not url:
-            return
-        try:
-            async with session.get(url) as resp:
-                if resp.status == 200:
-                    card["avatar_bytes"] = await resp.read()
-        except Exception as e:
-            logger.warning(f"Falha ao baixar avatar {url}: {e}")
-
     async def gerar_imagem_inventario(
         self,
         usuario_id: str,
         pagina: int = 0,
+        avatar_bytes: Optional[bytes] = None
     ) -> io.BytesIO:
         """
-        Pipeline completo: DB → Download PFPs → Renderização → Buffer PNG.
-
-        Parameters
-        ----------
-        usuario_id : str
-            ID Discord do jogador.
-        pagina : int
-            Número da página (0-indexed).
-
-        Returns
-        -------
-        io.BytesIO
-            Buffer PNG pronto para envio via discord.File.
+        Pipeline completo: DB → Single Source Avatar Processing → Renderização → Buffer PNG.
         """
         # 1. Fetch do banco de dados
         cards, current_page, total_pages = await self._fetch_inventory_page(
             usuario_id, pagina,
         )
 
-        # 2. Download assíncrono dos avatares para evitar block de CPU
-        if cards:
-            import aiohttp
-            import asyncio
-            timeout = aiohttp.ClientTimeout(total=4.0)
+        # 2. Instanciação Única (Single Source of Truth)
+        # O processamento da máscara e do crop do avatar é feito apenas uma vez para o inventário inteiro
+        processed_avatar = None
+        if avatar_bytes:
             try:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    tasks = [self._fetch_avatar_bytes(session, card) for card in cards if card.get("avatar_url")]
-                    if tasks:
-                        await asyncio.gather(*tasks, return_exceptions=True)
+                with Image.open(io.BytesIO(avatar_bytes)) as img:
+                    # Crop perfeito 1:1 e upscale/downscale com Lanczos
+                    pfp_image = ImageOps.fit(img.convert("RGBA"), (AVATAR_SIZE, AVATAR_SIZE), method=Image.Resampling.LANCZOS)
+                    
+                    # Máscara Alpha de Cantos Arredondados
+                    mask = Image.new("L", (AVATAR_SIZE, AVATAR_SIZE), 0)
+                    mask_draw = ImageDraw.Draw(mask)
+                    mask_draw.rounded_rectangle((0, 0, AVATAR_SIZE - 1, AVATAR_SIZE - 1), radius=AVATAR_RADIUS, fill=255)
+                    
+                    # Aplicação da máscara no canal Alpha
+                    pfp_image.putalpha(mask)
+                    
+                    # Adiciona borda fina que o layout original parece ter
+                    border_draw = ImageDraw.Draw(pfp_image)
+                    border_draw.rounded_rectangle(
+                        (0, 0, AVATAR_SIZE - 1, AVATAR_SIZE - 1),
+                        radius=AVATAR_RADIUS,
+                        outline=(255, 255, 255, 40),
+                        width=2,
+                    )
+                    
+                    processed_avatar = pfp_image
             except Exception as e:
-                logger.error(f"Erro no pool de conexões ao baixar avatares: {e}")
+                logger.error(f"Erro ao processar imagem PFP na instanciação única: {e}")
+                processed_avatar = None
 
         # 3. Renderização (CPU-bound)
         if not cards:
             img = self._render_empty_state(str(usuario_id))
         else:
-            img = self._render_canvas(
-                cards, str(usuario_id), current_page, total_pages,
-            )
+            img = self._render_canvas(cards, str(usuario_id), current_page, total_pages, processed_avatar)
 
         # 3. Aplicar máscara arredondada final ao canvas
         final_mask = self._rounded_rect_mask((CANVAS_W, CANVAS_H), CANVAS_RADIUS)
@@ -777,6 +761,8 @@ class InventoryRenderer:
         # Cleanup
         img.close()
         output.close()
+        if processed_avatar:
+            processed_avatar.close()
 
         return buffer
 
@@ -789,10 +775,11 @@ async def gerar_imagem_inventario(
     db_path: str,
     usuario_id: str,
     pagina: int,
+    avatar_bytes: Optional[bytes] = None
 ) -> io.BytesIO:
     """
     Wrapper top-level que instancia o renderer e executa a renderização.
     Assinatura exata consumida por tcg_cog.py (linhas 138 e 301).
     """
     renderer = InventoryRenderer(db_path=db_path)
-    return await renderer.gerar_imagem_inventario(usuario_id, pagina)
+    return await renderer.gerar_imagem_inventario(usuario_id, pagina, avatar_bytes=avatar_bytes)
