@@ -11,6 +11,7 @@ import contextlib
 import logging
 import math
 import pathlib
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
@@ -3548,6 +3549,104 @@ class VinculosCog(commands.Cog):
             exc_info=(type(original), original, original.__traceback__) if isinstance(original, BaseException) else None,
         )
         await self.send_interaction_error(interaction)
+
+
+    @app_commands.command(
+        name="restaurar_vinculos",
+        description="[ADMIN] Disaster Recovery: Restaura vínculos a partir do histórico de um canal."
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def restaurar_vinculos(
+        self,
+        interaction: discord.Interaction,
+        canal_logs: discord.TextChannel,
+        limite: int = 1000
+    ) -> None:
+        """Ferramenta de Disaster Recovery para reconstruir vínculos apagados (ETL de mensagens do Discord)."""
+        # 1. Preempção para evitar timeout de 3s (I/O-bound pesada e Batch processing)
+        await interaction.response.defer(ephemeral=True)
+
+        if not interaction.guild_id:
+            await interaction.followup.send("Este comando deve ser usado em um servidor.")
+            return
+
+        pares_unicos: set[tuple[int, int]] = set()
+        mensagens_varridas = 0
+
+        try:
+            # 2. Scraping e Parser do Histórico
+            async for message in canal_logs.history(limit=limite, oldest_first=True):
+                mensagens_varridas += 1
+                # Filtra mensagens apenas enviadas pelo próprio bot
+                if message.author != self.bot.user:
+                    continue
+
+                text_to_search = message.content
+                if message.embeds and message.embeds[0].description:
+                    text_to_search += " " + message.embeds[0].description
+
+                # Extração Robusta de IDs via Regex
+                matches = re.findall(r"<@!?(\d+)>", text_to_search)
+                if len(matches) >= 2:
+                    try:
+                        id_a = int(matches[0])
+                        id_b = int(matches[1])
+                        if id_a != id_b:
+                            # Estrutura de dados de unicidade: tuple(sorted(...))
+                            pares_unicos.add(tuple(sorted((id_a, id_b))))
+                    except ValueError:
+                        continue
+        except discord.Forbidden:
+            await interaction.followup.send("❌ O bot não possui permissão para ler o histórico desse canal.", ephemeral=True)
+            return
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ Erro HTTP durante a varredura: {e}", ephemeral=True)
+            return
+
+        # 3. Transação de Banco de Dados (Batch Synchronization)
+        restaurados = 0
+        if pares_unicos:
+            now_iso = _utc_now_iso()
+            guild_id = interaction.guild_id
+
+            # Prepara os dados para inserção em lote
+            insert_data = [
+                (guild_id, u_low, u_high, DEFAULT_BOND_TYPE, now_iso, 1, 1, 0)
+                for u_low, u_high in pares_unicos
+            ]
+
+            try:
+                # Transação assíncrona usando o gerenciador existente (db_transaction.py)
+                async with self.bot.tx_manager.acquire() as conn:
+                    # Trava global
+                    await conn.execute("BEGIN IMMEDIATE;")
+                    
+                    # Statement SQL INSERT OR IGNORE que insere preservando PK/Unique Constraint
+                    cursor = await conn.executemany(
+                        """
+                        INSERT OR IGNORE INTO xp_db.vinculos
+                        (guild_id, user_low_id, user_high_id, bond_type, created_at, active, last_announced_affinity_level, is_fused)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        insert_data
+                    )
+                    
+                    # Em caso de OR IGNORE, o rowcount no SQLite retorna apenas as linhas efetivamente inseridas
+                    restaurados = cursor.rowcount
+                    await conn.commit()
+            except Exception as e:
+                log_exception(e, context="Disaster Recovery: falha na transação batch de vínculos")
+                await interaction.followup.send(f"❌ Erro crítico ao restaurar os registros no DB: {e}", ephemeral=True)
+                return
+
+        # 4. Interface e UX (Apenas Admin) - Relatório Executivo
+        relatorio = (
+            "✅ **Operação de Disaster Recovery Concluída**\n"
+            f"🔍 Mensagens varridas: `{mensagens_varridas}`\n"
+            f"🔗 Pares identificados: `{len(pares_unicos)}`\n"
+            f"💾 Vínculos restaurados no DB: `{restaurados}`"
+        )
+        await interaction.followup.send(relatorio, ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:
