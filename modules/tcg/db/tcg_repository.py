@@ -61,7 +61,8 @@ class TCGRepository:
                         nome_moldura TEXT NOT NULL,
                         raridade TEXT NOT NULL,
                         mascara TEXT NOT NULL,
-                        multiplicador REAL NOT NULL
+                        multiplicador REAL NOT NULL,
+                        avatar_url TEXT DEFAULT ''
                     );
                     -- Índice na raridade
                     CREATE INDEX IF NOT EXISTS idx_templates_raridade ON card_templates(raridade);
@@ -90,6 +91,16 @@ class TCGRepository:
                     );
                 """)
                 await db.commit()
+                
+                # Migração segura para adicionar a coluna em DBs existentes
+                try:
+                    await db.execute("ALTER TABLE card_templates ADD COLUMN avatar_url TEXT DEFAULT ''")
+                    await db.commit()
+                    logger.info("Coluna avatar_url adicionada com sucesso em card_templates.")
+                except aiosqlite.OperationalError:
+                    # A coluna já existe
+                    pass
+
                 logger.info("Banco de dados TCG inicializado com sucesso (WAL mode ativado).")
         except Exception as e:
             logger.error(f"Erro ao inicializar o banco de dados TCG: {e}")
@@ -178,7 +189,7 @@ class TCGRepository:
             rows = await cursor.fetchall()
             return [CardTemplate(**dict(r)) for r in rows]
 
-    async def get_or_create_member_template(self, member_name: str, raridade: str, mascara: str, multiplicador: float):
+    async def get_or_create_member_template(self, member_name: str, raridade: str, mascara: str, multiplicador: float, avatar_url: str = ""):
         from modules.tcg.db.tcg_models import CardTemplate
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -186,12 +197,18 @@ class TCGRepository:
             cursor = await db.execute("SELECT * FROM card_templates WHERE nome_moldura = ?", (member_name,))
             row = await cursor.fetchone()
             if row:
-                return CardTemplate(**dict(row))
+                template = CardTemplate(**dict(row))
+                # Atualiza o avatar_url se fornecido e for diferente
+                if avatar_url and getattr(template, 'avatar_url', '') != avatar_url:
+                    await db.execute("UPDATE card_templates SET avatar_url = ? WHERE id_serial = ?", (avatar_url, template.id_serial))
+                    await db.commit()
+                    template.avatar_url = avatar_url
+                return template
             
             # Se não existir, insere e retorna
             await db.execute(
-                "INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador) VALUES (?, ?, ?, ?)",
-                (member_name, raridade, mascara, multiplicador)
+                "INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador, avatar_url) VALUES (?, ?, ?, ?, ?)",
+                (member_name, raridade, mascara, multiplicador, avatar_url)
             )
             await db.commit()
             
@@ -205,9 +222,9 @@ class TCGRepository:
             count = (await cursor.fetchone())[0]
             if count == 0:
                 await db.executescript("""
-                    INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador) VALUES ('Guerreiro das Sombras', 'Comum', 'mask_comum.png', 1.0);
-                    INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador) VALUES ('Mago Espectral', 'Raro', 'mask_raro.png', 1.5);
-                    INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador) VALUES ('Guardião Abissal', 'Épico', 'mask_epico.png', 2.0);
+                    INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador, avatar_url) VALUES ('Guerreiro das Sombras', 'Comum', 'mask_comum.png', 1.0, '');
+                    INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador, avatar_url) VALUES ('Mago Espectral', 'Raro', 'mask_raro.png', 1.5, '');
+                    INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador, avatar_url) VALUES ('Guardião Abissal', 'Épico', 'mask_epico.png', 2.0, '');
                 """)
                 await db.commit()
 

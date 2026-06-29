@@ -369,7 +369,8 @@ class TCGCommands(app_commands.Group):
                 member_name=member.display_name,
                 raridade=raridade,
                 mascara=mascara,
-                multiplicador=mult
+                multiplicador=mult,
+                avatar_url=member.display_avatar.url if member.display_avatar else ""
             )
             drawn_templates.append(template)
             

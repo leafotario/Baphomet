@@ -16,6 +16,7 @@ class CardTemplate:
     raridade: str
     mascara: str
     multiplicador: float
+    avatar_url: str = ""
 
 @dataclass
 class CardInstance:

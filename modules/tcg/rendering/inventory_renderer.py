@@ -217,7 +217,7 @@ class InventoryRenderer:
                 """
                 SELECT
                     i.uuid, i.atk, i.defesa, i.spd, i.passiva,
-                    t.nome_moldura AS nome, t.raridade
+                    t.nome_moldura AS nome, t.raridade, t.avatar_url
                 FROM card_instances i
                 JOIN card_templates t ON i.modelo_id = t.id_serial
                 WHERE i.dono_id = ?
@@ -312,44 +312,54 @@ class InventoryRenderer:
         self,
         card_canvas: Image.Image,
         draw: ImageDraw.ImageDraw,
+        avatar_bytes: Optional[bytes] = None,
     ) -> int:
         """
-        Renderiza o placeholder estilizado do avatar centralizado no topo
-        do card. Retorna a coordenada Y inferior do avatar.
+        Renderiza o avatar centralizado no topo do card. Retorna a coordenada Y inferior.
 
-        Como o DB não armazena imagem, gera um gradiente escuro elegante
-        com ícone de silhueta minimalista.
+        Se `avatar_bytes` for fornecido, renderiza a imagem real com máscara.
+        Caso contrário, gera um gradiente escuro elegante com ícone de silhueta como fallback.
         """
         cw = card_canvas.size[0]
         ax = (cw - AVATAR_SIZE) // 2
         ay = AVATAR_TOP_MARGIN
 
-        # Cria o placeholder com gradiente diagonal sutil
-        avatar_img = Image.new("RGBA", (AVATAR_SIZE, AVATAR_SIZE), (0, 0, 0, 0))
-        av_draw = ImageDraw.Draw(avatar_img)
+        avatar_img = None
+        if avatar_bytes:
+            try:
+                with Image.open(io.BytesIO(avatar_bytes)) as img:
+                    avatar_img = ImageOps.fit(img.convert("RGBA"), (AVATAR_SIZE, AVATAR_SIZE), method=Image.Resampling.LANCZOS)
+            except Exception as e:
+                logger.error(f"Erro ao abrir imagem do avatar: {e}")
+                avatar_img = None
 
-        for y_line in range(AVATAR_SIZE):
-            t = y_line / max(AVATAR_SIZE - 1, 1)
-            r = int(COLOR_AVATAR_PLACEHOLDER_TOP[0] + (COLOR_AVATAR_PLACEHOLDER_BOT[0] - COLOR_AVATAR_PLACEHOLDER_TOP[0]) * t)
-            g = int(COLOR_AVATAR_PLACEHOLDER_TOP[1] + (COLOR_AVATAR_PLACEHOLDER_BOT[1] - COLOR_AVATAR_PLACEHOLDER_TOP[1]) * t)
-            b = int(COLOR_AVATAR_PLACEHOLDER_TOP[2] + (COLOR_AVATAR_PLACEHOLDER_BOT[2] - COLOR_AVATAR_PLACEHOLDER_TOP[2]) * t)
-            av_draw.line([(0, y_line), (AVATAR_SIZE, y_line)], fill=(r, g, b, 255))
+        if not avatar_img:
+            # Placeholder com gradiente
+            avatar_img = Image.new("RGBA", (AVATAR_SIZE, AVATAR_SIZE), (0, 0, 0, 0))
+            av_draw = ImageDraw.Draw(avatar_img)
 
-        # Ícone silhueta minimalista (cabeça + corpo)
-        cx_s = AVATAR_SIZE // 2
-        cy_head = AVATAR_SIZE // 3
-        head_r = AVATAR_SIZE // 7
-        av_draw.ellipse(
-            (cx_s - head_r, cy_head - head_r, cx_s + head_r, cy_head + head_r),
-            fill=(80, 75, 95, 180),
-        )
-        body_top = cy_head + head_r + 4
-        body_w = AVATAR_SIZE // 3
-        av_draw.rounded_rectangle(
-            (cx_s - body_w, body_top, cx_s + body_w, AVATAR_SIZE - 4),
-            radius=body_w // 2,
-            fill=(80, 75, 95, 150),
-        )
+            for y_line in range(AVATAR_SIZE):
+                t = y_line / max(AVATAR_SIZE - 1, 1)
+                r = int(COLOR_AVATAR_PLACEHOLDER_TOP[0] + (COLOR_AVATAR_PLACEHOLDER_BOT[0] - COLOR_AVATAR_PLACEHOLDER_TOP[0]) * t)
+                g = int(COLOR_AVATAR_PLACEHOLDER_TOP[1] + (COLOR_AVATAR_PLACEHOLDER_BOT[1] - COLOR_AVATAR_PLACEHOLDER_TOP[1]) * t)
+                b = int(COLOR_AVATAR_PLACEHOLDER_TOP[2] + (COLOR_AVATAR_PLACEHOLDER_BOT[2] - COLOR_AVATAR_PLACEHOLDER_TOP[2]) * t)
+                av_draw.line([(0, y_line), (AVATAR_SIZE, y_line)], fill=(r, g, b, 255))
+
+            # Ícone silhueta minimalista
+            cx_s = AVATAR_SIZE // 2
+            cy_head = AVATAR_SIZE // 3
+            head_r = AVATAR_SIZE // 7
+            av_draw.ellipse(
+                (cx_s - head_r, cy_head - head_r, cx_s + head_r, cy_head + head_r),
+                fill=(80, 75, 95, 180),
+            )
+            body_top = cy_head + head_r + 4
+            body_w = AVATAR_SIZE // 3
+            av_draw.rounded_rectangle(
+                (cx_s - body_w, body_top, cx_s + body_w, AVATAR_SIZE - 4),
+                radius=body_w // 2,
+                fill=(80, 75, 95, 150),
+            )
 
         # Aplica máscara de cantos arredondados
         avatar_mask = self._rounded_rect_mask((AVATAR_SIZE, AVATAR_SIZE), AVATAR_RADIUS)
@@ -368,7 +378,8 @@ class InventoryRenderer:
         card_canvas.alpha_composite(masked_avatar, (ax, ay))
 
         # Cleanup
-        avatar_img.close()
+        if avatar_img:
+            avatar_img.close()
         masked_avatar.close()
 
         return ay + AVATAR_SIZE
@@ -542,8 +553,9 @@ class InventoryRenderer:
         # 1. Background com gradiente e borda
         self._draw_card_background(canvas, draw, rarity_color)
 
-        # 2. Avatar placeholder
-        avatar_bottom = self._draw_card_avatar(canvas, draw)
+        # 2. Avatar (Imagem real ou placeholder)
+        avatar_bytes = card.get("avatar_bytes")
+        avatar_bottom = self._draw_card_avatar(canvas, draw, avatar_bytes)
 
         # 3. Pill badge de raridade
         badge_bottom = self._draw_rarity_badge(
@@ -701,13 +713,25 @@ class InventoryRenderer:
     # Ponto de Entrada Público
     # ──────────────────────────────────────────────────────────────────────
 
+    async def _fetch_avatar_bytes(self, session, card: Dict[str, Any]):
+        """Helper para baixar bytes do avatar e armazenar no dict da carta."""
+        url = card.get("avatar_url")
+        if not url:
+            return
+        try:
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    card["avatar_bytes"] = await resp.read()
+        except Exception as e:
+            logger.warning(f"Falha ao baixar avatar {url}: {e}")
+
     async def gerar_imagem_inventario(
         self,
         usuario_id: str,
         pagina: int = 0,
     ) -> io.BytesIO:
         """
-        Pipeline completo: DB → Renderização → Buffer PNG.
+        Pipeline completo: DB → Download PFPs → Renderização → Buffer PNG.
 
         Parameters
         ----------
@@ -726,7 +750,20 @@ class InventoryRenderer:
             usuario_id, pagina,
         )
 
-        # 2. Renderização (CPU-bound)
+        # 2. Download assíncrono dos avatares para evitar block de CPU
+        if cards:
+            import aiohttp
+            import asyncio
+            timeout = aiohttp.ClientTimeout(total=4.0)
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    tasks = [self._fetch_avatar_bytes(session, card) for card in cards if card.get("avatar_url")]
+                    if tasks:
+                        await asyncio.gather(*tasks, return_exceptions=True)
+            except Exception as e:
+                logger.error(f"Erro no pool de conexões ao baixar avatares: {e}")
+
+        # 3. Renderização (CPU-bound)
         if not cards:
             img = self._render_empty_state(str(usuario_id))
         else:

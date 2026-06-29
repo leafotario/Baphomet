@@ -31,7 +31,8 @@ async def setup_test_db():
                 nome_moldura TEXT NOT NULL,
                 raridade TEXT NOT NULL,
                 mascara TEXT NOT NULL,
-                multiplicador REAL NOT NULL
+                multiplicador REAL NOT NULL,
+                avatar_url TEXT DEFAULT ''
             );
             
             CREATE TABLE card_instances (
@@ -45,16 +46,16 @@ async def setup_test_db():
             );
             
             -- Templates
-            INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador)
-                VALUES ('Guerreiro das Sombras', 'Comum', 'mask.png', 1.0);
-            INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador)
-                VALUES ('Mago Espectral', 'Raro', 'mask.png', 1.5);
-            INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador)
-                VALUES ('Guardiao Abissal', 'Epico', 'mask.png', 2.0);
-            INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador)
-                VALUES ('Dragao Ancestral', 'Lendario', 'mask.png', 3.0);
-            INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador)
-                VALUES ('Entidade Cosmica', 'Mitico', 'mask.png', 5.0);
+            INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador, avatar_url)
+                VALUES ('Guerreiro das Sombras', 'Comum', 'mask.png', 1.0, 'https://github.com/fluidicon.png');
+            INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador, avatar_url)
+                VALUES ('Mago Espectral', 'Raro', 'mask.png', 1.5, '');
+            INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador, avatar_url)
+                VALUES ('Guardiao Abissal', 'Epico', 'mask.png', 2.0, 'https://github.com/fluidicon.png');
+            INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador, avatar_url)
+                VALUES ('Dragao Ancestral', 'Lendario', 'mask.png', 3.0, '');
+            INSERT INTO card_templates (nome_moldura, raridade, mascara, multiplicador, avatar_url)
+                VALUES ('Entidade Cosmica', 'Mitico', 'mask.png', 5.0, 'https://github.com/fluidicon.png');
             
             -- Instancias (12 cartas para testar paginacao)
             INSERT INTO card_instances VALUES ('uuid-0001', 999, 1, 15, 120, 8, 'nenhuma');
