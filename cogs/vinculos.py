@@ -3757,45 +3757,62 @@ class VinculosCog(commands.Cog):
         )
 
         restaurados = 0
+        ja_existentes = 0
         if recovery_records:
-
-            # Prepara os dados para inserção em lote
-            insert_data = [
-                (
-                    record.guild_id,
-                    record.user_low_id,
-                    record.user_high_id,
-                    record.bond_type.value,
-                    record.created_at,
-                    1,
-                    record.last_announced_affinity_level,
-                    int(record.is_fused),
-                )
-                for record in recovery_records
-            ]
-
             try:
-                # Transação assíncrona usando o gerenciador existente (db_transaction.py)
-                async with self.bot.tx_manager.acquire() as conn:
-                    # Trava global
-                    await conn.execute("BEGIN IMMEDIATE;")
-                    
-                    # Statement SQL INSERT OR IGNORE que insere preservando PK/Unique Constraint
-                    before_changes = conn.total_changes
-                    await conn.executemany(
+                async with self.repository._tx_lock:
+                    conn = self.repository.connection
+                    await conn.execute("BEGIN IMMEDIATE")
+                    existing_rows = await conn.execute_fetchall(
                         """
-                        INSERT OR IGNORE INTO xp_db.vinculos
-                        (guild_id, user_low_id, user_high_id, bond_type, created_at, active, last_announced_affinity_level, is_fused)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        SELECT user_low_id, user_high_id
+                        FROM vinculos
+                        WHERE guild_id = ?
+                          AND active = 1
                         """,
-                        insert_data
+                        (interaction.guild_id,),
                     )
-                    
-                    # total_changes evita depender do comportamento de rowcount no executemany do SQLite.
-                    restaurados = conn.total_changes - before_changes
+                    existing_pairs = {
+                        (int(row["user_low_id"]), int(row["user_high_id"]))
+                        for row in existing_rows
+                    }
+
+                    records_to_insert: list[VinculoRecoveryRecord] = []
+                    for record in recovery_records:
+                        pair = (record.user_low_id, record.user_high_id)
+                        if pair in existing_pairs:
+                            continue
+                        existing_pairs.add(pair)
+                        records_to_insert.append(record)
+
+                    ja_existentes = len(recovery_records) - len(records_to_insert)
+                    if records_to_insert:
+                        await conn.executemany(
+                            """
+                            INSERT INTO vinculos
+                            (guild_id, user_low_id, user_high_id, bond_type, created_at, active, last_announced_affinity_level, is_fused)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            [
+                                (
+                                    record.guild_id,
+                                    record.user_low_id,
+                                    record.user_high_id,
+                                    record.bond_type.value,
+                                    record.created_at,
+                                    1,
+                                    record.last_announced_affinity_level,
+                                    int(record.is_fused),
+                                )
+                                for record in records_to_insert
+                            ],
+                        )
+                    restaurados = len(records_to_insert)
                     await conn.commit()
             except Exception as e:
                 log_exception(e, context="Disaster Recovery: falha na transação batch de vínculos")
+                with contextlib.suppress(Exception):
+                    await self.repository.connection.rollback()
                 await interaction.followup.send(f"❌ Erro crítico ao restaurar os registros no DB: {e}", ephemeral=True)
                 return
 
@@ -3804,6 +3821,7 @@ class VinculosCog(commands.Cog):
             "✅ **Operação de Disaster Recovery Concluída**\n"
             f"🔍 Mensagens varridas: `{mensagens_varridas}`\n"
             f"🔗 Vínculos ativos reconstruídos: `{len(recovery_records)}`\n"
+            f"🗃️ Já existentes no DB: `{ja_existentes}`\n"
             f"💾 Vínculos restaurados no DB: `{restaurados}`"
         )
         await interaction.followup.send(relatorio, ephemeral=True)
