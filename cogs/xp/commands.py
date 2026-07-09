@@ -429,11 +429,3 @@ async def setup(bot: commands.Bot) -> None:
     await ensure_xp_runtime(bot)
     await bot.add_cog(XpPublicCommands(bot))
     await bot.add_cog(XpAdminCommands(bot))
-
-    @bot.tree.command(name="sync", description="Sincroniza os comandos (Admin)")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    async def sync(interaction: discord.Interaction) -> None:
-        await interaction.response.defer(ephemeral=True)
-        await bot.tree.sync()
-        await interaction.followup.send("Comandos sincronizados!")
