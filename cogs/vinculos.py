@@ -296,6 +296,27 @@ class ActiveVinculo:
         return None
 
 
+@dataclass(slots=True)
+class VinculoRecoveryRecord:
+    guild_id: int
+    user_low_id: int
+    user_high_id: int
+    bond_type: VinculoType
+    created_at: str
+    last_announced_affinity_level: int = 1
+    is_fused: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class VinculoRecoveryEvent:
+    kind: Literal["accepted", "broken", "affinity"]
+    user_low_id: int
+    user_high_id: int
+    bond_type: VinculoType
+    occurred_at: str
+    affinity_level: int | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class PenaltySnapshot:
     id: int
@@ -3528,6 +3549,150 @@ class VinculosCog(commands.Cog):
                 file is not None,
             )
 
+    def _extract_recovery_pair(self, message: discord.Message) -> tuple[int, int] | None:
+        text_parts: list[str] = []
+        if message.content:
+            text_parts.append(message.content)
+        for embed in message.embeds:
+            if embed.title:
+                text_parts.append(embed.title)
+            if embed.description:
+                text_parts.append(embed.description)
+            for field in embed.fields:
+                text_parts.append(field.name)
+                text_parts.append(field.value)
+
+        matches = re.findall(r"<@!?(\d+)>", " ".join(text_parts))
+        if len(matches) < 2:
+            return None
+
+        try:
+            user_a_id = int(matches[0])
+            user_b_id = int(matches[1])
+        except ValueError:
+            return None
+
+        if user_a_id == user_b_id:
+            return None
+        return _normalize_pair(user_a_id, user_b_id)
+
+    def _parse_affinity_level_from_embed(self, embed: discord.Embed) -> int | None:
+        for field in embed.fields:
+            if field.name.strip().lower() != "afinidade":
+                continue
+            match = re.search(r"(\d+)", field.value)
+            if match is None:
+                return None
+            return max(1, int(match.group(1)))
+        return None
+
+    def _classify_recovery_embed(
+        self,
+        embed: discord.Embed,
+        *,
+        pair: tuple[int, int],
+        occurred_at: str,
+    ) -> VinculoRecoveryEvent | None:
+        title = (embed.title or "").strip()
+        for metadata in VINCULO_TYPE_METADATA.values():
+            if title == metadata.accepted_title:
+                return VinculoRecoveryEvent(
+                    kind="accepted",
+                    user_low_id=pair[0],
+                    user_high_id=pair[1],
+                    bond_type=metadata.key,
+                    occurred_at=occurred_at,
+                )
+            if title == metadata.rupture_title:
+                return VinculoRecoveryEvent(
+                    kind="broken",
+                    user_low_id=pair[0],
+                    user_high_id=pair[1],
+                    bond_type=metadata.key,
+                    occurred_at=occurred_at,
+                )
+            if title == f"{metadata.emoji} O pacto amadureceu":
+                return VinculoRecoveryEvent(
+                    kind="affinity",
+                    user_low_id=pair[0],
+                    user_high_id=pair[1],
+                    bond_type=metadata.key,
+                    occurred_at=occurred_at,
+                    affinity_level=self._parse_affinity_level_from_embed(embed),
+                )
+        return None
+
+    def _extract_recovery_event(self, message: discord.Message) -> VinculoRecoveryEvent | None:
+        pair = self._extract_recovery_pair(message)
+        if pair is None:
+            return None
+
+        created_at = getattr(message, "created_at", None)
+        if isinstance(created_at, datetime):
+            if created_at.tzinfo is None:
+                occurred_at = created_at.replace(tzinfo=timezone.utc).isoformat()
+            else:
+                occurred_at = created_at.astimezone(timezone.utc).isoformat()
+        else:
+            occurred_at = _utc_now_iso()
+
+        for embed in message.embeds:
+            event = self._classify_recovery_embed(embed, pair=pair, occurred_at=occurred_at)
+            if event is not None:
+                return event
+        return None
+
+    def _collect_recovery_records(
+        self,
+        *,
+        guild_id: int,
+        messages: Iterable[discord.Message],
+    ) -> list[VinculoRecoveryRecord]:
+        bot_user = getattr(self.bot, "user", None)
+        bot_user_id = getattr(bot_user, "id", None)
+        active_by_pair: dict[tuple[int, int], VinculoRecoveryRecord] = {}
+
+        for message in messages:
+            if bot_user_id is not None and getattr(message.author, "id", None) != bot_user_id:
+                continue
+
+            event = self._extract_recovery_event(message)
+            if event is None:
+                continue
+
+            pair = (event.user_low_id, event.user_high_id)
+            if event.kind == "accepted":
+                active_by_pair[pair] = VinculoRecoveryRecord(
+                    guild_id=guild_id,
+                    user_low_id=event.user_low_id,
+                    user_high_id=event.user_high_id,
+                    bond_type=event.bond_type,
+                    created_at=event.occurred_at,
+                )
+                continue
+
+            if event.kind == "broken":
+                active_by_pair.pop(pair, None)
+                continue
+
+            if event.kind == "affinity":
+                record = active_by_pair.get(pair)
+                if record is None:
+                    record = VinculoRecoveryRecord(
+                        guild_id=guild_id,
+                        user_low_id=event.user_low_id,
+                        user_high_id=event.user_high_id,
+                        bond_type=event.bond_type,
+                        created_at=event.occurred_at,
+                    )
+                    active_by_pair[pair] = record
+                record.last_announced_affinity_level = max(
+                    record.last_announced_affinity_level,
+                    event.affinity_level or 1,
+                )
+
+        return list(active_by_pair.values())
+
     async def cog_app_command_error(
         self,
         interaction: discord.Interaction,
@@ -3570,32 +3735,14 @@ class VinculosCog(commands.Cog):
             await interaction.followup.send("Este comando deve ser usado em um servidor.")
             return
 
-        pares_unicos: set[tuple[int, int]] = set()
         mensagens_varridas = 0
+        history_messages: list[discord.Message] = []
 
         try:
-            # 2. Scraping e Parser do Histórico
             async for message in canal_logs.history(limit=limite, oldest_first=True):
                 mensagens_varridas += 1
-                # Filtra mensagens apenas enviadas pelo próprio bot
-                if message.author != self.bot.user:
-                    continue
+                history_messages.append(message)
 
-                text_to_search = message.content
-                if message.embeds and message.embeds[0].description:
-                    text_to_search += " " + message.embeds[0].description
-
-                # Extração Robusta de IDs via Regex
-                matches = re.findall(r"<@!?(\d+)>", text_to_search)
-                if len(matches) >= 2:
-                    try:
-                        id_a = int(matches[0])
-                        id_b = int(matches[1])
-                        if id_a != id_b:
-                            # Estrutura de dados de unicidade: tuple(sorted(...))
-                            pares_unicos.add(tuple(sorted((id_a, id_b))))
-                    except ValueError:
-                        continue
         except discord.Forbidden:
             await interaction.followup.send("❌ O bot não possui permissão para ler o histórico desse canal.", ephemeral=True)
             return
@@ -3604,15 +3751,27 @@ class VinculosCog(commands.Cog):
             return
 
         # 3. Transação de Banco de Dados (Batch Synchronization)
+        recovery_records = self._collect_recovery_records(
+            guild_id=interaction.guild_id,
+            messages=history_messages,
+        )
+
         restaurados = 0
-        if pares_unicos:
-            now_iso = _utc_now_iso()
-            guild_id = interaction.guild_id
+        if recovery_records:
 
             # Prepara os dados para inserção em lote
             insert_data = [
-                (guild_id, u_low, u_high, DEFAULT_BOND_TYPE, now_iso, 1, 1, 0)
-                for u_low, u_high in pares_unicos
+                (
+                    record.guild_id,
+                    record.user_low_id,
+                    record.user_high_id,
+                    record.bond_type.value,
+                    record.created_at,
+                    1,
+                    record.last_announced_affinity_level,
+                    int(record.is_fused),
+                )
+                for record in recovery_records
             ]
 
             try:
@@ -3622,7 +3781,8 @@ class VinculosCog(commands.Cog):
                     await conn.execute("BEGIN IMMEDIATE;")
                     
                     # Statement SQL INSERT OR IGNORE que insere preservando PK/Unique Constraint
-                    cursor = await conn.executemany(
+                    before_changes = conn.total_changes
+                    await conn.executemany(
                         """
                         INSERT OR IGNORE INTO xp_db.vinculos
                         (guild_id, user_low_id, user_high_id, bond_type, created_at, active, last_announced_affinity_level, is_fused)
@@ -3631,8 +3791,8 @@ class VinculosCog(commands.Cog):
                         insert_data
                     )
                     
-                    # Em caso de OR IGNORE, o rowcount no SQLite retorna apenas as linhas efetivamente inseridas
-                    restaurados = cursor.rowcount
+                    # total_changes evita depender do comportamento de rowcount no executemany do SQLite.
+                    restaurados = conn.total_changes - before_changes
                     await conn.commit()
             except Exception as e:
                 log_exception(e, context="Disaster Recovery: falha na transação batch de vínculos")
@@ -3643,7 +3803,7 @@ class VinculosCog(commands.Cog):
         relatorio = (
             "✅ **Operação de Disaster Recovery Concluída**\n"
             f"🔍 Mensagens varridas: `{mensagens_varridas}`\n"
-            f"🔗 Pares identificados: `{len(pares_unicos)}`\n"
+            f"🔗 Vínculos ativos reconstruídos: `{len(recovery_records)}`\n"
             f"💾 Vínculos restaurados no DB: `{restaurados}`"
         )
         await interaction.followup.send(relatorio, ephemeral=True)
