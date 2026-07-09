@@ -2101,12 +2101,18 @@ class VinculosCog(commands.Cog):
         self.repository.bot = self.bot
         await self.repository.connect()
         self.bot.vinculos_runtime = VinculosRuntime(repository=self.repository)
+        xp_service = getattr(self.bot, "xp_service", None)
+        if xp_service is not None:
+            xp_service.vinculos_provider = self.repository
         self.check_vinculo_anniversaries.start()
         self.contract_reaper_task.start()
 
     def cog_unload(self) -> None:
         self.check_vinculo_anniversaries.cancel()
         self.contract_reaper_task.cancel()
+        xp_service = getattr(self.bot, "xp_service", None)
+        if xp_service is not None and getattr(xp_service, "vinculos_provider", None) is self.repository:
+            xp_service.vinculos_provider = None
         if getattr(self.bot, "vinculos_runtime", None) is not None:
             self.bot.vinculos_runtime = None
         self.bot.loop.create_task(self.repository.close())

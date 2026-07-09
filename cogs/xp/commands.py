@@ -57,8 +57,10 @@ async def ensure_xp_runtime(bot: commands.Bot) -> None:
         return
     repository = XpRepository(str(DB_PATH))
     await repository.connect()
+    vinculos_runtime = getattr(bot, "vinculos_runtime", None)
+    vinculos_provider = getattr(vinculos_runtime, "repository", None)
     bot.xp_repository = repository
-    bot.xp_service = XpService(repository, logger=LOGGER)
+    bot.xp_service = XpService(repository, logger=LOGGER, vinculos_provider=vinculos_provider)
     bot.xp_cards = XpCardRenderer()
     bot.xp_badges = RankBadgeService(repository)
 
@@ -143,9 +145,21 @@ class XpPublicCommands(commands.Cog):
 
         await interaction.response.defer(thinking=True)
         snapshot = await self.service.get_rank_snapshot(interaction.guild, target)
+        bond_summary = await self.service.get_rank_bond_summary(interaction.guild.id, target.id)
+        badge_image_bytes = None
+        if isinstance(target, discord.Member):
+            _badge, badge_image_bytes = await self.badges.resolve_member_badge_image(target)
         view = RankCardView(service=self.service, cards=self.cards, badges=self.badges)
         try:
-            image = await self.cards.render_rank_card(guild=interaction.guild, member=target, snapshot=snapshot)
+            image = await self.cards.render_rank_card(
+                guild=interaction.guild,
+                member=target,
+                snapshot=snapshot,
+                badge_image_bytes=badge_image_bytes,
+                bond_count=bond_summary.count,
+                bond_multiplier=bond_summary.multiplier,
+                db_conn=self.service.repository.connection,
+            )
             await interaction.edit_original_response(attachments=[discord.File(image, filename="rank.png")], view=view)
         except Exception as exc:
             log_exception(exc)
@@ -155,6 +169,7 @@ class XpPublicCommands(commands.Cog):
                 f"Nível **{snapshot.level}**\n"
                 f"XP Total **{snapshot.total_xp:,}**\n"
                 f"Progresso **{snapshot.xp_into_level}/{snapshot.xp_for_next_level}**\n"
+                f"Vínculos: **{bond_summary.count} ({bond_summary.multiplier:.1f}x)**\n"
                 f"Posição **{snapshot.position or 'Sem Posição'}**"
             ).replace(",", ".")
             await interaction.edit_original_response(embed=embed, view=view)
