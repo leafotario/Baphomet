@@ -124,6 +124,36 @@ class ServerConfig(app_commands.Group):
         default_permissions=discord.Permissions(administrator=True),
         guild_only=True,
     )
+    convites_group = app_commands.Group(
+        name="convites",
+        description="Centraliza a proteção e configuração de convites.",
+        default_permissions=discord.Permissions(administrator=True),
+        guild_only=True,
+    )
+    canais_group = app_commands.Group(
+        name="canais",
+        description="Centraliza bloqueios e canais estruturais do servidor.",
+        default_permissions=discord.Permissions(administrator=True),
+        guild_only=True,
+    )
+    bump_group = app_commands.Group(
+        name="bump",
+        description="Centraliza a configuração do sistema de bump.",
+        default_permissions=discord.Permissions(administrator=True),
+        guild_only=True,
+    )
+    limpeza_group = app_commands.Group(
+        name="limpeza",
+        description="Centraliza as configurações de limpeza automática.",
+        default_permissions=discord.Permissions(administrator=True),
+        guild_only=True,
+    )
+    inativos_group = app_commands.Group(
+        name="inativos",
+        description="Centraliza as ferramentas de prune de inatividade.",
+        default_permissions=discord.Permissions(administrator=True),
+        guild_only=True,
+    )
     logs_group = app_commands.Group(
         name="logs",
         description="Centraliza os rituais e status de logs.",
@@ -243,7 +273,7 @@ class ServerConfig(app_commands.Group):
     async def server_config_antispam_status(self, interaction: discord.Interaction) -> None:
         await self._call_cog(interaction, "ModerationCog", "antispam_status")
 
-    @app_commands.command(name="setup", description="define o canal e ativa/desativa os logs de punições")
+    @logs_group.command(name="setup", description="define o canal e ativa/desativa os logs de punições")
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def server_config_setup_logs(
@@ -254,7 +284,7 @@ class ServerConfig(app_commands.Group):
     ) -> None:
         await self._call_cog(interaction, "PunishmentLogs", "setup_logs", channel, status)
 
-    @app_commands.command(
+    @bump_group.command(
         name="configurar_bump",
         description="Define o canal e cargo para o lembrete do /bump 🔔",
     )
@@ -268,7 +298,7 @@ class ServerConfig(app_commands.Group):
     ) -> None:
         await self._call_cog(interaction, "BumpReminderCog", "configurar_bump", canal, cargo)
 
-    @app_commands.command(
+    @inativos_group.command(
         name="expulsar_inativos",
         description="Expulsa membros que não enviam mensagens há X dias ⚠️",
     )
@@ -589,7 +619,7 @@ class ServerConfig(app_commands.Group):
     async def server_config_vinculo_relatorio(self, interaction: discord.Interaction) -> None:
         await self._call_cog(interaction, "VinculosCog", "vinculo_relatorio")
 
-    @app_commands.command(
+    @convites_group.command(
         name="anti_convites",
         description="Sela o servidor contra convites hereges. Bloqueia links de outros reinos.",
     )
@@ -600,7 +630,7 @@ class ServerConfig(app_commands.Group):
         else:
             await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 
-    @app_commands.command(
+    @convites_group.command(
         name="status_anticonvites",
         description="Revela se o selo contra convites profanos está ativo ou adormecido.",
     )
@@ -611,18 +641,7 @@ class ServerConfig(app_commands.Group):
         else:
             await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 
-    @app_commands.command(
-        name="anti_spam",
-        description="Invoca o purgatório para mensagens repetitivas. Silencia os tagarelas.",
-    )
-    async def anti_spam(self, interaction: discord.Interaction) -> None:
-        cog = interaction.client.get_cog("ModerationCog")
-        if cog:
-            await cog.antispam_toggle(interaction)
-        else:
-            await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
-
-    @app_commands.command(
+    @canais_group.command(
         name="trancar_canal",
         description="Tranca os portões deste canal. Apenas os escolhidos poderão ecoar suas vozes.",
     )
@@ -638,7 +657,7 @@ class ServerConfig(app_commands.Group):
         else:
             await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 
-    @app_commands.command(
+    @canais_group.command(
         name="destrancar_canal",
         description="Quebra os selos deste canal. Permite que o caos das vozes mortais retorne.",
     )
@@ -654,7 +673,7 @@ class ServerConfig(app_commands.Group):
         else:
             await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 
-    @app_commands.command(
+    @bump_group.command(
         name="canal_bump",
         description="Elege o altar onde os ritos de ascensão (bump) serão celebrados.",
     )
@@ -665,7 +684,7 @@ class ServerConfig(app_commands.Group):
         else:
             await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 
-    @app_commands.command(
+    @limpeza_group.command(
         name="configurar_limpeza_saida",
         description="Configura a foice: expurga os rastros deixados por almas que abandonaram o servidor.",
     )
@@ -714,7 +733,7 @@ class ServerConfig(app_commands.Group):
         else:
             await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 
-    @app_commands.command(
+    @convites_group.command(
         name="canal_convites",
         description="Demarca o território onde novos adeptos podem ser convocados livremente.",
     )
@@ -730,7 +749,7 @@ class ServerConfig(app_commands.Group):
         else:
             await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 
-    @app_commands.command(
+    @canais_group.command(
         name="canal_geral",
         description="Sagra o salão principal onde a cacofonia das almas recém-chegadas irá ecoar.",
     )
@@ -741,7 +760,7 @@ class ServerConfig(app_commands.Group):
         else:
             await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 
-    @app_commands.command(
+    @canais_group.command(
         name="canal_permanencia",
         description="Define o abismo onde a presença contínua dos membros será monitorada e julgada.",
     )
@@ -756,7 +775,7 @@ class ServerConfig(app_commands.Group):
         else:
             await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 
-    @app_commands.command(
+    @limpeza_group.command(
         name="status_limpeza_saida",
         description="Sussurra o estado atual da foice que limpa as cinzas dos que partiram.",
     )
@@ -778,7 +797,7 @@ class ServerConfig(app_commands.Group):
         else:
             await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 
-    @app_commands.command(
+    @canais_group.command(
         name="status-canais",
         description="Mapeia as artérias do servidor, revelando a função profana de cada canal consagrado.",
     )
@@ -787,17 +806,6 @@ class ServerConfig(app_commands.Group):
         if cog:
             ctx = await interaction.client.get_context(interaction)
             await cog.status_canais(ctx)
-        else:
-            await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
-
-    @app_commands.command(
-        name="boas_vindas",
-        description="Prepara o rito de recepção. Decreta como as almas novas serão saudadas no abismo.",
-    )
-    async def boas_vindas(self, interaction: discord.Interaction) -> None:
-        cog = interaction.client.get_cog("WelcomeCog")
-        if cog:
-            await cog.welcome(interaction)
         else:
             await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 
