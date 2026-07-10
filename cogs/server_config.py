@@ -124,6 +124,18 @@ class ServerConfig(app_commands.Group):
         default_permissions=discord.Permissions(administrator=True),
         guild_only=True,
     )
+    logs_group = app_commands.Group(
+        name="logs",
+        description="Centraliza os rituais e status de logs.",
+        default_permissions=discord.Permissions(administrator=True),
+        guild_only=True,
+    )
+    denuncias_group = app_commands.Group(
+        name="denuncias",
+        description="Centraliza o sistema de denúncias do servidor.",
+        default_permissions=discord.Permissions(administrator=True),
+        guild_only=True,
+    )
 
     def __init__(self):
         super().__init__(
@@ -664,7 +676,7 @@ class ServerConfig(app_commands.Group):
         else:
             await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 
-    @app_commands.command(
+    @logs_group.command(
         name="canal_logs",
         description="Define o pergaminho sombrio onde os segredos e ações do servidor serão eternizados.",
     )
@@ -680,7 +692,7 @@ class ServerConfig(app_commands.Group):
         else:
             await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 
-    @app_commands.command(
+    @denuncias_group.command(
         name="canal_denuncias",
         description="Cria um confessionário oculto para que os mortais relatem as heresias ao conselho.",
     )
@@ -691,7 +703,7 @@ class ServerConfig(app_commands.Group):
         else:
             await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 
-    @app_commands.command(
+    @logs_group.command(
         name="painel_logs",
         description="Abre o grimório de registros. Um painel para observar tudo o que rasteja nas sombras.",
     )
@@ -755,7 +767,7 @@ class ServerConfig(app_commands.Group):
         else:
             await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 
-    @app_commands.command(
+    @logs_group.command(
         name="status_logs",
         description="Expõe se o olho que tudo vê (logs) está observando ou vendado no momento.",
     )
@@ -789,7 +801,7 @@ class ServerConfig(app_commands.Group):
         else:
             await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 
-    @app_commands.command(name="denuncia_chat", description="Posta a mensagem de abertura de denúncias no canal.")
+    @denuncias_group.command(name="denuncia_chat", description="Posta a mensagem de abertura de denúncias no canal.")
     async def denuncia_chat(self, interaction: discord.Interaction) -> None:
         embed = discord.Embed(
             title="📋 Sistema de Denúncias",
@@ -803,7 +815,7 @@ class ServerConfig(app_commands.Group):
         await interaction.channel.send(embed=embed, view=BotaoAbrirDenuncia())
         await interaction.response.send_message("✅ Mensagem postada.", ephemeral=True)
 
-    @app_commands.command(name="fechar_denuncia", description="Fecha (deleta) o canal de ticket atual.")
+    @denuncias_group.command(name="fechar_denuncia", description="Fecha (deleta) o canal de ticket atual.")
     async def fechar_denuncia(self, interaction: discord.Interaction) -> None:
         if not interaction.channel.name.startswith("denuncia-"):
             await interaction.response.send_message(
