@@ -188,3 +188,4 @@ class StarboardCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(StarboardCog(bot))
+    bot.tree.remove_command("starboard")

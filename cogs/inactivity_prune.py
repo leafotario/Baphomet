@@ -518,3 +518,5 @@ async def setup(bot: commands.Bot) -> None:
     cog.__cog_app_commands_group__ = None  # Permitir grupo externo
     bot.tree.add_command(WhitelistGroup(cog))
     await bot.add_cog(cog)
+    bot.tree.remove_command("whitelist_inativos")
+    bot.tree.remove_command("expulsar_inativos")

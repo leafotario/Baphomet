@@ -2163,3 +2163,4 @@ class AlbumDoDia(commands.Cog):
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(AlbumDoDia(bot))
+    bot.tree.remove_command("aotd_config")

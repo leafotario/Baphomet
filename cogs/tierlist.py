@@ -4109,3 +4109,4 @@ class TierListCog(
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(TierListCog(bot))
+    bot.tree.remove_command("tierlist")

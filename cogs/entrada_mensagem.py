@@ -499,3 +499,4 @@ class WelcomeCog(commands.Cog, name="Welcome"):
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(WelcomeCog(bot))
+    bot.tree.remove_command("welcome")

@@ -420,3 +420,4 @@ class BumpReminderCog(commands.Cog):
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(BumpReminderCog(bot))
+    bot.tree.remove_command("configurar_bump")

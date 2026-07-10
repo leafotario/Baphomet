@@ -3835,3 +3835,5 @@ class VinculosCog(commands.Cog):
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(VinculosCog(bot, VinculoRepository(DB_PATH)))
+    bot.tree.remove_command("vinculo_config")
+    bot.tree.remove_command("restaurar_vinculos")

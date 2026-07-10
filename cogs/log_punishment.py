@@ -645,3 +645,4 @@ class PunishmentLogs(commands.Cog):
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(PunishmentLogs(bot))
+    bot.tree.remove_command("setup")
