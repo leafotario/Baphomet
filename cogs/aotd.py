@@ -9,6 +9,7 @@ import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import discord
 from discord import app_commands
@@ -1011,6 +1012,14 @@ class AlbumDoDia(commands.Cog):
 
         return texto[: limite - 1].rstrip() + "…"
 
+    @staticmethod
+    def is_valid_url(url: Any) -> bool:
+        if not isinstance(url, str):
+            return False
+
+        parsed = urlparse(url.strip())
+        return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
     def next_daily_run(self, config: Optional[dict[str, Any]] = None) -> dt.datetime:
         config = config or self.carregar_config()
 
@@ -1222,7 +1231,7 @@ class AlbumDoDia(commands.Cog):
             (
                 album.get("imagem")
                 for album in pagina_atual
-                if album.get("imagem")
+                if self.is_valid_url(album.get("imagem"))
             ),
             None,
         )
@@ -2007,10 +2016,13 @@ class AlbumDoDia(commands.Cog):
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def listar_fila(self, interaction: discord.Interaction) -> None:
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+
         fila = self.carregar_fila()
 
         if not fila:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "📭 A fila está vazia.",
                 ephemeral=True,
             )
@@ -2034,16 +2046,12 @@ class AlbumDoDia(commands.Cog):
             guild=interaction.guild,
         )
 
-        await interaction.response.send_message(
+        view.message = await interaction.followup.send(
             embed=embed,
             view=view,
             ephemeral=True,
+            wait=True,
         )
-
-        try:
-            view.message = await interaction.original_response()
-        except (discord.HTTPException, discord.NotFound):
-            view.message = None
 
     @aotd_config.command(
         name="remover",
